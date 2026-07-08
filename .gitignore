@@ -12,3 +12,4 @@ venv/
 htmlcov/
 .mypy_cache/
 docs/_build/
+.worktrees/
