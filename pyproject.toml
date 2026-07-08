@@ -1,0 +1,60 @@
+[build-system]
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+[project]
+name = "protonfs"
+description = "Sync a local directory tree with Proton Drive via the official Proton Drive CLI, with conflict-aware push/pull and a local sync manifest."
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [{ name = "Will Roscoe" }]
+requires-python = ">=3.9"
+dynamic = ["version"]
+dependencies = [
+    "click>=8.1",
+    "rich>=13.0",
+    "pathspec>=0.12",
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Environment :: Console",
+    "License :: Other/Proprietary License",
+]
+
+[project.urls]
+Homepage = "https://github.com/will-roscoe/protonfs"
+Issues = "https://github.com/will-roscoe/protonfs/issues"
+
+[project.scripts]
+protonfs = "protonfs.cli:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+]
+docs = [
+    "sphinx",
+    "sphinx-autobuild",
+    "sphinx-autodoc-typehints",
+    "sphinx-copybutton",
+    "furo",
+]
+
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/protonfs"]
+
+[tool.ruff]
+line-length = 100
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
