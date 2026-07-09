@@ -12,9 +12,14 @@ def main() -> None:
 
 
 @main.command()
-def setup() -> None:
+@click.option("--dry-run", is_flag=True, help="Preview the LFS migration without making changes.")
+def setup(dry_run: bool) -> None:
     """Install/verify the proton-drive CLI, init .protonfs/, migrate off git-lfs if present."""
-    raise click.ClickException("not yet implemented")
+    from pathlib import Path
+
+    from protonfs.commands.setup import run_setup
+
+    run_setup(Path.cwd(), dry_run=dry_run)
 
 
 @main.command()
