@@ -52,7 +52,19 @@ def ls(path: str | None, remote: bool, trash: bool) -> None:
 @click.option("--dry-run", is_flag=True)
 def push(path: str | None, resolve: str | None, dry_run: bool) -> None:
     """Upload local-only/changed files to Drive."""
-    raise click.ClickException("not yet implemented")
+    from protonfs.commands.push import push as push_files
+    from protonfs.context import load_context
+
+    ctx = load_context()
+    result = push_files(ctx, path, resolve, dry_run)
+    click.echo(
+        f"transferred={result.transferred_items} skipped={result.skipped_items} "
+        f"failed={result.failed_items}"
+    )
+    for failure in result.failures:
+        click.echo(f"  FAILED {failure['name']}: {failure['error']}")
+    if result.failed_items:
+        raise click.exceptions.Exit(1)
 
 
 @main.command()

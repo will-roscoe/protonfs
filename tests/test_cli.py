@@ -17,7 +17,6 @@ def test_version() -> None:
 
 def test_unimplemented_subcommands_fail_cleanly() -> None:
     runner = CliRunner()
-    for subcommand in ["push", "pull"]:
-        result = runner.invoke(main, [subcommand])
-        assert result.exit_code != 0
-        assert "not yet implemented" in result.output
+    result = runner.invoke(main, ["pull"])
+    assert result.exit_code != 0
+    assert "not yet implemented" in result.output
