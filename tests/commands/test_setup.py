@@ -16,6 +16,7 @@ from protonfs.commands.setup import (
 )
 from protonfs.config import load_config
 from protonfs.context import RepoContext
+from protonfs.drive import TransferResult
 from protonfs.index import IndexStore
 
 
@@ -106,6 +107,96 @@ def test_migrate_lfs_dry_run_reports_without_acting(
     assert (
         tmp_path / ".gitattributes"
     ).read_text() == "sim/*/* filter=lfs diff=lfs merge=lfs -text\n"
+
+
+def test_migrate_lfs_full_success_mutates_git_only_after_upload_and_confirm(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    (tmp_path / ".gitattributes").write_text("sim/*/* filter=lfs diff=lfs merge=lfs -text\n")
+    from protonfs.config import init_config
+
+    config = init_config(tmp_path, "/my-files/test")
+    ctx = RepoContext(root=tmp_path, config=config, index=IndexStore(tmp_path), drive=_FakeDrive())
+
+    # Single shared event log so we can prove push happened strictly before
+    # any git mutation (add / rm --cached / commit).
+    events: list[tuple] = []
+
+    def fake_push_files(*args, **kwargs):
+        events.append(("push",))
+        return TransferResult(3, 0, 0, [])
+
+    monkeypatch.setattr("protonfs.commands.setup.push_files", fake_push_files)
+
+    confirm_calls = []
+
+    def fake_confirm(*args, **kwargs):
+        confirm_calls.append((args, kwargs))
+        return True
+
+    monkeypatch.setattr(click, "confirm", fake_confirm)
+
+    def fake_run(cmd, *args, **kwargs):
+        events.append(("run", cmd))
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    performed = migrate_lfs(ctx, dry_run=False)
+
+    assert performed is True
+    assert confirm_calls  # click.confirm(..., abort=True) was invoked
+    assert any(e[0] == "push" for e in events)  # push_files was called
+
+    push_index = next(i for i, e in enumerate(events) if e[0] == "push")
+    mutation_indices = [
+        i
+        for i, e in enumerate(events)
+        if e[0] == "run" and e[1][3] in ("add", "rm", "commit")
+    ]
+    assert mutation_indices  # git add/rm --cached/commit all ran
+    assert all(push_index < i for i in mutation_indices)
+
+    assert "filter=lfs" not in (tmp_path / ".gitattributes").read_text()
+
+
+def test_migrate_lfs_confirm_declined_leaves_git_untouched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    (tmp_path / ".gitattributes").write_text("sim/*/* filter=lfs diff=lfs merge=lfs -text\n")
+    from protonfs.config import init_config
+
+    config = init_config(tmp_path, "/my-files/test")
+    ctx = RepoContext(root=tmp_path, config=config, index=IndexStore(tmp_path), drive=_FakeDrive())
+
+    monkeypatch.setattr(
+        "protonfs.commands.setup.push_files",
+        lambda *a, **k: TransferResult(3, 0, 0, []),
+    )
+
+    def fake_confirm(*args, **kwargs):
+        raise click.exceptions.Abort()
+
+    monkeypatch.setattr(click, "confirm", fake_confirm)
+
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, *args, **kwargs):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    with pytest.raises(click.exceptions.Abort):
+        migrate_lfs(ctx, dry_run=False)
+
+    assert (
+        tmp_path / ".gitattributes"
+    ).read_text() == "sim/*/* filter=lfs diff=lfs merge=lfs -text\n"
+    mutation_calls = [cmd for cmd in calls if cmd[3] in ("add", "rm", "commit")]
+    assert mutation_calls == []
 
 
 def test_clean_pointer_stubs_removes_stub_files(tmp_path: Path) -> None:
