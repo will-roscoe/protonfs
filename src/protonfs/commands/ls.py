@@ -12,14 +12,14 @@ from protonfs.ignore import IgnoreMatcher
 from protonfs.localscan import scan
 
 
-def remote_rel_paths(ctx: RepoContext) -> set[str]:
+def remote_rel_paths(ctx: RepoContext) -> dict[str, int]:
     entries = ctx.drive.list(ctx.config.remote_root)
-    names = set()
+    sizes: dict[str, int] = {}
     for entry in entries:
         name = entry.get("name", {})
-        if name.get("ok"):
-            names.add(name["value"])
-    return names
+        if name.get("ok") and entry.get("type") != "folder":
+            sizes[name["value"]] = entry.get("totalStorageSize", 0)
+    return sizes
 
 
 def render_ls(
@@ -42,8 +42,8 @@ def render_ls(
     ignore = IgnoreMatcher.from_file(ctx.root)
     scan_root = Path(subpath) if subpath else Path(".")
     local = scan(ctx.root, scan_root, ignore, ctx.index, low_io=ctx.config.defaults.low_io)
-    remote_paths = remote_rel_paths(ctx) if remote else None
-    diff_entries = classify(local, ctx.index, remote_paths)
+    remote_map = remote_rel_paths(ctx) if remote else None
+    diff_entries = classify(local, ctx.index, remote_map)
 
     table = Table("path", "state")
     for entry in diff_entries:

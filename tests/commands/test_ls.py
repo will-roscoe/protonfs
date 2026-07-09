@@ -15,7 +15,13 @@ class _FakeDrive:
     def list(self, remote_path: str) -> list[dict]:
         if remote_path == "/trash":
             return [{"name": {"ok": True, "value": "trashed_item"}, "type": "file"}]
-        return [{"name": {"ok": True, "value": "remote_only.bin"}}]
+        return [
+            {
+                "name": {"ok": True, "value": "remote_only.bin"},
+                "type": "file",
+                "totalStorageSize": 3,
+            }
+        ]
 
 
 def test_render_ls_lists_local_only_file(tmp_path: Path) -> None:
