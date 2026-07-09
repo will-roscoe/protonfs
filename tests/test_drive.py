@@ -127,6 +127,20 @@ def test_walk_skips_undecryptable_names(monkeypatch):
     assert [e.rel_path for e in entries] == ["good"]
 
 
+def test_walk_logs_warning_for_undecryptable_names(monkeypatch, caplog):
+    import logging
+
+    client = DriveClient(binary="proton-drive")
+    monkeypatch.setattr(
+        client,
+        "list",
+        lambda path: [{"name": {"ok": False}, "type": "file", "totalStorageSize": 9}],
+    )
+    with caplog.at_level(logging.WARNING):
+        client.walk("/root")
+    assert any("undecryptable" in r.message for r in caplog.records)
+
+
 def test_walk_empty_remote(monkeypatch):
     client = DriveClient(binary="proton-drive")
     monkeypatch.setattr(client, "list", lambda path: [])

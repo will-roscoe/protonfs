@@ -117,6 +117,9 @@ def pull(path: str | None, resolve: str | None, dry_run: bool, refresh: bool) ->
     from protonfs.context import load_context
 
     ctx = load_context()
+    if not refresh and not ctx.index.all():
+        click.echo("index empty; run `protonfs refresh` first (or `pull --refresh`)")
+        return
     result = pull_files(ctx, path, resolve, dry_run, refresh=refresh)
     click.echo(
         f"transferred={result.transferred_items} skipped={result.skipped_items} "

@@ -2,11 +2,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import subprocess
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 BINARY_ENV_VAR = "PROTONFS_DRIVE_BIN"
 DEFAULT_BINARY = "proton-drive"
@@ -110,13 +114,16 @@ class DriveClient:
     def walk(self, remote_root: str) -> list[RemoteEntry]:
         root = remote_root.rstrip("/")
         results: list[RemoteEntry] = []
-        # queue of (absolute remote path, rel prefix)
-        queue: list[tuple[str, str]] = [(root, "")]
+        # queue of (absolute remote path, rel prefix); deque gives O(1) popleft
+        queue: deque[tuple[str, str]] = deque([(root, "")])
         while queue:
-            abs_path, prefix = queue.pop(0)
+            abs_path, prefix = queue.popleft()
             for entry in self.list(abs_path):
                 name = entry.get("name", {})
                 if not name.get("ok"):
+                    logger.warning(
+                        "skipping remote entry with undecryptable name under %s", abs_path
+                    )
                     continue
                 value = name["value"]
                 rel = f"{prefix}{value}" if prefix else value

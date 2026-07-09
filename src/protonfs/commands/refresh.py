@@ -9,7 +9,7 @@ from protonfs.context import RepoContext
 from protonfs.diff import SyncState, classify
 from protonfs.ignore import IgnoreMatcher
 from protonfs.index import IndexEntry
-from protonfs.localscan import scan
+from protonfs.localscan import ScanEntry, scan
 
 
 @dataclass
@@ -22,7 +22,18 @@ class RefreshResult:
     deleted_paths: list[str] = field(default_factory=list)
 
 
-def refresh(ctx: RepoContext, subpath: str | None, prune: bool) -> RefreshResult:
+def _within_subpath(rel_path: str, subpath: str) -> bool:
+    """True when rel_path lies inside the walked subpath (or is the subpath itself)."""
+    return rel_path == subpath or rel_path.startswith(f"{subpath}/")
+
+
+def refresh(
+    ctx: RepoContext,
+    subpath: str | None,
+    prune: bool,
+    persist: bool = True,
+    local: dict[str, ScanEntry] | None = None,
+) -> RefreshResult:
     remote_root = ctx.config.remote_root
     if subpath:
         remote_root = f"{remote_root}/{subpath}"
@@ -33,9 +44,12 @@ def refresh(ctx: RepoContext, subpath: str | None, prune: bool) -> RefreshResult
     if subpath:
         remote = {f"{subpath}/{rel}": size for rel, size in remote.items()}
 
-    ignore = IgnoreMatcher.from_file(ctx.root)
-    scan_root = Path(subpath) if subpath else Path(".")
-    local = scan(ctx.root, scan_root, ignore, ctx.index, low_io=ctx.config.defaults.low_io)
+    # `local` may be supplied by a caller (e.g. pull --refresh) that already scanned
+    # the same tree, so we don't pay for a second recursive walk + re-hash.
+    if local is None:
+        ignore = IgnoreMatcher.from_file(ctx.root)
+        scan_root = Path(subpath) if subpath else Path(".")
+        local = scan(ctx.root, scan_root, ignore, ctx.index, low_io=ctx.config.defaults.low_io)
     diff_entries = classify(local, ctx.index, remote)
 
     result = RefreshResult()
@@ -58,6 +72,10 @@ def refresh(ctx: RepoContext, subpath: str | None, prune: bool) -> RefreshResult
             result.seeded += 1
 
     for entry in diff_entries:
+        # A subpath-scoped walk only saw files under `subpath`; index entries outside
+        # it were never checked, so their absence from `remote` is not a deletion.
+        if subpath and not _within_subpath(entry.rel_path, subpath):
+            continue
         if entry.state == SyncState.REMOTE_CHANGED:
             result.remote_changed += 1
             result.changed_paths.append(entry.rel_path)
@@ -68,5 +86,6 @@ def refresh(ctx: RepoContext, subpath: str | None, prune: bool) -> RefreshResult
                 ctx.index.remove(entry.rel_path)
                 result.pruned += 1
 
-    ctx.index.save()
+    if persist:
+        ctx.index.save()
     return result

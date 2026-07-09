@@ -81,6 +81,53 @@ def test_refresh_prune_removes_remote_deleted(tmp_path: Path) -> None:
     assert ctx.index.get("gone") is None
 
 
+def test_refresh_subpath_seeds_reprefixed_paths(tmp_path: Path) -> None:
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    # walk is scoped to remote_root/run5 and returns paths relative to that root;
+    # refresh must re-prefix them with the subpath to match index rel_path keys.
+    ctx.drive = _FakeDrive([RemoteEntry("dump_0002", is_dir=False, size=200)])
+
+    result = refresh(ctx, "run5", prune=False)
+
+    assert result.seeded == 1
+    entry = ctx.index.get("run5/dump_0002")
+    assert entry is not None
+    assert entry.size == 200
+    assert entry.remote_path == "/my-files/test/run5/dump_0002"
+
+
+def test_refresh_subpath_prune_leaves_out_of_scope_index_entries(tmp_path: Path) -> None:
+    # Regression: a subpath-scoped refresh --prune must NOT classify/prune index
+    # entries that live outside the walked subpath. The remote walk never visited
+    # them, so their absence from the (scoped) remote map is not a deletion signal.
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.index.set(
+        "otherdir/unrelated.bin",
+        IndexEntry(
+            5,
+            1.0,
+            "",
+            "/my-files/test/otherdir/unrelated.bin",
+            "d1",
+            "metadata-only",
+            "2026-07-09T00:00:00+00:00",
+        ),
+    )
+    ctx.index.save()
+    ctx.drive = _FakeDrive([RemoteEntry("newfile", is_dir=False, size=100)])
+
+    result = refresh(ctx, "somedir", prune=True)
+
+    # out-of-scope entry is untouched
+    assert result.remote_deleted == 0
+    assert result.pruned == 0
+    assert ctx.index.get("otherdir/unrelated.bin") is not None
+    # in-scope new file is still seeded
+    assert ctx.index.get("somedir/newfile") is not None
+
+
 def test_refresh_flags_remote_changed(tmp_path: Path) -> None:
     init_config(tmp_path, "/my-files/test")
     ctx = load_context(tmp_path)
