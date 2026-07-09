@@ -95,14 +95,22 @@ def pull(path: str | None, resolve: str | None, dry_run: bool) -> None:
 @click.option("--yes", is_flag=True, help="Skip confirmation prompt.")
 def rm(path: str, recursive: bool, force: bool, yes: bool) -> None:
     """Remove a file/directory from Drive (trash by default, -f for permanent)."""
-    raise click.ClickException("not yet implemented")
+    from protonfs.commands.rm import rm as rm_path
+    from protonfs.context import load_context
+
+    ctx = load_context()
+    rm_path(ctx, path, recursive, force, confirmed=yes)
 
 
 @main.command()
 @click.argument("path")
 def restore(path: str) -> None:
     """Restore a trashed file/directory on Drive."""
-    raise click.ClickException("not yet implemented")
+    from protonfs.commands.restore import restore as restore_path
+    from protonfs.context import load_context
+
+    ctx = load_context()
+    restore_path(ctx, path)
 
 
 if __name__ == "__main__":
