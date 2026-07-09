@@ -150,5 +150,36 @@ def restore(path: str) -> None:
     restore_path(ctx, path)
 
 
+@main.command()
+@click.argument("path", required=False)
+@click.option("--prune", is_flag=True, help="Drop index entries for files deleted on the remote.")
+@_drive_error_boundary
+def refresh(path: str | None, prune: bool) -> None:
+    """Discover remote files and seed the local index (metadata-only)."""
+    from protonfs.commands.refresh import refresh as refresh_index
+    from protonfs.context import load_context
+
+    ctx = load_context()
+    result = refresh_index(ctx, path, prune)
+    click.echo(f"Discovered {result.seeded} new remote file(s) (metadata-only).")
+    if result.remote_changed:
+        click.echo(f"  {result.remote_changed} file(s) changed on the remote (remote-changed):")
+        for p in result.changed_paths:
+            click.echo(f"      {p}")
+        click.echo(
+            "    -> `protonfs pull --resolve=replace <path>` to take the remote version, "
+            "or `protonfs push --resolve=replace <path>` to overwrite it with your local copy."
+        )
+    if result.remote_deleted:
+        verb = "pruned" if prune else "found"
+        click.echo(f"  {result.remote_deleted} file(s) deleted on the remote ({verb}):")
+        for p in result.deleted_paths:
+            click.echo(f"      {p}")
+        if not prune:
+            click.echo("    -> `protonfs refresh --prune` to drop them from your local index.")
+    if result.seeded:
+        click.echo(f"Run `protonfs pull` to download the {result.seeded} discovered file(s).")
+
+
 if __name__ == "__main__":
     main()
