@@ -60,7 +60,8 @@ def _untrack_lfs_patterns(root: Path) -> list[str]:
 def _append_gitignore(root: Path, patterns: list[str]) -> None:
     gitignore = root / ".gitignore"
     existing = gitignore.read_text() if gitignore.exists() else ""
-    lines_to_add = [p for p in patterns if p not in existing]
+    existing_lines = {line.strip() for line in existing.splitlines()}
+    lines_to_add = [p for p in patterns if p.strip() not in existing_lines]
     if not lines_to_add:
         return
     with gitignore.open("a") as fh:
@@ -104,19 +105,29 @@ def migrate_lfs(ctx: RepoContext, dry_run: bool = False) -> bool:
     )
     patterns = _untrack_lfs_patterns(root)
     _append_gitignore(root, patterns)
-    subprocess.run(["git", "-C", str(root), "add", ".gitattributes", ".gitignore"], check=True)
-    for pattern in patterns:
+    try:
         subprocess.run(
-            ["git", "-C", str(root), "rm", "-r", "--cached", "--ignore-unmatch", pattern],
+            ["git", "-C", str(root), "add", ".gitattributes", ".gitignore"], check=True
+        )
+        for pattern in patterns:
+            subprocess.run(
+                ["git", "-C", str(root), "rm", "-r", "--cached", "--ignore-unmatch", pattern],
+                check=True,
+            )
+        subprocess.run(
+            [
+                "git", "-C", str(root), "commit", "-m",
+                "chore: migrate dump storage from git-lfs to protonfs/Proton Drive",
+            ],
             check=True,
         )
-    subprocess.run(
-        [
-            "git", "-C", str(root), "commit", "-m",
-            "chore: migrate dump storage from git-lfs to protonfs/Proton Drive",
-        ],
-        check=True,
-    )
+    except subprocess.CalledProcessError as exc:
+        raise click.ClickException(
+            f"git step of the LFS migration failed ({exc}). The files were already "
+            "uploaded to Drive successfully, but your working tree may now be "
+            "mid-migration -- inspect `git status` and revert/complete the git state "
+            "manually before re-running `protonfs setup`."
+        ) from exc
     click.echo("Migration commit created. Review it before pushing.")
     return True
 

@@ -30,7 +30,7 @@ def init_ignore(repo_root: Path) -> None:
 
 class IgnoreMatcher:
     def __init__(self, patterns: list[str]) -> None:
-        self._spec = pathspec.PathSpec.from_lines("gitwildmatch", patterns)
+        self._spec = pathspec.GitIgnoreSpec.from_lines(patterns)
 
     @classmethod
     def from_file(cls, repo_root: Path) -> IgnoreMatcher:

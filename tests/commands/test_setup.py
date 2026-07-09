@@ -8,6 +8,7 @@ import click
 import pytest
 
 from protonfs.commands.setup import (
+    _append_gitignore,
     clean_pointer_stubs,
     ensure_authenticated,
     ensure_cli_present,
@@ -197,6 +198,53 @@ def test_migrate_lfs_confirm_declined_leaves_git_untouched(
     ).read_text() == "sim/*/* filter=lfs diff=lfs merge=lfs -text\n"
     mutation_calls = [cmd for cmd in calls if cmd[3] in ("add", "rm", "commit")]
     assert mutation_calls == []
+
+
+def test_append_gitignore_adds_pattern_that_is_substring_of_existing_line(
+    tmp_path: Path,
+) -> None:
+    gitignore = tmp_path / ".gitignore"
+    gitignore.write_text("sim/build_output/\n")
+
+    _append_gitignore(tmp_path, ["sim/"])
+
+    lines = gitignore.read_text().splitlines()
+    assert "sim/build_output/" in lines
+    assert "sim/" in lines  # must be added on its own line, not skipped as a substring
+
+
+def test_migrate_lfs_wraps_git_mutation_failure_in_click_exception(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    (tmp_path / ".gitattributes").write_text("sim/*/* filter=lfs diff=lfs merge=lfs -text\n")
+    from protonfs.config import init_config
+
+    config = init_config(tmp_path, "/my-files/test")
+    ctx = RepoContext(root=tmp_path, config=config, index=IndexStore(tmp_path), drive=_FakeDrive())
+
+    monkeypatch.setattr(
+        "protonfs.commands.setup.push_files",
+        lambda *a, **k: TransferResult(3, 0, 0, []),
+    )
+    monkeypatch.setattr(click, "confirm", lambda *a, **k: True)
+
+    def fake_run(cmd, *args, **kwargs):
+        # First git-mutation call (`git add ...`) fails; everything before it
+        # (git lfs pull, push_files) is unaffected since it's monkeypatched away.
+        if cmd[3] == "add":
+            raise subprocess.CalledProcessError(1, cmd)
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    with pytest.raises(click.ClickException) as excinfo:
+        migrate_lfs(ctx, dry_run=False)
+
+    assert not isinstance(excinfo.value, subprocess.CalledProcessError)
+    message = str(excinfo.value)
+    assert "git" in message.lower()
+    assert "Drive" in message
 
 
 def test_clean_pointer_stubs_removes_stub_files(tmp_path: Path) -> None:

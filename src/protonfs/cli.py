@@ -1,8 +1,35 @@
 from __future__ import annotations
 
+import functools
+
 import click
 
 from protonfs import __version__
+
+
+def _drive_error_boundary(func):
+    """Wrap a command so DriveError/DriveAuthError become clean ClickExceptions.
+
+    Runtime commands call into the Drive CLI; a mid-run failure there (auth
+    expiry, network, missing path) would otherwise surface as a raw Python
+    traceback instead of a readable message.
+    """
+
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        from protonfs.drive import DriveAuthError, DriveError
+
+        try:
+            return func(*args, **kwargs)
+        except DriveAuthError as exc:
+            raise click.ClickException(
+                f"{exc}\nRun `proton-drive auth login` to re-authenticate, "
+                "then retry this command."
+            ) from exc
+        except DriveError as exc:
+            raise click.ClickException(str(exc)) from exc
+
+    return wrapper
 
 
 @click.group()
@@ -40,6 +67,7 @@ def status(path: str | None) -> None:
 @click.argument("path", required=False)
 @click.option("--remote", is_flag=True, help="Force a live Drive listing instead of the index.")
 @click.option("--trash", is_flag=True, help="List /trash instead.")
+@_drive_error_boundary
 def ls(path: str | None, remote: bool, trash: bool) -> None:
     """List tracked files with their sync state."""
     from rich.console import Console
@@ -55,6 +83,7 @@ def ls(path: str | None, remote: bool, trash: bool) -> None:
 @click.argument("path", required=False)
 @click.option("--resolve", type=click.Choice(["merge", "keep-both", "replace", "skip"]))
 @click.option("--dry-run", is_flag=True)
+@_drive_error_boundary
 def push(path: str | None, resolve: str | None, dry_run: bool) -> None:
     """Upload local-only/changed files to Drive."""
     from protonfs.commands.push import push as push_files
@@ -76,6 +105,7 @@ def push(path: str | None, resolve: str | None, dry_run: bool) -> None:
 @click.argument("path", required=False)
 @click.option("--resolve", type=click.Choice(["merge", "keep-both", "replace", "skip"]))
 @click.option("--dry-run", is_flag=True)
+@_drive_error_boundary
 def pull(path: str | None, resolve: str | None, dry_run: bool) -> None:
     """Download remote-only/changed files from Drive."""
     from protonfs.commands.pull import pull as pull_files
@@ -98,6 +128,7 @@ def pull(path: str | None, resolve: str | None, dry_run: bool) -> None:
 @click.option("-r", "--recursive", is_flag=True)
 @click.option("-f", "--force", is_flag=True, help="Permanently delete (trash, then delete).")
 @click.option("--yes", is_flag=True, help="Skip confirmation prompt.")
+@_drive_error_boundary
 def rm(path: str, recursive: bool, force: bool, yes: bool) -> None:
     """Remove a file/directory from Drive (trash by default, -f for permanent)."""
     from protonfs.commands.rm import rm as rm_path
@@ -109,6 +140,7 @@ def rm(path: str, recursive: bool, force: bool, yes: bool) -> None:
 
 @main.command()
 @click.argument("path")
+@_drive_error_boundary
 def restore(path: str) -> None:
     """Restore a trashed file/directory on Drive."""
     from protonfs.commands.restore import restore as restore_path
