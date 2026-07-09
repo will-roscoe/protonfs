@@ -95,3 +95,98 @@ def test_rm_directory_with_recursive_removes_all_index_entries_under_it(tmp_path
     rm(ctx, "run1", recursive=True, force=False, confirmed=True)
 
     assert ctx.index.get("run1/dump_0001") is None
+
+
+def test_rm_unconfirmed_triggers_confirmation_prompt(tmp_path: Path, monkeypatch) -> None:
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.index.set(
+        "somefile",
+        IndexEntry(
+            size=1,
+            mtime=1.0,
+            sha256="h",
+            remote_path="/my-files/test/somefile",
+            origin_device="d1",
+            local_state="present",
+            last_synced="2026-07-08T00:00:00+00:00",
+        ),
+    )
+    ctx.drive = _FakeDrive()
+
+    confirm_called = False
+
+    def mock_confirm(message: str, abort: bool) -> bool:
+        nonlocal confirm_called
+        confirm_called = True
+        return True
+
+    monkeypatch.setattr("click.confirm", mock_confirm)
+
+    rm(ctx, "somefile", recursive=False, force=False, confirmed=False)
+
+    assert confirm_called
+
+
+def test_rm_confirmed_does_not_trigger_confirmation_prompt(tmp_path: Path, monkeypatch) -> None:
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.index.set(
+        "somefile",
+        IndexEntry(
+            size=1,
+            mtime=1.0,
+            sha256="h",
+            remote_path="/my-files/test/somefile",
+            origin_device="d1",
+            local_state="present",
+            last_synced="2026-07-08T00:00:00+00:00",
+        ),
+    )
+    ctx.drive = _FakeDrive()
+
+    def mock_confirm_fail(message: str, abort: bool) -> bool:
+        raise AssertionError("click.confirm should not be called when confirmed=True")
+
+    monkeypatch.setattr("click.confirm", mock_confirm_fail)
+
+    rm(ctx, "somefile", recursive=False, force=False, confirmed=True)
+
+    assert ctx.index.get("somefile") is None
+
+
+def test_rm_recursive_does_not_remove_sibling_directories(tmp_path: Path) -> None:
+    (tmp_path / "run1").mkdir()
+    (tmp_path / "run1" / "dump_0001").write_bytes(b"data")
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.index.set(
+        "run1/dump_0001",
+        IndexEntry(
+            size=1,
+            mtime=1.0,
+            sha256="h",
+            remote_path="/my-files/test/run1/dump_0001",
+            origin_device="d1",
+            local_state="present",
+            last_synced="2026-07-08T00:00:00+00:00",
+        ),
+    )
+    ctx.index.set(
+        "run10/other_0001",
+        IndexEntry(
+            size=1,
+            mtime=1.0,
+            sha256="h",
+            remote_path="/my-files/test/run10/other_0001",
+            origin_device="d1",
+            local_state="present",
+            last_synced="2026-07-08T00:00:00+00:00",
+        ),
+    )
+    ctx.drive = _FakeDrive()
+
+    rm(ctx, "run1", recursive=True, force=False, confirmed=True)
+
+    assert ctx.index.get("run1/dump_0001") is None
+    assert ctx.index.get("run10/other_0001") is not None
