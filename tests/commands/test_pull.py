@@ -6,7 +6,7 @@ from pathlib import Path
 from protonfs.commands.pull import pull
 from protonfs.config import init_config
 from protonfs.context import load_context
-from protonfs.drive import TransferResult
+from protonfs.drive import RemoteEntry, TransferResult
 from protonfs.index import IndexEntry
 
 
@@ -21,6 +21,9 @@ class _FakeDrive:
             name = remote_path.rsplit("/", 1)[-1]
             (Path(local_folder) / name).write_bytes(b"downloaded")
         return TransferResult(len(remote_paths), 0, 0, [])
+
+    def walk(self, remote_root):
+        return []
 
 
 def test_pull_downloads_remote_only_files_and_updates_index(tmp_path: Path) -> None:
@@ -79,5 +82,33 @@ def test_pull_no_remote_only_files_returns_zero_result(tmp_path: Path) -> None:
     ctx.drive = _FakeDrive(tmp_path)
 
     result = pull(ctx, None, resolve=None, dry_run=False)
+
+    assert result.transferred_items == 0
+
+
+def test_pull_refresh_seeds_then_downloads_on_empty_index(tmp_path: Path) -> None:
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+
+    class _WalkDownloadDrive(_FakeDrive):
+        def walk(self, remote_root):
+            return [RemoteEntry("run1/dump_0001", is_dir=False, size=9)]
+
+    fake = _WalkDownloadDrive(tmp_path)
+    ctx.drive = fake
+
+    # empty index: a bare pull would do nothing; with refresh=True it seeds then pulls
+    result = pull(ctx, None, resolve=None, dry_run=False, refresh=True)
+
+    assert result.transferred_items == 1
+    assert (tmp_path / "run1" / "dump_0001").exists()
+
+
+def test_pull_without_refresh_on_empty_index_is_noop(tmp_path: Path) -> None:
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.drive = _FakeDrive(tmp_path)
+
+    result = pull(ctx, None, resolve=None, dry_run=False, refresh=False)
 
     assert result.transferred_items == 0

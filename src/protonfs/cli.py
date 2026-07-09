@@ -105,14 +105,19 @@ def push(path: str | None, resolve: str | None, dry_run: bool) -> None:
 @click.argument("path", required=False)
 @click.option("--resolve", type=click.Choice(["merge", "keep-both", "replace", "skip"]))
 @click.option("--dry-run", is_flag=True)
+@click.option(
+    "--refresh",
+    is_flag=True,
+    help="Discover remote files (seed the index) before pulling.",
+)
 @_drive_error_boundary
-def pull(path: str | None, resolve: str | None, dry_run: bool) -> None:
+def pull(path: str | None, resolve: str | None, dry_run: bool, refresh: bool) -> None:
     """Download remote-only/changed files from Drive."""
     from protonfs.commands.pull import pull as pull_files
     from protonfs.context import load_context
 
     ctx = load_context()
-    result = pull_files(ctx, path, resolve, dry_run)
+    result = pull_files(ctx, path, resolve, dry_run, refresh=refresh)
     click.echo(
         f"transferred={result.transferred_items} skipped={result.skipped_items} "
         f"failed={result.failed_items}"
