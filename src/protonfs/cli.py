@@ -37,7 +37,13 @@ def status(path: str | None) -> None:
 @click.option("--trash", is_flag=True, help="List /trash instead.")
 def ls(path: str | None, remote: bool, trash: bool) -> None:
     """List tracked files with their sync state."""
-    raise click.ClickException("not yet implemented")
+    from rich.console import Console
+
+    from protonfs.commands.ls import render_ls
+    from protonfs.context import load_context
+
+    ctx = load_context()
+    render_ls(ctx, path, remote, trash, Console())
 
 
 @main.command()
