@@ -13,13 +13,7 @@ from protonfs.localscan import scan
 
 
 def remote_rel_paths(ctx: RepoContext) -> dict[str, int]:
-    entries = ctx.drive.list(ctx.config.remote_root)
-    sizes: dict[str, int] = {}
-    for entry in entries:
-        name = entry.get("name", {})
-        if name.get("ok") and entry.get("type") != "folder":
-            sizes[name["value"]] = entry.get("totalStorageSize", 0)
-    return sizes
+    return {e.rel_path: e.size for e in ctx.drive.walk(ctx.config.remote_root) if not e.is_dir}
 
 
 def render_ls(
