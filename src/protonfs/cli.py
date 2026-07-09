@@ -21,7 +21,14 @@ def setup() -> None:
 @click.argument("path", required=False)
 def status(path: str | None) -> None:
     """Summarize sync state (counts by local-only/remote-only/synced/conflict)."""
-    raise click.ClickException("not yet implemented")
+    from protonfs.commands.status import compute_status
+    from protonfs.context import load_context
+    from protonfs.diff import SyncState
+
+    ctx = load_context()
+    counts = compute_status(ctx, path)
+    for state in SyncState:
+        click.echo(f"{state.value}: {counts.get(state.value, 0)}")
 
 
 @main.command()

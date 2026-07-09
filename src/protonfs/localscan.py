@@ -4,6 +4,7 @@ import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 
+from protonfs.config import CONFIG_DIR_NAME
 from protonfs.ignore import IgnoreMatcher
 from protonfs.index import IndexStore
 
@@ -37,6 +38,8 @@ def scan(
         if not file_path.is_file():
             continue
         rel_path = str(file_path.relative_to(root))
+        if rel_path == CONFIG_DIR_NAME or rel_path.startswith(f"{CONFIG_DIR_NAME}/"):
+            continue
         if ignore.matches(rel_path):
             continue
         stat = file_path.stat()
