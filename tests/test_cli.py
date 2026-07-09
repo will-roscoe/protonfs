@@ -13,10 +13,3 @@ def test_version() -> None:
     result = CliRunner().invoke(main, ["--version"])
     assert result.exit_code == 0
     assert "protonfs" in result.output
-
-
-def test_unimplemented_subcommands_fail_cleanly() -> None:
-    runner = CliRunner()
-    result = runner.invoke(main, ["pull"])
-    assert result.exit_code != 0
-    assert "not yet implemented" in result.output

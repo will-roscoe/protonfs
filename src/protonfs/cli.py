@@ -73,7 +73,19 @@ def push(path: str | None, resolve: str | None, dry_run: bool) -> None:
 @click.option("--dry-run", is_flag=True)
 def pull(path: str | None, resolve: str | None, dry_run: bool) -> None:
     """Download remote-only/changed files from Drive."""
-    raise click.ClickException("not yet implemented")
+    from protonfs.commands.pull import pull as pull_files
+    from protonfs.context import load_context
+
+    ctx = load_context()
+    result = pull_files(ctx, path, resolve, dry_run)
+    click.echo(
+        f"transferred={result.transferred_items} skipped={result.skipped_items} "
+        f"failed={result.failed_items}"
+    )
+    for failure in result.failures:
+        click.echo(f"  FAILED {failure['name']}: {failure['error']}")
+    if result.failed_items:
+        raise click.exceptions.Exit(1)
 
 
 @main.command()
