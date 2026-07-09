@@ -37,6 +37,13 @@ class TransferResult:
         )
 
 
+@dataclass
+class RemoteEntry:
+    rel_path: str
+    is_dir: bool
+    size: int
+
+
 def binary_path() -> str:
     return os.environ.get(BINARY_ENV_VAR, DEFAULT_BINARY)
 
@@ -99,6 +106,33 @@ class DriveClient:
     def list(self, remote_path: str) -> list[dict]:
         result = self._run_json(["filesystem", "list", remote_path])
         return result if isinstance(result, list) else []
+
+    def walk(self, remote_root: str) -> list[RemoteEntry]:
+        root = remote_root.rstrip("/")
+        results: list[RemoteEntry] = []
+        # queue of (absolute remote path, rel prefix)
+        queue: list[tuple[str, str]] = [(root, "")]
+        while queue:
+            abs_path, prefix = queue.pop(0)
+            for entry in self.list(abs_path):
+                name = entry.get("name", {})
+                if not name.get("ok"):
+                    continue
+                value = name["value"]
+                rel = f"{prefix}{value}" if prefix else value
+                child_abs = f"{abs_path}/{value}"
+                if entry.get("type") == "folder":
+                    results.append(RemoteEntry(rel_path=rel, is_dir=True, size=0))
+                    queue.append((child_abs, f"{rel}/"))
+                else:
+                    results.append(
+                        RemoteEntry(
+                            rel_path=rel,
+                            is_dir=False,
+                            size=entry.get("totalStorageSize", 0),
+                        )
+                    )
+        return results
 
     def upload(
         self,
