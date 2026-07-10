@@ -30,11 +30,46 @@ def test_version_returns_stripped_stdout(monkeypatch: pytest.MonkeyPatch, tmp_pa
 
 
 def test_list_returns_parsed_json_array(monkeypatch: pytest.MonkeyPatch) -> None:
+    # D5.2: use the real `filesystem list` name shape {"ok": true, "value": ...}
+    # (v0.1 used a simplified {"value": ...}).
     client = DriveClient(binary="proton-drive")
     monkeypatch.setattr("protonfs.drive.shutil.which", lambda _: "/usr/bin/proton-drive")
-    monkeypatch.setattr(subprocess, "run", _stub_run('[{"name": {"value": "a"}}]'))
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        _stub_run('[{"name": {"ok": true, "value": "a"}, "type": "file", "totalStorageSize": 5}]'),
+    )
     entries = client.list("/my-files/test")
-    assert entries == [{"name": {"value": "a"}}]
+    assert entries == [
+        {"name": {"ok": True, "value": "a"}, "type": "file", "totalStorageSize": 5}
+    ]
+
+
+def test_run_json_auth_signal_raises_auth_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    # D5.1: a genuine auth signal ("not logged in") surfaces as DriveAuthError.
+    client = DriveClient(binary="proton-drive")
+    monkeypatch.setattr("protonfs.drive.shutil.which", lambda _: "/usr/bin/proton-drive")
+    monkeypatch.setattr(
+        subprocess, "run", _stub_run('{"error": "not logged in"}', returncode=1)
+    )
+    with pytest.raises(DriveAuthError):
+        client.list("/my-files/test")
+
+
+def test_run_json_non_auth_error_not_misclassified(monkeypatch: pytest.MonkeyPatch) -> None:
+    # D5.1: the tightened check must NOT treat "unauthorized" (a permission/quota
+    # error, contains the substring "auth") as an auth failure -- the false positive
+    # the old broad `"auth" in message` check produced.
+    client = DriveClient(binary="proton-drive")
+    monkeypatch.setattr("protonfs.drive.shutil.which", lambda _: "/usr/bin/proton-drive")
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        _stub_run('{"error": "unauthorized: quota exceeded"}', returncode=1),
+    )
+    with pytest.raises(DriveError) as excinfo:
+        client.list("/my-files/test")
+    assert not isinstance(excinfo.value, DriveAuthError)
 
 
 def test_list_raises_drive_error_on_bad_json(monkeypatch: pytest.MonkeyPatch) -> None:
