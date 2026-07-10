@@ -24,6 +24,19 @@ class DiffEntry:
     state: SyncState
 
 
+def within_subpath(rel_path: str, subpath: str | None) -> bool:
+    """True when rel_path lies inside `subpath` (or when there is no subpath).
+
+    `classify` reasons over the whole repo-wide index, so a caller that scoped its
+    local scan and remote walk to a subpath MUST filter classify's output with this
+    before acting on it -- otherwise index entries outside the subpath (never
+    scanned, never walked) are misread as remote-deleted / remote-only.
+    """
+    if not subpath:
+        return True
+    return rel_path == subpath or rel_path.startswith(f"{subpath}/")
+
+
 def classify(
     local: dict[str, ScanEntry],
     index: IndexStore,

@@ -5,6 +5,7 @@ from pathlib import PurePosixPath
 import click
 
 from protonfs.context import RepoContext
+from protonfs.drive import decrypted_name
 
 
 def rm(ctx: RepoContext, rel_path: str, recursive: bool, force: bool, confirmed: bool) -> None:
@@ -29,9 +30,7 @@ def rm(ctx: RepoContext, rel_path: str, recursive: bool, force: bool, confirmed:
         # (still reversible) and tell the user to resolve it manually.
         name = PurePosixPath(remote_path).name
         matches = [
-            entry
-            for entry in ctx.drive.list("/trash")
-            if entry.get("name", {}).get("ok") and entry["name"]["value"] == name
+            entry for entry in ctx.drive.list("/trash") if decrypted_name(entry) == name
         ]
         if len(matches) == 1:
             ctx.drive.delete([f"/trash/{name}"])

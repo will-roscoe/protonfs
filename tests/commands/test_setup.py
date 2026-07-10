@@ -21,30 +21,18 @@ from protonfs.drive import TransferResult
 from protonfs.index import IndexStore
 
 
-class _FakeDrive:
-    def __init__(self, version: str | None = "v0.4.6", authed: bool = True) -> None:
-        self._version = version
-        self._authed = authed
-
-    def version(self) -> str | None:
-        return self._version
-
-    def is_authenticated(self) -> bool:
-        return self._authed
-
-
-def test_ensure_cli_present_raises_when_missing() -> None:
+def test_ensure_cli_present_raises_when_missing(make_fake_drive) -> None:
     with pytest.raises(click.ClickException):
-        ensure_cli_present(_FakeDrive(version=None))
+        ensure_cli_present(make_fake_drive(version=None))
 
 
-def test_ensure_cli_present_returns_version_string() -> None:
-    assert ensure_cli_present(_FakeDrive(version="v0.4.6")) == "v0.4.6"
+def test_ensure_cli_present_returns_version_string(make_fake_drive) -> None:
+    assert ensure_cli_present(make_fake_drive(version="v0.4.6")) == "v0.4.6"
 
 
-def test_ensure_authenticated_raises_when_not_authed() -> None:
+def test_ensure_authenticated_raises_when_not_authed(make_fake_drive) -> None:
     with pytest.raises(click.ClickException):
-        ensure_authenticated(_FakeDrive(authed=False))
+        ensure_authenticated(make_fake_drive(authed=False))
 
 
 def test_ensure_config_reuses_existing_config(
@@ -72,12 +60,14 @@ def test_ensure_config_prompts_when_missing(
     assert load_config(tmp_path) is not None
 
 
-def test_migrate_lfs_is_noop_when_not_lfs_tracked(tmp_path: Path) -> None:
+def test_migrate_lfs_is_noop_when_not_lfs_tracked(tmp_path: Path, make_fake_drive) -> None:
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
     from protonfs.config import init_config
 
     config = init_config(tmp_path, "/my-files/test")
-    ctx = RepoContext(root=tmp_path, config=config, index=IndexStore(tmp_path), drive=_FakeDrive())
+    ctx = RepoContext(
+        root=tmp_path, config=config, index=IndexStore(tmp_path), drive=make_fake_drive()
+    )
 
     performed = migrate_lfs(ctx, dry_run=False)
 
@@ -85,14 +75,16 @@ def test_migrate_lfs_is_noop_when_not_lfs_tracked(tmp_path: Path) -> None:
 
 
 def test_migrate_lfs_dry_run_reports_without_acting(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, make_fake_drive
 ) -> None:
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
     (tmp_path / ".gitattributes").write_text("sim/*/* filter=lfs diff=lfs merge=lfs -text\n")
     from protonfs.config import init_config
 
     config = init_config(tmp_path, "/my-files/test")
-    ctx = RepoContext(root=tmp_path, config=config, index=IndexStore(tmp_path), drive=_FakeDrive())
+    ctx = RepoContext(
+        root=tmp_path, config=config, index=IndexStore(tmp_path), drive=make_fake_drive()
+    )
 
     calls = []
     monkeypatch.setattr(
@@ -111,14 +103,16 @@ def test_migrate_lfs_dry_run_reports_without_acting(
 
 
 def test_migrate_lfs_full_success_mutates_git_only_after_upload_and_confirm(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, make_fake_drive
 ) -> None:
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
     (tmp_path / ".gitattributes").write_text("sim/*/* filter=lfs diff=lfs merge=lfs -text\n")
     from protonfs.config import init_config
 
     config = init_config(tmp_path, "/my-files/test")
-    ctx = RepoContext(root=tmp_path, config=config, index=IndexStore(tmp_path), drive=_FakeDrive())
+    ctx = RepoContext(
+        root=tmp_path, config=config, index=IndexStore(tmp_path), drive=make_fake_drive()
+    )
 
     # Single shared event log so we can prove push happened strictly before
     # any git mutation (add / rm --cached / commit).
@@ -163,14 +157,16 @@ def test_migrate_lfs_full_success_mutates_git_only_after_upload_and_confirm(
 
 
 def test_migrate_lfs_confirm_declined_leaves_git_untouched(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, make_fake_drive
 ) -> None:
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
     (tmp_path / ".gitattributes").write_text("sim/*/* filter=lfs diff=lfs merge=lfs -text\n")
     from protonfs.config import init_config
 
     config = init_config(tmp_path, "/my-files/test")
-    ctx = RepoContext(root=tmp_path, config=config, index=IndexStore(tmp_path), drive=_FakeDrive())
+    ctx = RepoContext(
+        root=tmp_path, config=config, index=IndexStore(tmp_path), drive=make_fake_drive()
+    )
 
     monkeypatch.setattr(
         "protonfs.commands.setup.push_files",
@@ -214,14 +210,16 @@ def test_append_gitignore_adds_pattern_that_is_substring_of_existing_line(
 
 
 def test_migrate_lfs_wraps_git_mutation_failure_in_click_exception(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, make_fake_drive
 ) -> None:
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
     (tmp_path / ".gitattributes").write_text("sim/*/* filter=lfs diff=lfs merge=lfs -text\n")
     from protonfs.config import init_config
 
     config = init_config(tmp_path, "/my-files/test")
-    ctx = RepoContext(root=tmp_path, config=config, index=IndexStore(tmp_path), drive=_FakeDrive())
+    ctx = RepoContext(
+        root=tmp_path, config=config, index=IndexStore(tmp_path), drive=make_fake_drive()
+    )
 
     monkeypatch.setattr(
         "protonfs.commands.setup.push_files",

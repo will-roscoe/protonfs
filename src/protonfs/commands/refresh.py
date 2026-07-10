@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from protonfs.context import RepoContext
-from protonfs.diff import SyncState, classify
+from protonfs.diff import SyncState, classify, within_subpath
 from protonfs.ignore import IgnoreMatcher
 from protonfs.index import IndexEntry
 from protonfs.localscan import ScanEntry, scan
@@ -20,11 +20,6 @@ class RefreshResult:
     pruned: int = 0
     changed_paths: list[str] = field(default_factory=list)
     deleted_paths: list[str] = field(default_factory=list)
-
-
-def _within_subpath(rel_path: str, subpath: str) -> bool:
-    """True when rel_path lies inside the walked subpath (or is the subpath itself)."""
-    return rel_path == subpath or rel_path.startswith(f"{subpath}/")
 
 
 def refresh(
@@ -74,7 +69,7 @@ def refresh(
     for entry in diff_entries:
         # A subpath-scoped walk only saw files under `subpath`; index entries outside
         # it were never checked, so their absence from `remote` is not a deletion.
-        if subpath and not _within_subpath(entry.rel_path, subpath):
+        if not within_subpath(entry.rel_path, subpath):
             continue
         if entry.state == SyncState.REMOTE_CHANGED:
             result.remote_changed += 1
