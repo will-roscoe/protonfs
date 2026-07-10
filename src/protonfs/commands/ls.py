@@ -7,7 +7,7 @@ from rich.console import Console
 from rich.table import Table
 
 from protonfs.context import RepoContext
-from protonfs.diff import classify
+from protonfs.diff import classify, within_subpath
 from protonfs.drive import decrypted_name
 from protonfs.ignore import IgnoreMatcher
 from protonfs.localscan import scan
@@ -47,7 +47,13 @@ def render_ls(
     scan_root = Path(subpath) if subpath else Path(".")
     local = scan(ctx.root, scan_root, ignore, ctx.index, low_io=ctx.config.defaults.low_io)
     remote_map = remote_rel_paths(ctx, subpath) if remote else None
-    diff_entries = classify(local, ctx.index, remote_map)
+    # classify reasons over the whole repo-wide index; when a subpath was given, the
+    # local scan and remote walk are scoped to it, so restrict the rows to that
+    # subpath too -- otherwise out-of-scope index entries (never scanned/walked) show
+    # up, and with a remote view are misread as remote-deleted.
+    diff_entries = [
+        e for e in classify(local, ctx.index, remote_map) if within_subpath(e.rel_path, subpath)
+    ]
 
     table = Table("path", "state")
     for entry in diff_entries:

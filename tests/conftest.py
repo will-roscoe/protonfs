@@ -3,9 +3,10 @@
 
 `FakeDrive` is a single configurable stand-in for `DriveClient` (D4.2), replacing
 the per-file `_FakeDrive` copies. It is *configured*, never subclassed: pass an
-`upload_result` / `download_result` to simulate failures or skips, `walk_entries`
-(or `walk_by_root`) for remote listings, and `trash_listing` / `list_by_path` for
-`list()`. Use the `make_fake_drive` fixture (a factory) so tests need no imports.
+`upload_result` to simulate an upload failure/skip, `walk_entries` (or
+`walk_by_root`) for remote listings, `trash_listing` for `list("/trash")`, and
+`version` / `authed` for the setup checks. Use the `make_fake_drive` fixture (a
+factory) so tests need no imports.
 """
 from __future__ import annotations
 
@@ -23,9 +24,7 @@ class FakeDrive:
         walk_entries: list[RemoteEntry] | None = None,
         walk_by_root: dict[str, list[RemoteEntry]] | None = None,
         trash_listing: list[dict] | None = None,
-        list_by_path: dict[str, list[dict]] | None = None,
         upload_result: TransferResult | None = None,
-        download_result: TransferResult | None = None,
         version: str | None = "v0.4.6",
         authed: bool = True,
     ) -> None:
@@ -41,9 +40,7 @@ class FakeDrive:
         self._walk_entries = walk_entries or []
         self._walk_by_root = walk_by_root
         self._trash_listing = trash_listing
-        self._list_by_path = list_by_path
         self._upload_result = upload_result
-        self._download_result = download_result
         self._version = version
         self._authed = authed
 
@@ -63,8 +60,6 @@ class FakeDrive:
 
     def download(self, remote_paths, local_folder, file_strategy=None, folder_strategy=None):
         self.download_calls.append((tuple(remote_paths), str(local_folder), file_strategy))
-        if self._download_result is not None:
-            return self._download_result
         for remote_path in remote_paths:
             name = remote_path.rsplit("/", 1)[-1]
             (Path(local_folder) / name).write_bytes(b"downloaded")
@@ -93,8 +88,6 @@ class FakeDrive:
         return [{"ok": True} for _ in remote_paths]
 
     def list(self, remote_path):
-        if self._list_by_path is not None and remote_path in self._list_by_path:
-            return self._list_by_path[remote_path]
         if remote_path == "/trash":
             if self._trash_listing is not None:
                 return self._trash_listing
