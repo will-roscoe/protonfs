@@ -8,10 +8,15 @@ platform, hard-gates on AVX2 for the linux-x64 Bun-compiled prebuilt, downloads
 over HTTPS and verifies the pinned SHA-512 before ever marking the binary
 executable — it never installs an unverified binary.
 
-Design note: the roadmap decision described a bash installer checking
-curl/unzip. This Python implementation downloads via urllib and verifies via
-hashlib, so those external tools are not prerequisites; the decision's intent
-(self-diagnosing, resolve-what-it-can, precise instructive errors) is preserved.
+Design notes / accepted deviations from the roadmap decision text:
+- The decision described a bash installer checking curl/unzip. This Python
+  implementation downloads via urllib and verifies via hashlib, so those external
+  tools are not prerequisites; the decision's intent (self-diagnosing,
+  resolve-what-it-can, precise instructive errors) is preserved and the installer
+  is unit-testable.
+- The no-AVX2 path emits precise build-from-source instructions rather than
+  automating a Bun-baseline source build. That path is defensive only (no current
+  target machine lacks AVX2), so automating it is deferred as YAGNI.
 """
 from __future__ import annotations
 
@@ -28,9 +33,7 @@ DEFAULT_VERSION = "0.4.6"
 VERSION_ENV = "PROTONFS_DRIVE_VERSION"
 SHA512_ENV = "PROTONFS_DRIVE_SHA512"
 DOWNLOAD_BASE = "https://proton.me/download/drive/cli"
-
-# Slugs for which an official prebuilt exists.
-SUPPORTED_SLUGS = ("linux-x64", "darwin-x64", "darwin-arm64")
+DOWNLOAD_TIMEOUT = 60  # seconds; avoids a stalled connection hanging the installer
 
 # Pinned SHA-512 of the official prebuilt, keyed by (version, slug). linux-x64 is
 # verified against the released 0.4.6 binary. darwin checksums are added when a
@@ -43,8 +46,10 @@ PINNED_SHA512 = {
     ),
 }
 
-# glibc below this is likely too old for the Bun-compiled linux-x64 prebuilt.
-MIN_GLIBC = (2, 28)
+# glibc below this is too old for the Bun-compiled linux-x64 prebuilt. Bun supports
+# glibc >= 2.17 (per the roadmap's target-machine survey: exo2 on CentOS 7 / glibc
+# 2.17 is a confirmed headless-installable target), so we only warn below that.
+MIN_GLIBC = (2, 17)
 
 
 class InstallError(RuntimeError):
@@ -194,21 +199,34 @@ def resolve_install_dir(path_env: str | None = None) -> tuple[Path, bool]:
     return managed, False
 
 
+def _default_opener(url: str):
+    return urllib.request.urlopen(url, timeout=DOWNLOAD_TIMEOUT)
+
+
 def download_and_verify(url: str, expected_sha512: str, dest: Path, opener=None) -> str:
     """Download `url`, verify its SHA-512 equals `expected_sha512`, and write it to
     `dest` (only after verification). Returns the verified digest. Raises InstallError
-    on mismatch, leaving no partial file at `dest`."""
-    opener = opener or urllib.request.urlopen
+    on any network/HTTP error or checksum mismatch, always leaving no partial file
+    behind."""
+    opener = opener or _default_opener
     hasher = hashlib.sha512()
     tmp = dest.with_suffix(dest.suffix + ".part")
     tmp.parent.mkdir(parents=True, exist_ok=True)
-    with opener(url) as resp, open(tmp, "wb") as out:
-        while True:
-            chunk = resp.read(1024 * 256)
-            if not chunk:
-                break
-            hasher.update(chunk)
-            out.write(chunk)
+    try:
+        with opener(url) as resp, open(tmp, "wb") as out:
+            while True:
+                chunk = resp.read(1024 * 256)
+                if not chunk:
+                    break
+                hasher.update(chunk)
+                out.write(chunk)
+    except OSError as exc:
+        # urllib.error.URLError/HTTPError subclass OSError, as do socket timeouts.
+        tmp.unlink(missing_ok=True)
+        raise InstallError(
+            f"failed to download {url}: {exc}. Check your connection, or verify "
+            f"{VERSION_ENV} points at a real release."
+        ) from exc
     digest = hasher.hexdigest()
     if digest.lower() != expected_sha512.lower():
         tmp.unlink(missing_ok=True)
@@ -248,6 +266,13 @@ def install_drive(
         on_path = str(dest_dir) in os.environ.get("PATH", "").split(os.pathsep)
 
     warnings = diagnose(plat, cpuinfo_text)
+    override = os.environ.get(SHA512_ENV)
+    base_pin = PINNED_SHA512.get((version, plat.slug))
+    if override and base_pin and override.strip().lower() != base_pin.lower():
+        warnings.append(
+            f"{SHA512_ENV} overrides the pinned checksum for {plat.slug} {version}; "
+            f"installing against the override, not the audited pin."
+        )
     url = binary_url(version, plat.slug)
     dest = dest_dir / "proton-drive"
     digest = download_and_verify(url, expected, dest, opener=downloader)

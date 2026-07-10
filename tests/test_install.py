@@ -105,8 +105,14 @@ def test_has_avx2_false() -> None:
 
 def test_diagnose_warns_on_old_glibc() -> None:
     plat = Platform("linux-x64", "linux", "x64")
-    warnings = diagnose(plat, cpuinfo_text="flags : avx2", glibc_raw="2.17")
+    warnings = diagnose(plat, cpuinfo_text="flags : avx2", glibc_raw="2.12")
     assert any("glibc" in w for w in warnings)
+
+
+def test_diagnose_clean_on_glibc_2_17_exo2_target() -> None:
+    # exo2 (CentOS 7, glibc 2.17) is a confirmed target: must NOT warn.
+    plat = Platform("linux-x64", "linux", "x64")
+    assert diagnose(plat, cpuinfo_text="flags : avx2", glibc_raw="2.17") == []
 
 
 def test_diagnose_clean_on_modern_glibc() -> None:
@@ -136,6 +142,21 @@ def test_download_and_verify_mismatch_raises_and_leaves_no_file(tmp_path: Path) 
 
 
 # --- install orchestration ------------------------------------------------
+
+def test_download_and_verify_network_error_raises_installerror(tmp_path: Path) -> None:
+    # A network/HTTP failure must surface as an instructive InstallError, not a raw
+    # urllib traceback (D3.2: no cryptic crash), and leave no partial file.
+    import urllib.error
+
+    def _raising_opener(url: str):
+        raise urllib.error.URLError("connection refused")
+
+    dest = tmp_path / "proton-drive"
+    with pytest.raises(InstallError, match="failed to download"):
+        download_and_verify("http://x/pd", "deadbeef", dest, opener=_raising_opener)
+    assert not dest.exists()
+    assert not (tmp_path / "proton-drive.part").exists()
+
 
 def test_install_drive_no_avx2_raises_instructive() -> None:
     plat = Platform("linux-x64", "linux", "x64")

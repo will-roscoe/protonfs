@@ -1,6 +1,7 @@
 # tests/commands/test_auth.py
 from __future__ import annotations
 
+import pytest
 from click.testing import CliRunner
 
 from protonfs.commands.auth import auth_passthrough
@@ -11,24 +12,44 @@ class _Result:
         self.returncode = code
 
 
-def test_auth_passthrough_invokes_proton_drive_auth() -> None:
+def test_auth_passthrough_invokes_proton_drive_auth(tmp_path) -> None:
+    fake_bin = tmp_path / "proton-drive"
+    fake_bin.write_text("#!/bin/sh\n")
     calls: list[list[str]] = []
 
     def runner(cmd):
         calls.append(cmd)
         return _Result(0)
 
-    code = auth_passthrough("login", binary="/opt/proton-drive", runner=runner)
+    code = auth_passthrough("login", binary=str(fake_bin), runner=runner)
 
     assert code == 0
-    assert calls == [["/opt/proton-drive", "auth", "login"]]
+    assert calls == [[str(fake_bin), "auth", "login"]]
 
 
-def test_auth_passthrough_propagates_exit_code() -> None:
+def test_auth_passthrough_propagates_exit_code(tmp_path) -> None:
+    fake_bin = tmp_path / "proton-drive"
+    fake_bin.write_text("#!/bin/sh\n")
+
     def runner(cmd):
         return _Result(7)
 
-    assert auth_passthrough("status", binary="pd", runner=runner) == 7
+    assert auth_passthrough("status", binary=str(fake_bin), runner=runner) == 7
+
+
+def test_auth_passthrough_missing_binary_raises_instructive() -> None:
+    from protonfs.drive import DriveError
+
+    def runner(cmd):  # should never be called
+        raise AssertionError("runner invoked despite missing binary")
+
+    with pytest.raises(DriveError, match="install-drive"):
+        auth_passthrough("login", binary="/no/such/proton-drive", runner=runner)
+
+
+def test_auth_passthrough_rejects_unknown_subcommand() -> None:
+    with pytest.raises(ValueError, match="unknown auth subcommand"):
+        auth_passthrough("frobnicate", binary="pd", runner=lambda cmd: _Result(0))
 
 
 def test_cli_auth_login_calls_passthrough(monkeypatch) -> None:
