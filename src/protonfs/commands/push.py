@@ -45,7 +45,10 @@ def push(
     if dry_run or not to_push:
         return TransferResult(len(to_push), 0, 0, [])
 
-    strategy = resolve or ctx.config.defaults.on_conflict
+    # D2.1: default push applies NO conflict strategy so the CLI surfaces conflicts as
+    # named per-file failures (never a silent skip that we'd falsely index). A strategy
+    # is used only when the user explicitly asks via --resolve.
+    strategy = resolve
     groups = group_by_parent(to_push)
     total = TransferResult(0, 0, 0, [])
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
@@ -63,6 +66,12 @@ def push(
             total.failed_items += result.failed_items
             total.failures += result.failures
 
+            # D2.1: a skip is reported only as an aggregate count, so we cannot tell
+            # WHICH files in the batch were skipped. Rather than falsely record an
+            # unconfirmed hash, index none of this batch's non-failed files and leave
+            # them for the next push.
+            if result.skipped_items > 0:
+                continue
             failed_names = {f["name"] for f in result.failures}
             for rel in batch:
                 if Path(rel).name in failed_names:
