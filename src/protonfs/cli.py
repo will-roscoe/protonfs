@@ -101,7 +101,7 @@ def push(path: str | None, resolve: str | None, dry_run: bool) -> None:
         if not resolve:
             click.echo(
                 "  -> these are remote conflicts; re-run with "
-                "--resolve=replace|keep-both|skip to resolve them."
+                "--resolve=merge|keep-both|replace|skip to resolve them."
             )
         raise click.exceptions.Exit(1)
 

@@ -41,6 +41,11 @@ def rm(ctx: RepoContext, rel_path: str, recursive: bool, force: bool, confirmed:
                 f"safely pick yours for permanent deletion. Resolve it via the Proton "
                 f"Drive app/web, or leave it trashed (it is already reversible)."
             )
+        else:
+            click.echo(
+                f"'{name}' was trashed but could not be found in trash for permanent "
+                f"deletion (it may still be processing); it remains trashed and reversible."
+            )
 
     for indexed_rel in list(ctx.index.all()):
         if indexed_rel == rel_path or indexed_rel.startswith(rel_path + "/"):

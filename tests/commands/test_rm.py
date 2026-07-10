@@ -99,6 +99,26 @@ def test_rm_force_duplicate_basename_leaves_trashed_and_warns(tmp_path: Path, ca
     assert "trash" in out.lower()
 
 
+def test_rm_force_zero_trash_matches_informs_and_keeps_trashed(
+    tmp_path: Path, capsys
+) -> None:
+    # D2.2 + cross-cutting messaging principle: if the trashed item can't be found in
+    # /trash to permanently delete (stale listing / undecryptable name), don't delete
+    # and don't stay silent -- tell the user it remains trashed/reversible.
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    fake = _FakeDrive(trash_listing=[])  # nothing matches the basename
+    ctx.drive = fake
+
+    rm(ctx, "dump_0001", recursive=False, force=True, confirmed=True)
+
+    assert fake.trashed == ["/my-files/test/dump_0001"]
+    assert fake.deleted == []
+    out = capsys.readouterr().out
+    assert "dump_0001" in out
+    assert "reversible" in out.lower()
+
+
 def test_rm_directory_without_recursive_raises(tmp_path: Path) -> None:
     (tmp_path / "run1").mkdir()
     (tmp_path / "run1" / "dump_0001").write_bytes(b"data")

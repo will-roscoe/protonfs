@@ -133,6 +133,29 @@ def test_push_resolve_skip_leaves_skipped_files_unindexed(tmp_path: Path) -> Non
     assert ctx.index.get("dump_0001") is None  # not marked present on an ambiguous skip
 
 
+def test_push_skip_with_mixed_batch_indexes_nothing_in_that_batch(tmp_path: Path) -> None:
+    # D2.1: a single batch may report transferred AND skipped together (aggregate
+    # counts). Since we cannot tell which file was skipped, ANY skip in the batch
+    # means none of its non-failed files are indexed. Locks in the conservative rule.
+    (tmp_path / "a").write_bytes(b"aa")
+    (tmp_path / "b").write_bytes(b"bb")
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+
+    class _MixedDrive(_FakeDrive):
+        def upload(self, local_paths, remote_parent, file_strategy=None, folder_strategy=None):
+            # both files are one batch (same parent); report 1 transferred + 1 skipped
+            return TransferResult(
+                transferred_items=1, skipped_items=1, failed_items=0, failures=[]
+            )
+
+    ctx.drive = _MixedDrive()
+    push(ctx, None, resolve="skip", dry_run=False)
+
+    assert ctx.index.get("a") is None
+    assert ctx.index.get("b") is None
+
+
 def test_push_cli_conflict_failure_prints_resolve_hint(tmp_path: Path, monkeypatch) -> None:
     # D2.1: a default push that hits conflicts (named failures) instructs the user to
     # re-run with --resolve, and exits non-zero.
