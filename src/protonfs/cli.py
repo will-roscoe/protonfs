@@ -194,5 +194,33 @@ def refresh(path: str | None, prune: bool) -> None:
         click.echo(f"Run `protonfs pull` to download the {result.seeded} discovered file(s).")
 
 
+@main.command("install-drive")
+@click.option("--version", default=None, help="proton-drive version to install (default: pinned).")
+def install_drive_cmd(version: str | None) -> None:
+    """Download and verify the official proton-drive CLI binary."""
+    from protonfs.install import InstallError, install_drive
+
+    try:
+        result = install_drive(version=version)
+    except InstallError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"Installed proton-drive to {result.path} (SHA-512 verified).")
+    for warning in result.warnings:
+        click.echo(f"  ! {warning}")
+    click.echo("Next: run `protonfs auth login` to authenticate.")
+
+
+@main.command()
+@click.argument("action", type=click.Choice(["login", "logout", "status"]))
+@_drive_error_boundary
+def auth(action: str) -> None:
+    """Authenticate the proton-drive CLI: login | logout | status (passthrough)."""
+    from protonfs.commands.auth import auth_passthrough
+
+    code = auth_passthrough(action)
+    if code != 0:
+        raise click.exceptions.Exit(code)
+
+
 if __name__ == "__main__":
     main()
