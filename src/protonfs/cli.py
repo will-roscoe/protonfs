@@ -98,6 +98,11 @@ def push(path: str | None, resolve: str | None, dry_run: bool) -> None:
     for failure in result.failures:
         click.echo(f"  FAILED {failure['name']}: {failure['error']}")
     if result.failed_items:
+        if not resolve:
+            click.echo(
+                "  -> these are remote conflicts; re-run with "
+                "--resolve=replace|keep-both|skip to resolve them."
+            )
         raise click.exceptions.Exit(1)
 
 

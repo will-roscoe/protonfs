@@ -12,9 +12,11 @@ from protonfs.index import IndexEntry
 
 
 class _FakeDrive:
-    def __init__(self) -> None:
+    def __init__(self, trash_listing: list[dict] | None = None) -> None:
         self.trashed: list[str] = []
         self.deleted: list[str] = []
+        # what `list("/trash")` reports (defaults to one entry per basename trashed)
+        self._trash_listing = trash_listing
 
     def trash(self, remote_paths: list[str]) -> list[dict]:
         self.trashed.extend(remote_paths)
@@ -23,6 +25,17 @@ class _FakeDrive:
     def delete(self, remote_paths: list[str]) -> list[dict]:
         self.deleted.extend(remote_paths)
         return [{"ok": True} for _ in remote_paths]
+
+    def list(self, remote_path: str) -> list[dict]:
+        if self._trash_listing is not None:
+            return self._trash_listing
+        # default: each trashed path appears once in /trash by its basename
+        from pathlib import PurePosixPath
+
+        return [
+            {"name": {"ok": True, "value": PurePosixPath(p).name}, "type": "file"}
+            for p in self.trashed
+        ]
 
 
 def test_rm_trashes_and_removes_from_index(tmp_path: Path) -> None:
@@ -50,16 +63,40 @@ def test_rm_trashes_and_removes_from_index(tmp_path: Path) -> None:
     assert ctx.index.get("dump_0001") is None
 
 
-def test_rm_force_also_calls_delete(tmp_path: Path) -> None:
+def test_rm_force_deletes_when_exactly_one_trash_match(tmp_path: Path) -> None:
+    # D2.2: rm -f trashes, then permanently deletes only when exactly one item of
+    # that basename is in /trash (unambiguous).
     init_config(tmp_path, "/my-files/test")
     ctx = load_context(tmp_path)
-    fake = _FakeDrive()
+    fake = _FakeDrive()  # default listing: one entry per trashed basename
     ctx.drive = fake
 
     rm(ctx, "dump_0001", recursive=False, force=True, confirmed=True)
 
     assert fake.trashed == ["/my-files/test/dump_0001"]
     assert fake.deleted == ["/trash/dump_0001"]
+
+
+def test_rm_force_duplicate_basename_leaves_trashed_and_warns(tmp_path: Path, capsys) -> None:
+    # D2.2: with >1 items of the same basename in trash, protonfs cannot safely pick
+    # which is the user's -> do NOT delete; leave it trashed (reversible) and warn.
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    fake = _FakeDrive(
+        trash_listing=[
+            {"name": {"ok": True, "value": "dump_0001"}, "type": "file"},
+            {"name": {"ok": True, "value": "dump_0001"}, "type": "file"},
+        ]
+    )
+    ctx.drive = fake
+
+    rm(ctx, "dump_0001", recursive=False, force=True, confirmed=True)
+
+    assert fake.trashed == ["/my-files/test/dump_0001"]
+    assert fake.deleted == []  # not deleted -- ambiguous
+    out = capsys.readouterr().out
+    assert "dump_0001" in out
+    assert "trash" in out.lower()
 
 
 def test_rm_directory_without_recursive_raises(tmp_path: Path) -> None:

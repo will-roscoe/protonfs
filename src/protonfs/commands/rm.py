@@ -23,8 +23,24 @@ def rm(ctx: RepoContext, rel_path: str, recursive: bool, force: bool, confirmed:
 
     ctx.drive.trash([remote_path])
     if force:
+        # D2.2: permanent delete works only against /trash/<basename>, and with
+        # duplicate basenames the CLI deletes one arbitrarily. So only delete when
+        # exactly one trashed item carries this basename; otherwise leave it trashed
+        # (still reversible) and tell the user to resolve it manually.
         name = PurePosixPath(remote_path).name
-        ctx.drive.delete([f"/trash/{name}"])
+        matches = [
+            entry
+            for entry in ctx.drive.list("/trash")
+            if entry.get("name", {}).get("ok") and entry["name"]["value"] == name
+        ]
+        if len(matches) == 1:
+            ctx.drive.delete([f"/trash/{name}"])
+        elif len(matches) > 1:
+            click.echo(
+                f"{len(matches)} items named '{name}' are in trash; protonfs can't "
+                f"safely pick yours for permanent deletion. Resolve it via the Proton "
+                f"Drive app/web, or leave it trashed (it is already reversible)."
+            )
 
     for indexed_rel in list(ctx.index.all()):
         if indexed_rel == rel_path or indexed_rel.startswith(rel_path + "/"):
