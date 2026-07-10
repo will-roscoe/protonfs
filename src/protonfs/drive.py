@@ -52,6 +52,16 @@ def binary_path() -> str:
     return os.environ.get(BINARY_ENV_VAR, DEFAULT_BINARY)
 
 
+def decrypted_name(entry: dict) -> str | None:
+    """The decrypted filename of a `filesystem list` entry, or None if its name could
+    not be decrypted (``name.ok`` is false). Central helper so every consumer parses
+    the ``{"name": {"ok": bool, "value": str}}`` shape identically."""
+    name = entry.get("name", {})
+    if not name.get("ok"):
+        return None
+    return name.get("value")
+
+
 class DriveClient:
     def __init__(self, binary: str | None = None) -> None:
         self._binary = binary or binary_path()
@@ -119,13 +129,12 @@ class DriveClient:
         while queue:
             abs_path, prefix = queue.popleft()
             for entry in self.list(abs_path):
-                name = entry.get("name", {})
-                if not name.get("ok"):
+                value = decrypted_name(entry)
+                if value is None:
                     logger.warning(
                         "skipping remote entry with undecryptable name under %s", abs_path
                     )
                     continue
-                value = name["value"]
                 rel = f"{prefix}{value}" if prefix else value
                 child_abs = f"{abs_path}/{value}"
                 if entry.get("type") == "folder":

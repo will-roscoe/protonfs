@@ -10,21 +10,17 @@ from protonfs.drive import RemoteEntry
 from protonfs.index import IndexEntry
 
 
-class _FakeDrive:
-    def __init__(self, entries: list[RemoteEntry]) -> None:
-        self._entries = entries
-
-    def walk(self, remote_root: str) -> list[RemoteEntry]:
-        return self._entries
-
-
-def test_refresh_seeds_metadata_only_for_new_remote_files(tmp_path: Path) -> None:
+def test_refresh_seeds_metadata_only_for_new_remote_files(
+    tmp_path: Path, make_fake_drive
+) -> None:
     init_config(tmp_path, "/my-files/test")
     ctx = load_context(tmp_path)
-    ctx.drive = _FakeDrive([
-        RemoteEntry("run1", is_dir=True, size=0),
-        RemoteEntry("run1/dump_0001", is_dir=False, size=100),
-    ])
+    ctx.drive = make_fake_drive(
+        walk_entries=[
+            RemoteEntry("run1", is_dir=True, size=0),
+            RemoteEntry("run1/dump_0001", is_dir=False, size=100),
+        ]
+    )
 
     result = refresh(ctx, None, prune=False)
 
@@ -37,16 +33,16 @@ def test_refresh_seeds_metadata_only_for_new_remote_files(tmp_path: Path) -> Non
     assert entry.remote_path == "/my-files/test/run1/dump_0001"
 
 
-def test_refresh_is_idempotent(tmp_path: Path) -> None:
+def test_refresh_is_idempotent(tmp_path: Path, make_fake_drive) -> None:
     init_config(tmp_path, "/my-files/test")
     ctx = load_context(tmp_path)
-    ctx.drive = _FakeDrive([RemoteEntry("a", is_dir=False, size=10)])
+    ctx.drive = make_fake_drive(walk_entries=[RemoteEntry("a", is_dir=False, size=10)])
     refresh(ctx, None, prune=False)
     result2 = refresh(ctx, None, prune=False)
     assert result2.seeded == 0
 
 
-def test_refresh_flags_remote_deleted_without_prune(tmp_path: Path) -> None:
+def test_refresh_flags_remote_deleted_without_prune(tmp_path: Path, make_fake_drive) -> None:
     init_config(tmp_path, "/my-files/test")
     ctx = load_context(tmp_path)
     ctx.index.set(
@@ -55,7 +51,7 @@ def test_refresh_flags_remote_deleted_without_prune(tmp_path: Path) -> None:
             1, 1.0, "", "/my-files/test/gone", "d1", "metadata-only", "2026-07-09T00:00:00+00:00"
         ),
     )
-    ctx.drive = _FakeDrive([])  # remote is empty -> 'gone' is remote-deleted
+    ctx.drive = make_fake_drive(walk_entries=[])  # remote empty -> 'gone' is remote-deleted
 
     result = refresh(ctx, None, prune=False)
 
@@ -64,7 +60,7 @@ def test_refresh_flags_remote_deleted_without_prune(tmp_path: Path) -> None:
     assert ctx.index.get("gone") is not None  # NOT pruned without --prune
 
 
-def test_refresh_prune_removes_remote_deleted(tmp_path: Path) -> None:
+def test_refresh_prune_removes_remote_deleted(tmp_path: Path, make_fake_drive) -> None:
     init_config(tmp_path, "/my-files/test")
     ctx = load_context(tmp_path)
     ctx.index.set(
@@ -73,7 +69,7 @@ def test_refresh_prune_removes_remote_deleted(tmp_path: Path) -> None:
             1, 1.0, "", "/my-files/test/gone", "d1", "metadata-only", "2026-07-09T00:00:00+00:00"
         ),
     )
-    ctx.drive = _FakeDrive([])
+    ctx.drive = make_fake_drive(walk_entries=[])
 
     result = refresh(ctx, None, prune=True)
 
@@ -81,12 +77,12 @@ def test_refresh_prune_removes_remote_deleted(tmp_path: Path) -> None:
     assert ctx.index.get("gone") is None
 
 
-def test_refresh_subpath_seeds_reprefixed_paths(tmp_path: Path) -> None:
+def test_refresh_subpath_seeds_reprefixed_paths(tmp_path: Path, make_fake_drive) -> None:
     init_config(tmp_path, "/my-files/test")
     ctx = load_context(tmp_path)
     # walk is scoped to remote_root/run5 and returns paths relative to that root;
     # refresh must re-prefix them with the subpath to match index rel_path keys.
-    ctx.drive = _FakeDrive([RemoteEntry("dump_0002", is_dir=False, size=200)])
+    ctx.drive = make_fake_drive(walk_entries=[RemoteEntry("dump_0002", is_dir=False, size=200)])
 
     result = refresh(ctx, "run5", prune=False)
 
@@ -97,7 +93,9 @@ def test_refresh_subpath_seeds_reprefixed_paths(tmp_path: Path) -> None:
     assert entry.remote_path == "/my-files/test/run5/dump_0002"
 
 
-def test_refresh_subpath_prune_leaves_out_of_scope_index_entries(tmp_path: Path) -> None:
+def test_refresh_subpath_prune_leaves_out_of_scope_index_entries(
+    tmp_path: Path, make_fake_drive
+) -> None:
     # Regression: a subpath-scoped refresh --prune must NOT classify/prune index
     # entries that live outside the walked subpath. The remote walk never visited
     # them, so their absence from the (scoped) remote map is not a deletion signal.
@@ -116,7 +114,7 @@ def test_refresh_subpath_prune_leaves_out_of_scope_index_entries(tmp_path: Path)
         ),
     )
     ctx.index.save()
-    ctx.drive = _FakeDrive([RemoteEntry("newfile", is_dir=False, size=100)])
+    ctx.drive = make_fake_drive(walk_entries=[RemoteEntry("newfile", is_dir=False, size=100)])
 
     result = refresh(ctx, "somedir", prune=True)
 
@@ -128,7 +126,7 @@ def test_refresh_subpath_prune_leaves_out_of_scope_index_entries(tmp_path: Path)
     assert ctx.index.get("somedir/newfile") is not None
 
 
-def test_refresh_flags_remote_changed(tmp_path: Path) -> None:
+def test_refresh_flags_remote_changed(tmp_path: Path, make_fake_drive) -> None:
     init_config(tmp_path, "/my-files/test")
     ctx = load_context(tmp_path)
     ctx.index.set(
@@ -137,7 +135,7 @@ def test_refresh_flags_remote_changed(tmp_path: Path) -> None:
             10, 1.0, "", "/my-files/test/f", "d1", "metadata-only", "2026-07-09T00:00:00+00:00"
         ),
     )
-    ctx.drive = _FakeDrive([RemoteEntry("f", is_dir=False, size=999)])
+    ctx.drive = make_fake_drive(walk_entries=[RemoteEntry("f", is_dir=False, size=999)])
 
     result = refresh(ctx, None, prune=False)
 

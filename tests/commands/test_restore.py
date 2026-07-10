@@ -8,16 +8,7 @@ from protonfs.context import load_context
 from protonfs.index import IndexEntry
 
 
-class _FakeDrive:
-    def __init__(self) -> None:
-        self.restored: list[str] = []
-
-    def restore(self, remote_paths: list[str]) -> list[dict]:
-        self.restored.extend(remote_paths)
-        return [{"ok": True} for _ in remote_paths]
-
-
-def test_restore_uses_indexed_remote_path(tmp_path: Path) -> None:
+def test_restore_uses_indexed_remote_path(tmp_path: Path, make_fake_drive) -> None:
     init_config(tmp_path, "/my-files/test")
     ctx = load_context(tmp_path)
     ctx.index.set(
@@ -32,7 +23,7 @@ def test_restore_uses_indexed_remote_path(tmp_path: Path) -> None:
             last_synced="2026-07-08T00:00:00+00:00",
         ),
     )
-    fake = _FakeDrive()
+    fake = make_fake_drive()
     ctx.drive = fake
 
     restore(ctx, "dump_0001")
@@ -40,10 +31,12 @@ def test_restore_uses_indexed_remote_path(tmp_path: Path) -> None:
     assert fake.restored == ["/my-files/test/dump_0001"]
 
 
-def test_restore_falls_back_to_computed_path_when_not_indexed(tmp_path: Path) -> None:
+def test_restore_falls_back_to_computed_path_when_not_indexed(
+    tmp_path: Path, make_fake_drive
+) -> None:
     init_config(tmp_path, "/my-files/test")
     ctx = load_context(tmp_path)
-    fake = _FakeDrive()
+    fake = make_fake_drive()
     ctx.drive = fake
 
     restore(ctx, "dump_0002")
