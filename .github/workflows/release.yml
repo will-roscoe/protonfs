@@ -35,8 +35,10 @@ jobs:
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
-      id-token: write # required for PyPI trusted publishing (OIDC), no API token needed
+      id-token: write
     steps:
+      - uses: actions/checkout@v4      # ← Add this
+
       - uses: actions/download-artifact@v4
         with:
           name: dist
@@ -49,8 +51,10 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     permissions:
-      contents: write # required to create a GitHub release
+      contents: write
     steps:
+      - uses: actions/checkout@v4      # ← Add this
+
       - uses: actions/download-artifact@v4
         with:
           name: dist
