@@ -52,6 +52,30 @@ def binary_path() -> str:
     return os.environ.get(BINARY_ENV_VAR, DEFAULT_BINARY)
 
 
+# Specific phrases that signal a genuine auth failure. Tightened from the v0.1 broad
+# `"auth" in message` check, which false-positived on unrelated words ("author",
+# "unauthorized"/permission errors). D5.1: we prefer a false negative (a real auth
+# error surfaced as a generic DriveError, still an error) over a false positive
+# (a non-auth error mislabelled as auth). If proton-drive's exact wording is later
+# captured via a deliberate logout probe, add it here.
+_AUTH_ERROR_SIGNALS = (
+    "unauthenticated",
+    "not authenticated",
+    "not logged in",
+    "log in first",
+    "login required",
+    "authentication required",
+    "session expired",
+    "auth required",
+    "please authenticate",
+)
+
+
+def _is_auth_error(message: str) -> bool:
+    lowered = message.lower()
+    return any(signal in lowered for signal in _AUTH_ERROR_SIGNALS)
+
+
 def decrypted_name(entry: dict) -> str | None:
     """The decrypted filename of a `filesystem list` entry, or None if its name could
     not be decrypted (``name.ok`` is false). Central helper so every consumer parses
@@ -83,7 +107,7 @@ class DriveClient:
             raise DriveError(f"unparseable output from proton-drive: {stdout!r}") from exc
         if result.returncode != 0:
             message = json.dumps(parsed) if parsed else result.stderr.strip()
-            if "auth" in message.lower() or "unauthenticated" in message.lower():
+            if _is_auth_error(message):
                 raise DriveAuthError(f"proton-drive auth required: {message}")
             raise DriveError(message)
         return parsed
@@ -97,7 +121,7 @@ class DriveClient:
             parsed = None
         if not isinstance(parsed, dict) or "transferredItems" not in parsed:
             message = result.stderr.strip() or stdout
-            if "auth" in message.lower() or "unauthenticated" in message.lower():
+            if _is_auth_error(message):
                 raise DriveAuthError(f"proton-drive auth required: {message}")
             raise DriveError(message)
         return TransferResult.from_json(parsed)
