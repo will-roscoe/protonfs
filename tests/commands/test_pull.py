@@ -6,7 +6,7 @@ from pathlib import Path
 from protonfs.commands.pull import pull
 from protonfs.config import init_config
 from protonfs.context import load_context
-from protonfs.drive import TransferResult
+from protonfs.drive import RemoteEntry, TransferResult
 from protonfs.index import IndexEntry
 
 
@@ -21,6 +21,9 @@ class _FakeDrive:
             name = remote_path.rsplit("/", 1)[-1]
             (Path(local_folder) / name).write_bytes(b"downloaded")
         return TransferResult(len(remote_paths), 0, 0, [])
+
+    def walk(self, remote_root):
+        return []
 
 
 def test_pull_downloads_remote_only_files_and_updates_index(tmp_path: Path) -> None:
@@ -81,3 +84,70 @@ def test_pull_no_remote_only_files_returns_zero_result(tmp_path: Path) -> None:
     result = pull(ctx, None, resolve=None, dry_run=False)
 
     assert result.transferred_items == 0
+
+
+def test_pull_refresh_seeds_then_downloads_on_empty_index(tmp_path: Path) -> None:
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+
+    class _WalkDownloadDrive(_FakeDrive):
+        def walk(self, remote_root):
+            return [RemoteEntry("run1/dump_0001", is_dir=False, size=9)]
+
+    fake = _WalkDownloadDrive(tmp_path)
+    ctx.drive = fake
+
+    # empty index: a bare pull would do nothing; with refresh=True it seeds then pulls
+    result = pull(ctx, None, resolve=None, dry_run=False, refresh=True)
+
+    assert result.transferred_items == 1
+    assert (tmp_path / "run1" / "dump_0001").exists()
+
+
+def test_pull_without_refresh_on_empty_index_is_noop(tmp_path: Path) -> None:
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.drive = _FakeDrive(tmp_path)
+
+    result = pull(ctx, None, resolve=None, dry_run=False, refresh=False)
+
+    assert result.transferred_items == 0
+
+
+def test_pull_refresh_dry_run_previews_seeded_files_without_persisting(tmp_path: Path) -> None:
+    # pull --refresh --dry-run must preview the files a real pull --refresh would
+    # fetch (seeding in-memory), but must NOT persist the seed to index.json.
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+
+    class _WalkDownloadDrive(_FakeDrive):
+        def walk(self, remote_root):
+            return [RemoteEntry("run1/dump_0001", is_dir=False, size=9)]
+
+    fake = _WalkDownloadDrive(tmp_path)
+    ctx.drive = fake
+
+    result = pull(ctx, None, resolve=None, dry_run=True, refresh=True)
+
+    assert result.transferred_items == 1  # accurate preview, not a stale 0
+    assert fake.download_calls == []  # dry-run downloads nothing
+    # dry-run left the on-disk index untouched
+    assert load_context(tmp_path).index.all() == {}
+
+
+def test_pull_cli_empty_index_without_refresh_prints_hint(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from click.testing import CliRunner
+
+    from protonfs.cli import main
+
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)  # empty index
+    monkeypatch.setattr("protonfs.context.load_context", lambda *a, **k: ctx)
+
+    result = CliRunner().invoke(main, ["pull"])
+
+    assert result.exit_code == 0
+    assert "protonfs refresh" in result.output
+    assert "pull --refresh" in result.output

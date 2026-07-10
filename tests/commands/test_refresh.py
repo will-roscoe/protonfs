@@ -1,0 +1,145 @@
+# tests/commands/test_refresh.py
+from __future__ import annotations
+
+from pathlib import Path
+
+from protonfs.commands.refresh import refresh
+from protonfs.config import init_config
+from protonfs.context import load_context
+from protonfs.drive import RemoteEntry
+from protonfs.index import IndexEntry
+
+
+class _FakeDrive:
+    def __init__(self, entries: list[RemoteEntry]) -> None:
+        self._entries = entries
+
+    def walk(self, remote_root: str) -> list[RemoteEntry]:
+        return self._entries
+
+
+def test_refresh_seeds_metadata_only_for_new_remote_files(tmp_path: Path) -> None:
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.drive = _FakeDrive([
+        RemoteEntry("run1", is_dir=True, size=0),
+        RemoteEntry("run1/dump_0001", is_dir=False, size=100),
+    ])
+
+    result = refresh(ctx, None, prune=False)
+
+    assert result.seeded == 1
+    entry = ctx.index.get("run1/dump_0001")
+    assert entry is not None
+    assert entry.local_state == "metadata-only"
+    assert entry.size == 100
+    assert entry.sha256 == ""
+    assert entry.remote_path == "/my-files/test/run1/dump_0001"
+
+
+def test_refresh_is_idempotent(tmp_path: Path) -> None:
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.drive = _FakeDrive([RemoteEntry("a", is_dir=False, size=10)])
+    refresh(ctx, None, prune=False)
+    result2 = refresh(ctx, None, prune=False)
+    assert result2.seeded == 0
+
+
+def test_refresh_flags_remote_deleted_without_prune(tmp_path: Path) -> None:
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.index.set(
+        "gone",
+        IndexEntry(
+            1, 1.0, "", "/my-files/test/gone", "d1", "metadata-only", "2026-07-09T00:00:00+00:00"
+        ),
+    )
+    ctx.drive = _FakeDrive([])  # remote is empty -> 'gone' is remote-deleted
+
+    result = refresh(ctx, None, prune=False)
+
+    assert result.remote_deleted == 1
+    assert "gone" in result.deleted_paths
+    assert ctx.index.get("gone") is not None  # NOT pruned without --prune
+
+
+def test_refresh_prune_removes_remote_deleted(tmp_path: Path) -> None:
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.index.set(
+        "gone",
+        IndexEntry(
+            1, 1.0, "", "/my-files/test/gone", "d1", "metadata-only", "2026-07-09T00:00:00+00:00"
+        ),
+    )
+    ctx.drive = _FakeDrive([])
+
+    result = refresh(ctx, None, prune=True)
+
+    assert result.pruned == 1
+    assert ctx.index.get("gone") is None
+
+
+def test_refresh_subpath_seeds_reprefixed_paths(tmp_path: Path) -> None:
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    # walk is scoped to remote_root/run5 and returns paths relative to that root;
+    # refresh must re-prefix them with the subpath to match index rel_path keys.
+    ctx.drive = _FakeDrive([RemoteEntry("dump_0002", is_dir=False, size=200)])
+
+    result = refresh(ctx, "run5", prune=False)
+
+    assert result.seeded == 1
+    entry = ctx.index.get("run5/dump_0002")
+    assert entry is not None
+    assert entry.size == 200
+    assert entry.remote_path == "/my-files/test/run5/dump_0002"
+
+
+def test_refresh_subpath_prune_leaves_out_of_scope_index_entries(tmp_path: Path) -> None:
+    # Regression: a subpath-scoped refresh --prune must NOT classify/prune index
+    # entries that live outside the walked subpath. The remote walk never visited
+    # them, so their absence from the (scoped) remote map is not a deletion signal.
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.index.set(
+        "otherdir/unrelated.bin",
+        IndexEntry(
+            5,
+            1.0,
+            "",
+            "/my-files/test/otherdir/unrelated.bin",
+            "d1",
+            "metadata-only",
+            "2026-07-09T00:00:00+00:00",
+        ),
+    )
+    ctx.index.save()
+    ctx.drive = _FakeDrive([RemoteEntry("newfile", is_dir=False, size=100)])
+
+    result = refresh(ctx, "somedir", prune=True)
+
+    # out-of-scope entry is untouched
+    assert result.remote_deleted == 0
+    assert result.pruned == 0
+    assert ctx.index.get("otherdir/unrelated.bin") is not None
+    # in-scope new file is still seeded
+    assert ctx.index.get("somedir/newfile") is not None
+
+
+def test_refresh_flags_remote_changed(tmp_path: Path) -> None:
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.index.set(
+        "f",
+        IndexEntry(
+            10, 1.0, "", "/my-files/test/f", "d1", "metadata-only", "2026-07-09T00:00:00+00:00"
+        ),
+    )
+    ctx.drive = _FakeDrive([RemoteEntry("f", is_dir=False, size=999)])
+
+    result = refresh(ctx, None, prune=False)
+
+    assert result.remote_changed == 1
+    assert "f" in result.changed_paths

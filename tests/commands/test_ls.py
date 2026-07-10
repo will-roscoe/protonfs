@@ -15,7 +15,17 @@ class _FakeDrive:
     def list(self, remote_path: str) -> list[dict]:
         if remote_path == "/trash":
             return [{"name": {"ok": True, "value": "trashed_item"}, "type": "file"}]
-        return [{"name": {"ok": True, "value": "remote_only.bin"}}]
+        return [
+            {
+                "name": {"ok": True, "value": "remote_only.bin"},
+                "type": "file",
+                "totalStorageSize": 3,
+            }
+        ]
+
+    def walk(self, remote_root: str):
+        from protonfs.drive import RemoteEntry
+        return [RemoteEntry("nested/remote_only.bin", is_dir=False, size=3)]
 
 
 def test_render_ls_lists_local_only_file(tmp_path: Path) -> None:
@@ -52,3 +62,16 @@ def test_render_ls_remote_includes_remote_only_files(tmp_path: Path) -> None:
 
     assert "remote_only.bin" in buf.getvalue()
     assert "remote-only" in buf.getvalue()
+
+
+def test_render_ls_remote_includes_nested_remote_only_files(tmp_path: Path) -> None:
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.drive = _FakeDrive()
+
+    buf = io.StringIO()
+    render_ls(ctx, None, remote=True, trash=False, console=Console(file=buf, width=120))
+
+    out = buf.getvalue()
+    assert "nested/remote_only.bin" in out
+    assert "remote-only" in out

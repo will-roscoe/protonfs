@@ -105,14 +105,22 @@ def push(path: str | None, resolve: str | None, dry_run: bool) -> None:
 @click.argument("path", required=False)
 @click.option("--resolve", type=click.Choice(["merge", "keep-both", "replace", "skip"]))
 @click.option("--dry-run", is_flag=True)
+@click.option(
+    "--refresh",
+    is_flag=True,
+    help="Discover remote files (seed the index) before pulling.",
+)
 @_drive_error_boundary
-def pull(path: str | None, resolve: str | None, dry_run: bool) -> None:
+def pull(path: str | None, resolve: str | None, dry_run: bool, refresh: bool) -> None:
     """Download remote-only/changed files from Drive."""
     from protonfs.commands.pull import pull as pull_files
     from protonfs.context import load_context
 
     ctx = load_context()
-    result = pull_files(ctx, path, resolve, dry_run)
+    if not refresh and not ctx.index.all():
+        click.echo("index empty; run `protonfs refresh` first (or `pull --refresh`)")
+        return
+    result = pull_files(ctx, path, resolve, dry_run, refresh=refresh)
     click.echo(
         f"transferred={result.transferred_items} skipped={result.skipped_items} "
         f"failed={result.failed_items}"
@@ -148,6 +156,37 @@ def restore(path: str) -> None:
 
     ctx = load_context()
     restore_path(ctx, path)
+
+
+@main.command()
+@click.argument("path", required=False)
+@click.option("--prune", is_flag=True, help="Drop index entries for files deleted on the remote.")
+@_drive_error_boundary
+def refresh(path: str | None, prune: bool) -> None:
+    """Discover remote files and seed the local index (metadata-only)."""
+    from protonfs.commands.refresh import refresh as refresh_index
+    from protonfs.context import load_context
+
+    ctx = load_context()
+    result = refresh_index(ctx, path, prune)
+    click.echo(f"Discovered {result.seeded} new remote file(s) (metadata-only).")
+    if result.remote_changed:
+        click.echo(f"  {result.remote_changed} file(s) changed on the remote (remote-changed):")
+        for p in result.changed_paths:
+            click.echo(f"      {p}")
+        click.echo(
+            "    -> `protonfs pull --resolve=replace <path>` to take the remote version, "
+            "or `protonfs push --resolve=replace <path>` to overwrite it with your local copy."
+        )
+    if result.remote_deleted:
+        verb = "pruned" if prune else "found"
+        click.echo(f"  {result.remote_deleted} file(s) deleted on the remote ({verb}):")
+        for p in result.deleted_paths:
+            click.echo(f"      {p}")
+        if not prune:
+            click.echo("    -> `protonfs refresh --prune` to drop them from your local index.")
+    if result.seeded:
+        click.echo(f"Run `protonfs pull` to download the {result.seeded} discovered file(s).")
 
 
 if __name__ == "__main__":

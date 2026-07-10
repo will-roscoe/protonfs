@@ -84,3 +84,64 @@ def test_is_authenticated_false_on_auth_error(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr("protonfs.drive.shutil.which", lambda _: "/usr/bin/proton-drive")
     monkeypatch.setattr(subprocess, "run", _stub_run("", returncode=1, stderr="unauthenticated"))
     assert client.is_authenticated() is False
+
+
+def test_walk_flattens_nested_tree(monkeypatch):
+    client = DriveClient(binary="proton-drive")
+
+    tree = {
+        "/root": [
+            {"name": {"ok": True, "value": "run1"}, "type": "folder"},
+            {"name": {"ok": True, "value": "top.txt"}, "type": "file", "totalStorageSize": 5},
+        ],
+        "/root/run1": [
+            {"name": {"ok": True, "value": "dump_0001"}, "type": "file", "totalStorageSize": 100},
+            {"name": {"ok": True, "value": "dump_0002"}, "type": "file", "totalStorageSize": 200},
+        ],
+    }
+    monkeypatch.setattr(client, "list", lambda path: tree[path])
+
+    entries = client.walk("/root")
+    by_rel = {e.rel_path: e for e in entries}
+
+    assert by_rel["top.txt"].is_dir is False
+    assert by_rel["top.txt"].size == 5
+    assert by_rel["run1"].is_dir is True
+    assert by_rel["run1/dump_0001"].size == 100
+    assert by_rel["run1/dump_0002"].size == 200
+    # every file's rel_path is relative to root, POSIX, no leading slash
+    assert all(not e.rel_path.startswith("/") for e in entries)
+
+
+def test_walk_skips_undecryptable_names(monkeypatch):
+    client = DriveClient(binary="proton-drive")
+    monkeypatch.setattr(
+        client,
+        "list",
+        lambda path: [
+            {"name": {"ok": True, "value": "good"}, "type": "file", "totalStorageSize": 1},
+            {"name": {"ok": False}, "type": "file", "totalStorageSize": 9},
+        ],
+    )
+    entries = client.walk("/root")
+    assert [e.rel_path for e in entries] == ["good"]
+
+
+def test_walk_logs_warning_for_undecryptable_names(monkeypatch, caplog):
+    import logging
+
+    client = DriveClient(binary="proton-drive")
+    monkeypatch.setattr(
+        client,
+        "list",
+        lambda path: [{"name": {"ok": False}, "type": "file", "totalStorageSize": 9}],
+    )
+    with caplog.at_level(logging.WARNING):
+        client.walk("/root")
+    assert any("undecryptable" in r.message for r in caplog.records)
+
+
+def test_walk_empty_remote(monkeypatch):
+    client = DriveClient(binary="proton-drive")
+    monkeypatch.setattr(client, "list", lambda path: [])
+    assert client.walk("/root") == []

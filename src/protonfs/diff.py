@@ -14,6 +14,8 @@ class SyncState(str, Enum):
     REMOTE_ONLY = "remote-only"
     METADATA_ONLY = "metadata-only"
     CONFLICT = "conflict"
+    REMOTE_CHANGED = "remote-changed"
+    REMOTE_DELETED = "remote-deleted"
 
 
 @dataclass
@@ -25,11 +27,11 @@ class DiffEntry:
 def classify(
     local: dict[str, ScanEntry],
     index: IndexStore,
-    remote_rel_paths: set[str] | None = None,
+    remote: dict[str, int] | None = None,
 ) -> list[DiffEntry]:
     known_paths = set(local) | set(index.all())
-    if remote_rel_paths is not None:
-        known_paths |= remote_rel_paths
+    if remote is not None:
+        known_paths |= set(remote)
 
     results: list[DiffEntry] = []
     for rel_path in sorted(known_paths):
@@ -45,11 +47,23 @@ def classify(
                 else SyncState.CONFLICT
             )
         elif local_entry is None and index_entry is not None:
-            state = (
-                SyncState.METADATA_ONLY
-                if index_entry.local_state == "metadata-only"
-                else SyncState.REMOTE_ONLY
-            )
+            if remote is not None:
+                if rel_path not in remote:
+                    state = SyncState.REMOTE_DELETED
+                elif remote[rel_path] != index_entry.size:
+                    state = SyncState.REMOTE_CHANGED
+                else:
+                    state = (
+                        SyncState.METADATA_ONLY
+                        if index_entry.local_state == "metadata-only"
+                        else SyncState.REMOTE_ONLY
+                    )
+            else:
+                state = (
+                    SyncState.METADATA_ONLY
+                    if index_entry.local_state == "metadata-only"
+                    else SyncState.REMOTE_ONLY
+                )
         else:
             state = SyncState.REMOTE_ONLY
         results.append(DiffEntry(rel_path, state))
