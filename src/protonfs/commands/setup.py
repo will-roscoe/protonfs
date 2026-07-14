@@ -13,23 +13,45 @@ from protonfs.drive import DriveClient
 from protonfs.ignore import init_ignore
 from protonfs.index import IndexStore
 from protonfs.lfs import find_pointer_stubs, is_lfs_tracked
+from protonfs.secretservice import SecretServiceError, ensure_secret_service
 
 
 def ensure_cli_present(drive: DriveClient) -> str:
     version = drive.version()
     if version is None:
         raise click.ClickException(
-            "proton-drive CLI not found. Install it from "
+            "proton-drive CLI not found. Run `protonfs install-drive`, or install it from "
             "https://proton.me/download/drive/cli/index.html and ensure it's on PATH, "
             "then re-run `protonfs setup`."
         )
     return version
 
 
+def ensure_secrets(drive: DriveClient) -> None:
+    """Guarantee a writable OS keyring before anything asks the user to log in.
+
+    Ordered ahead of the auth check on purpose. Without it, a headless host reports
+    "not authenticated", the user logs in, the browser flow succeeds, and the CLI
+    then fails to persist the session -- leaving them back at "not authenticated"
+    with no indication that the keyring, not their credentials, is the problem.
+    """
+    try:
+        result = ensure_secret_service()
+    except SecretServiceError as exc:
+        raise click.ClickException(
+            f"No usable OS keyring for proton-drive to store its session in:\n  {exc}\n"
+            "Run `protonfs doctor` for a full diagnosis."
+        ) from exc
+    for action in result.actions:
+        click.echo(f"  keyring: {action}")
+    for warning in result.warnings:
+        click.echo(f"  ! {warning}")
+
+
 def ensure_authenticated(drive: DriveClient) -> None:
     if not drive.is_authenticated():
         raise click.ClickException(
-            "Not authenticated with Proton Drive. Run `proton-drive auth login`, "
+            "Not authenticated with Proton Drive. Run `protonfs auth login`, "
             "then re-run `protonfs setup`."
         )
 
@@ -156,6 +178,7 @@ def run_setup(root: Path, dry_run: bool = False) -> None:
     version = ensure_cli_present(drive)
     click.echo(f"proton-drive CLI found: {version}")
 
+    ensure_secrets(drive)
     ensure_authenticated(drive)
     click.echo("Authenticated with Proton Drive.")
 

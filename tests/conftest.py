@@ -106,3 +106,15 @@ def make_fake_drive():
         return FakeDrive(**kwargs)
 
     return _make
+
+
+@pytest.fixture(autouse=True)
+def no_keyring_bootstrap(monkeypatch):
+    """Keep the keyring bootstrap out of every test that does not target it.
+
+    Without this, any test that exercises DriveClient would reach
+    protonfs.secretservice, and on a developer's Linux box that can start a real
+    dbus-daemon and gnome-keyring as a side effect of running the suite.
+    tests/test_secretservice.py clears this to test the bootstrap itself.
+    """
+    monkeypatch.setenv("PROTONFS_NO_KEYRING_BOOTSTRAP", "1")

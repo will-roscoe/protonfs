@@ -17,7 +17,7 @@ def test_auth_passthrough_invokes_proton_drive_auth(tmp_path) -> None:
     fake_bin.write_text("#!/bin/sh\n")
     calls: list[list[str]] = []
 
-    def runner(cmd):
+    def runner(cmd, env=None):
         calls.append(cmd)
         return _Result(0)
 
@@ -31,7 +31,7 @@ def test_auth_passthrough_propagates_exit_code(tmp_path) -> None:
     fake_bin = tmp_path / "proton-drive"
     fake_bin.write_text("#!/bin/sh\n")
 
-    def runner(cmd):
+    def runner(cmd, env=None):
         return _Result(7)
 
     assert auth_passthrough("status", binary=str(fake_bin), runner=runner) == 7
@@ -40,7 +40,7 @@ def test_auth_passthrough_propagates_exit_code(tmp_path) -> None:
 def test_auth_passthrough_missing_binary_raises_instructive() -> None:
     from protonfs.drive import DriveError
 
-    def runner(cmd):  # should never be called
+    def runner(cmd, env=None):  # should never be called
         raise AssertionError("runner invoked despite missing binary")
 
     with pytest.raises(DriveError, match="install-drive"):
@@ -49,7 +49,7 @@ def test_auth_passthrough_missing_binary_raises_instructive() -> None:
 
 def test_auth_passthrough_rejects_unknown_subcommand() -> None:
     with pytest.raises(ValueError, match="unknown auth subcommand"):
-        auth_passthrough("frobnicate", binary="pd", runner=lambda cmd: _Result(0))
+        auth_passthrough("frobnicate", binary="pd", runner=lambda cmd, env=None: _Result(0))
 
 
 def test_cli_auth_login_calls_passthrough(monkeypatch) -> None:

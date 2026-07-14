@@ -31,6 +31,41 @@ protonfs auth login        # opens a URL to authenticate (passthrough to proton-
 SHA-512 does not match the pinned checksum. Override the version with
 `PROTONFS_DRIVE_VERSION` and the expected checksum with `PROTONFS_DRIVE_SHA512`.
 
+## Headless Linux (SSH, no desktop)
+
+`proton-drive` keeps its session in the OS keyring, which on Linux means the
+freedesktop Secret Service reached over the D-Bus **session bus**. An SSH login
+has neither, which produces two failures that look like bugs in Proton Drive but
+are really a missing environment:
+
+```
+Cannot autolaunch D-Bus without X11 $DISPLAY          # no session bus at all
+Cannot create an item in a locked collection          # bus exists; the keyring is sealed
+```
+
+The second one is the nastier of the two: if the machine has ever had a graphical
+login, `~/.local/share/keyrings/login.keyring` exists, is the *default* collection,
+and is locked with a password you cannot type over SSH — so `auth login` completes
+the whole browser flow and only then fails to save the session.
+
+protonfs handles both for you. Every command that shells out to `proton-drive`
+first reuses (or starts, and caches) a session bus, and runs `gnome-keyring-daemon`
+against a protonfs-owned keyring directory so it never has to unlock the sealed
+system keyring. To check a host:
+
+```bash
+protonfs doctor          # binary, session bus, Secret Service, and a real keyring write test
+protonfs doctor --fix    # ...and repair what it can
+```
+
+Requires `dbus-launch`, `gnome-keyring-daemon` and `gdbus` (packages `dbus`/`dbus-x11`,
+`gnome-keyring`, `glib2`). No root needed. To run the `proton-drive` binary by hand in
+the same environment, use `eval "$(protonfs shell-init)"`.
+
+Escape hatches: `PROTONFS_KEYRING_PASSWORD` supplies your own keyring password
+instead of the generated one, and `PROTONFS_NO_KEYRING_BOOTSTRAP=1` turns all of
+this off if you'd rather manage the environment yourself.
+
 ## License
 
 [PolyForm Noncommercial 1.0.0](LICENSE) — free for noncommercial use with

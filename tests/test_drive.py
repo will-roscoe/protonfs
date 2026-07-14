@@ -10,7 +10,9 @@ from protonfs.drive import DriveAuthError, DriveClient, DriveError, TransferResu
 
 
 def _stub_run(stdout: str, returncode: int = 0, stderr: str = ""):
-    def _run(args, capture_output, text):
+    # **kwargs: DriveClient passes env= (the keyring-bootstrapped environment) to
+    # every proton-drive invocation.
+    def _run(args, capture_output, text, **kwargs):
         return subprocess.CompletedProcess(args, returncode, stdout=stdout, stderr=stderr)
 
     return _run
@@ -180,3 +182,65 @@ def test_walk_empty_remote(monkeypatch):
     client = DriveClient(binary="proton-drive")
     monkeypatch.setattr(client, "list", lambda path: [])
     assert client.walk("/root") == []
+
+
+def test_keyring_failure_is_not_misreported_as_an_auth_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The exo2 regression: proton-drive's keyring errors carry no auth wording, so the
+    old classifier fell through to a bare DriveError -- and is_authenticated() turned
+    that into "not logged in", sending the user to `auth login`, which completes the
+    browser flow and then dies at the same locked collection."""
+    from protonfs.drive import DriveSecretsError
+
+    client = DriveClient(binary="proton-drive")
+    monkeypatch.setattr("protonfs.drive.shutil.which", lambda _: "/usr/bin/proton-drive")
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        _stub_run(
+            "",
+            returncode=1,
+            stderr=(
+                "Failed to load session from secrets (ensure you have secrets available): "
+                "Cannot autolaunch D-Bus without X11 $DISPLAY"
+            ),
+        ),
+    )
+
+    with pytest.raises(DriveSecretsError, match="doctor"):
+        client.list("/")
+
+
+def test_locked_collection_error_is_classified_as_secrets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from protonfs.drive import DriveSecretsError
+
+    client = DriveClient(binary="proton-drive")
+    monkeypatch.setattr("protonfs.drive.shutil.which", lambda _: "/usr/bin/proton-drive")
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        _stub_run(
+            "",
+            returncode=1,
+            stderr="Cannot create an item in a locked collection (code: 2)",
+        ),
+    )
+
+    with pytest.raises(DriveSecretsError):
+        client.list("/")
+
+
+def test_is_authenticated_propagates_secrets_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    from protonfs.drive import DriveSecretsError
+
+    client = DriveClient(binary="proton-drive")
+    monkeypatch.setattr("protonfs.drive.shutil.which", lambda _: "/usr/bin/proton-drive")
+    monkeypatch.setattr(
+        subprocess, "run", _stub_run("", returncode=1, stderr="ERR_SECRETS_PLATFORM_ERROR")
+    )
+
+    with pytest.raises(DriveSecretsError):
+        client.is_authenticated()
