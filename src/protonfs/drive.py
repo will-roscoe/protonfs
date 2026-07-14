@@ -133,8 +133,18 @@ class DriveClient:
         self._binary = binary or binary_path()
         self._env: dict[str, str] | None = None
 
-    def _binary_available(self) -> bool:
+    @property
+    def binary(self) -> str:
+        return self._binary
+
+    def binary_available(self) -> bool:
+        """Whether the binary exists at all -- distinct from whether it *runs*. On a
+        host with no keyring it exists and fails, and conflating the two tells users
+        to reinstall a binary that is already there."""
         return shutil.which(self._binary) is not None or Path(self._binary).exists()
+
+    def _binary_available(self) -> bool:
+        return self.binary_available()
 
     def _drive_env(self) -> dict[str, str]:
         """Environment for proton-drive, with the keyring bootstrapped on first use.

@@ -62,14 +62,20 @@ def run_doctor(fix: bool = False) -> list[Check]:
     checks: list[Check] = []
 
     drive = DriveClient()
-    version = drive.version()
+    installed = drive.binary_available()
+    version = drive.version() if installed else None
+    if version is not None:
+        detail, hint = version.replace("\n", " / "), None
+    elif installed:
+        # Present but not runnable -- almost always the keyring, since proton-drive
+        # loads its session before it will answer even `version`. Saying "not found"
+        # here would send the user to reinstall a binary that is sitting right there.
+        detail = f"{drive.binary} is installed but failed to run"
+        hint = "Usually the keyring: see the checks below, then `protonfs doctor --fix`."
+    else:
+        detail, hint = "not found on PATH", "Run `protonfs install-drive`."
     checks.append(
-        Check(
-            name="proton-drive binary",
-            ok=version is not None,
-            detail=version or "not found on PATH",
-            hint=None if version else "Run `protonfs install-drive`.",
-        )
+        Check(name="proton-drive binary", ok=version is not None, detail=detail, hint=hint)
     )
 
     if not is_linux():

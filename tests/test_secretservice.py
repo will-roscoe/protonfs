@@ -227,3 +227,59 @@ def test_bus_timeout_does_not_hang_forever(monkeypatch):
         raise subprocess.TimeoutExpired(cmd, ss._BUS_TIMEOUT)
 
     assert ss.bus_responds({ss.BUS_ENV: BUS}, timeout) is False
+
+
+def test_ensure_waits_for_a_daemon_that_registers_late(monkeypatch):
+    """gnome-keyring-daemon forks and returns before it owns org.freedesktop.secrets.
+    Checking once, immediately, reports `missing` on a host where it is about to work
+    -- which on exo2 made protonfs discard a good bus and call proton-drive missing."""
+    monkeypatch.setattr(ss.time, "sleep", lambda _: None)
+
+    class SlowToRegister(FakeRunner):
+        def __init__(self):
+            super().__init__(has_secrets=False)
+            self.checks_after_start = 0
+            self.started = False
+
+        def __call__(self, cmd, env, stdin=None):
+            if cmd[0] == "gnome-keyring-daemon":
+                self.started = True
+                # Deliberately does NOT set has_secrets: the daemon has forked, but the
+                # bus name is not claimed yet.
+                self.calls.append(cmd)
+                return FakeCompleted()
+            if self.started and cmd[0] == "gdbus":
+                self.checks_after_start += 1
+                if self.checks_after_start > 3:
+                    self.has_secrets = True
+                    self.locked = False
+            return super().__call__(cmd, env, stdin)
+
+    runner = SlowToRegister()
+    result = ss.ensure_secret_service({}, runner)
+
+    assert result.ready
+    assert runner.checks_after_start > 3
+
+
+def test_wait_for_secret_service_gives_up_and_reports_the_state(monkeypatch):
+    monkeypatch.setattr(ss.time, "sleep", lambda _: None)
+    state = ss.wait_for_secret_service(
+        {ss.BUS_ENV: BUS}, FakeRunner(has_secrets=False), timeout=0.01
+    )
+    assert state == "missing"
+
+
+def test_ensure_raises_when_the_daemon_never_becomes_usable(monkeypatch):
+    monkeypatch.setattr(ss.time, "sleep", lambda _: None)
+    monkeypatch.setattr(ss, "_REGISTER_TIMEOUT", 0.01)
+
+    class NeverRegisters(FakeRunner):
+        def __call__(self, cmd, env, stdin=None):
+            if cmd[0] == "gnome-keyring-daemon":
+                self.calls.append(cmd)
+                return FakeCompleted()  # forked, but never claims the name
+            return super().__call__(cmd, env, stdin)
+
+    with pytest.raises(ss.SecretServiceError, match="still missing"):
+        ss.ensure_secret_service({}, NeverRegisters(has_secrets=False))

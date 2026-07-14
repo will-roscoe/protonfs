@@ -38,6 +38,7 @@ import secrets as _secrets
 import shutil
 import stat
 import subprocess
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -47,6 +48,8 @@ BUS_ENV = "DBUS_SESSION_BUS_ADDRESS"
 
 SECRETS_BUS_NAME = "org.freedesktop.secrets"
 _BUS_TIMEOUT = 15  # seconds; a wedged bus must not hang every protonfs command
+_REGISTER_TIMEOUT = 10.0  # seconds to wait for a just-started daemon to claim the bus name
+_POLL_INTERVAL = 0.2
 
 
 class SecretServiceError(RuntimeError):
@@ -333,6 +336,27 @@ def start_keyring(env: dict[str, str], replace: bool, runner=_run) -> dict[str, 
     return _parse_sh_exports(result.stdout)
 
 
+def wait_for_secret_service(
+    env: dict[str, str], runner=_run, timeout: float | None = None
+) -> str:
+    """Poll until the Secret Service is `ready`, or `timeout` elapses.
+
+    gnome-keyring-daemon daemonizes: it forks and the parent exits *before* the child
+    has claimed org.freedesktop.secrets on the bus. Checking the state immediately
+    after start_keyring() therefore reports `missing` on a host where it is about to
+    work perfectly -- observed on exo2, where the premature verdict made protonfs
+    discard a perfectly good bus and then misreport proton-drive as uninstalled.
+    """
+    # Read the module constant at call time, not as a default argument, so it stays
+    # tunable (and so tests can shorten it instead of really waiting).
+    deadline = time.monotonic() + (_REGISTER_TIMEOUT if timeout is None else timeout)
+    state = secret_service_state(env, runner)
+    while state != "ready" and time.monotonic() < deadline:
+        time.sleep(_POLL_INTERVAL)
+        state = secret_service_state(env, runner)
+    return state
+
+
 def ensure_secret_service(env: dict[str, str] | None = None, runner=_run) -> SecretsResult:
     """Return an environment in which proton-drive can reach a usable keyring.
 
@@ -377,10 +401,10 @@ def ensure_secret_service(env: dict[str, str] | None = None, runner=_run) -> Sec
     actions.append(
         "started gnome-keyring (secrets) against "
         f"{secrets_home()}"
-        + (" , replacing the daemon holding a locked collection" if state == "locked" else "")
+        + (", replacing the daemon holding a locked collection" if state == "locked" else "")
     )
 
-    after = secret_service_state(base, runner)
+    after = wait_for_secret_service(base, runner)
     if after in ("ready", "unknown"):
         return SecretsResult(env=base, ready=True, actions=actions)
 
