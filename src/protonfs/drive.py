@@ -24,6 +24,15 @@ class DriveAuthError(DriveError):
     pass
 
 
+class DriveSecretsError(DriveError):
+    """proton-drive could not reach/write the OS keyring that holds its session.
+
+    Distinct from DriveAuthError: the user is not logged out, the machine simply has
+    nowhere to keep the session. Re-running `auth login` cannot fix it and would just
+    fail again at the same point -- `protonfs doctor` can.
+    """
+
+
 @dataclass
 class TransferResult:
     transferred_items: int
@@ -71,9 +80,42 @@ _AUTH_ERROR_SIGNALS = (
 )
 
 
+# Phrases proton-drive/libsecret emit when the keyring itself is unreachable or
+# sealed, captured verbatim from a headless CentOS 7 host. These must be checked
+# *before* the auth signals: "Failed to load session from secrets" contains no auth
+# wording, but it is a keyring fault, and telling the user to log in again sends
+# them round a loop that fails at exactly the same place.
+_SECRETS_ERROR_SIGNALS = (
+    "cannot autolaunch d-bus",
+    "err_secrets_platform_error",
+    "locked collection",
+    "islocked",
+    "load session from secrets",
+    "org.freedesktop.secret",
+    "secret service",
+)
+
+
+def _is_secrets_error(message: str) -> bool:
+    lowered = message.lower()
+    return any(signal in lowered for signal in _SECRETS_ERROR_SIGNALS)
+
+
 def _is_auth_error(message: str) -> bool:
     lowered = message.lower()
     return any(signal in lowered for signal in _AUTH_ERROR_SIGNALS)
+
+
+def _classify(message: str) -> DriveError:
+    if _is_secrets_error(message):
+        return DriveSecretsError(
+            f"proton-drive could not use the OS keyring: {message}\n"
+            "This host has no usable Secret Service (common over SSH with no desktop "
+            "session). Run `protonfs doctor --fix`, then retry."
+        )
+    if _is_auth_error(message):
+        return DriveAuthError(f"proton-drive auth required: {message}")
+    return DriveError(message)
 
 
 def decrypted_name(entry: dict) -> str | None:
@@ -89,14 +131,33 @@ def decrypted_name(entry: dict) -> str | None:
 class DriveClient:
     def __init__(self, binary: str | None = None) -> None:
         self._binary = binary or binary_path()
+        self._env: dict[str, str] | None = None
 
     def _binary_available(self) -> bool:
         return shutil.which(self._binary) is not None or Path(self._binary).exists()
 
+    def _drive_env(self) -> dict[str, str]:
+        """Environment for proton-drive, with the keyring bootstrapped on first use.
+
+        Resolved lazily and cached for the process: on a headless host the first
+        call may launch a session bus, and doing that at import time would charge
+        every `protonfs --help` for it.
+        """
+        from protonfs.secretservice import drive_env
+
+        if self._env is None:
+            self._env = drive_env()
+        return self._env
+
     def _invoke(self, args: list[str]) -> subprocess.CompletedProcess:
         if not self._binary_available():
             raise DriveError(f"proton-drive binary not found: {self._binary}")
-        return subprocess.run([self._binary, *args, "--json"], capture_output=True, text=True)
+        return subprocess.run(
+            [self._binary, *args, "--json"],
+            capture_output=True,
+            text=True,
+            env=self._drive_env(),
+        )
 
     def _run_json(self, args: list[str]) -> dict | list:
         result = self._invoke(args)
@@ -107,9 +168,7 @@ class DriveClient:
             raise DriveError(f"unparseable output from proton-drive: {stdout!r}") from exc
         if result.returncode != 0:
             message = json.dumps(parsed) if parsed else result.stderr.strip()
-            if _is_auth_error(message):
-                raise DriveAuthError(f"proton-drive auth required: {message}")
-            raise DriveError(message)
+            raise _classify(message)
         return parsed
 
     def _run_transfer(self, args: list[str]) -> TransferResult:
@@ -121,22 +180,27 @@ class DriveClient:
             parsed = None
         if not isinstance(parsed, dict) or "transferredItems" not in parsed:
             message = result.stderr.strip() or stdout
-            if _is_auth_error(message):
-                raise DriveAuthError(f"proton-drive auth required: {message}")
-            raise DriveError(message)
+            raise _classify(message)
         return TransferResult.from_json(parsed)
 
     def version(self) -> str | None:
         if not self._binary_available():
             return None
-        result = subprocess.run([self._binary, "version"], capture_output=True, text=True)
+        result = subprocess.run(
+            [self._binary, "version"], capture_output=True, text=True, env=self._drive_env()
+        )
         if result.returncode != 0:
             return None
         return result.stdout.strip()
 
     def is_authenticated(self) -> bool:
+        """Whether a usable session exists. A *keyring* fault deliberately propagates:
+        collapsing it to False would report "not authenticated" and send the user to
+        `auth login`, which cannot succeed on a host with no writable keyring."""
         try:
             self._run_json(["filesystem", "list", "/"])
+        except DriveSecretsError:
+            raise
         except DriveError:
             return False
         return True

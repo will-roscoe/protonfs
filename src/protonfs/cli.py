@@ -17,13 +17,17 @@ def _drive_error_boundary(func):
 
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
-        from protonfs.drive import DriveAuthError, DriveError
+        from protonfs.drive import DriveAuthError, DriveError, DriveSecretsError
 
         try:
             return func(*args, **kwargs)
+        except DriveSecretsError as exc:
+            # Ordered before DriveAuthError: a keyring fault is not an auth fault, and
+            # its message already carries its own remedy (`protonfs doctor --fix`).
+            raise click.ClickException(str(exc)) from exc
         except DriveAuthError as exc:
             raise click.ClickException(
-                f"{exc}\nRun `proton-drive auth login` to re-authenticate, "
+                f"{exc}\nRun `protonfs auth login` to re-authenticate, "
                 "then retry this command."
             ) from exc
         except DriveError as exc:
@@ -196,9 +200,15 @@ def refresh(path: str | None, prune: bool) -> None:
 
 @main.command("install-drive")
 @click.option("--version", default=None, help="proton-drive version to install (default: pinned).")
-def install_drive_cmd(version: str | None) -> None:
+@click.option(
+    "--skip-keyring",
+    is_flag=True,
+    help="Do not prepare the OS keyring after installing.",
+)
+def install_drive_cmd(version: str | None, skip_keyring: bool) -> None:
     """Download and verify the official proton-drive CLI binary."""
     from protonfs.install import InstallError, install_drive
+    from protonfs.secretservice import SecretServiceError, ensure_secret_service
 
     try:
         result = install_drive(version=version)
@@ -207,7 +217,43 @@ def install_drive_cmd(version: str | None) -> None:
     click.echo(f"Installed proton-drive to {result.path} (SHA-512 verified).")
     for warning in result.warnings:
         click.echo(f"  ! {warning}")
+
+    # Prepare the keyring here, not at first login. Otherwise the failure lands after
+    # the user has completed a browser sign-in, and the session is discarded.
+    if not skip_keyring:
+        try:
+            secrets = ensure_secret_service()
+        except SecretServiceError as exc:
+            raise click.ClickException(
+                f"proton-drive is installed, but this host has no usable OS keyring "
+                f"to store its session in:\n  {exc}\n"
+                f"Run `protonfs doctor` for details."
+            ) from exc
+        for action in secrets.actions:
+            click.echo(f"  keyring: {action}")
+        for warning in secrets.warnings:
+            click.echo(f"  ! {warning}")
+
     click.echo("Next: run `protonfs auth login` to authenticate.")
+
+
+@main.command()
+@click.option("--fix", is_flag=True, help="Repair what protonfs can (bootstrap the keyring).")
+def doctor(fix: bool) -> None:
+    """Check this host can run proton-drive (binary, session bus, OS keyring)."""
+    from protonfs.commands.doctor import doctor as run
+
+    if not run(fix=fix):
+        raise click.exceptions.Exit(1)
+
+
+@main.command("shell-init")
+def shell_init() -> None:
+    """Print shell exports so `proton-drive` run by hand sees the same keyring."""
+    from protonfs.commands.doctor import shell_exports
+
+    for line in shell_exports():
+        click.echo(f"export {line}")
 
 
 @main.command()

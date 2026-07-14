@@ -28,7 +28,7 @@ def test_drive_error_boundary_converts_drive_auth_error_with_tailored_message() 
         boom()
     message = str(excinfo.value)
     assert "session expired" in message
-    assert "proton-drive auth login" in message
+    assert "protonfs auth login" in message
 
 
 def test_ls_command_reports_clean_error_on_drive_error(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -56,5 +56,5 @@ def test_ls_command_reports_auth_hint_on_drive_auth_error(
 
     assert result.exit_code != 0
     assert "not authenticated" in result.output
-    assert "proton-drive auth login" in result.output
+    assert "protonfs auth login" in result.output
     assert not isinstance(result.exception, DriveError)
