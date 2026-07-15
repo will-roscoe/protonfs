@@ -6,7 +6,9 @@ import logging
 import os
 import shutil
 import subprocess
+import time
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -15,9 +17,27 @@ logger = logging.getLogger(__name__)
 BINARY_ENV_VAR = "PROTONFS_DRIVE_BIN"
 DEFAULT_BINARY = "proton-drive"
 
+# #33: the Proton API throttles hard from rate-limited hosts (HPC login nodes), where a
+# `filesystem list` degrades from <1s to 15-30s and then hangs for minutes. Cap each list
+# with a timeout and retry with exponential backoff so one wedged directory fails that
+# directory (and is retried) instead of hanging the whole walk. Overridable via env for
+# low-latency vs. throttled hosts.
+LIST_TIMEOUT_SECONDS = float(os.environ.get("PROTONFS_LIST_TIMEOUT", "45"))
+LIST_MAX_RETRIES = int(os.environ.get("PROTONFS_LIST_RETRIES", "4"))
+LIST_BACKOFF_BASE_SECONDS = float(os.environ.get("PROTONFS_LIST_BACKOFF", "2"))
+LIST_BACKOFF_CAP_SECONDS = float(os.environ.get("PROTONFS_LIST_BACKOFF_CAP", "60"))
+
 
 class DriveError(RuntimeError):
     pass
+
+
+class DriveThrottleError(DriveError):
+    """A `filesystem list` kept timing out / erroring under throttle past the retry budget.
+
+    Distinct from a generic DriveError so callers (and the CLI) can report "the remote is
+    throttling" clearly, and so a whole-tree walk fails one directory rather than hanging.
+    """
 
 
 class DriveAuthError(DriveError):
@@ -121,6 +141,29 @@ def _is_auth_error(message: str) -> bool:
     return any(signal in lowered for signal in _AUTH_ERROR_SIGNALS)
 
 
+# Phrases that indicate transient rate-limiting rather than a permanent fault, so a `list`
+# is worth retrying with backoff (#33). The dominant throttle signature is a timeout (the
+# call hangs), handled separately; these cover the cases where proton-drive/the API returns
+# an explicit rate-limit error instead.
+_THROTTLE_ERROR_SIGNALS = (
+    "429",
+    "too many requests",
+    "rate limit",
+    "rate-limit",
+    "ratelimit",
+    "throttl",
+    "temporarily unavailable",
+    "try again",
+    "timed out",
+    "timeout",
+)
+
+
+def _is_throttle_error(message: str) -> bool:
+    lowered = message.lower()
+    return any(signal in lowered for signal in _THROTTLE_ERROR_SIGNALS)
+
+
 def _classify(message: str) -> DriveError:
     if _is_secrets_error(message):
         return DriveSecretsError(
@@ -174,7 +217,9 @@ class DriveClient:
             self._env = drive_env()
         return self._env
 
-    def _invoke(self, args: list[str]) -> subprocess.CompletedProcess:
+    def _invoke(
+        self, args: list[str], timeout: float | None = None
+    ) -> subprocess.CompletedProcess:
         if not self._binary_available():
             raise DriveError(f"proton-drive binary not found: {self._binary}")
         return subprocess.run(
@@ -182,10 +227,11 @@ class DriveClient:
             capture_output=True,
             text=True,
             env=self._drive_env(),
+            timeout=timeout,
         )
 
-    def _run_json(self, args: list[str]) -> dict | list:
-        result = self._invoke(args)
+    def _run_json(self, args: list[str], timeout: float | None = None) -> dict | list:
+        result = self._invoke(args, timeout=timeout)
         stdout = result.stdout.strip()
         try:
             parsed = json.loads(stdout) if stdout else {}
@@ -230,9 +276,55 @@ class DriveClient:
             return False
         return True
 
-    def list(self, remote_path: str) -> list[dict]:
-        result = self._run_json(["filesystem", "list", remote_path])
+    def list(self, remote_path: str, timeout: float | None = None) -> list[dict]:
+        result = self._run_json(["filesystem", "list", remote_path], timeout=timeout)
         return result if isinstance(result, list) else []
+
+    def list_with_backoff(
+        self,
+        remote_path: str,
+        *,
+        timeout: float = LIST_TIMEOUT_SECONDS,
+        retries: int = LIST_MAX_RETRIES,
+        base_delay: float = LIST_BACKOFF_BASE_SECONDS,
+        cap: float = LIST_BACKOFF_CAP_SECONDS,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> list[dict]:
+        """`list`, but resilient to Proton API throttling (#33).
+
+        Each attempt is bounded by `timeout`; a timeout (the throttle's degrade-then-hang
+        signature) or a transient throttle error is retried with exponential backoff up to
+        `retries` times, after which it raises `DriveThrottleError`. A genuine non-throttle
+        error (auth, missing path) is raised immediately, not retried.
+        """
+        attempt = 0
+        while True:
+            try:
+                return self.list(remote_path, timeout=timeout)
+            except subprocess.TimeoutExpired as exc:
+                reason: str = f"list timed out after {timeout:g}s"
+                last_error: Exception = exc
+            except DriveError as exc:
+                if not _is_throttle_error(str(exc)):
+                    raise
+                reason = str(exc)
+                last_error = exc
+            attempt += 1
+            if attempt > retries:
+                raise DriveThrottleError(
+                    f"remote is throttling `list {remote_path}` ({reason}); "
+                    f"gave up after {retries} retries. Back off and retry later."
+                ) from last_error
+            delay = min(base_delay * (2 ** (attempt - 1)), cap)
+            logger.warning(
+                "remote throttling on %s (%s); backing off %.1fs (retry %d/%d)",
+                remote_path,
+                reason,
+                delay,
+                attempt,
+                retries,
+            )
+            sleep(delay)
 
     def remote_identities(self, remote_parent: str) -> dict[str, RemoteIdentity]:
         """Map decrypted filename -> plaintext identity for the files directly under
@@ -256,14 +348,28 @@ class DriveClient:
             )
         return identities
 
-    def walk(self, remote_root: str) -> list[RemoteEntry]:
+    def walk(
+        self,
+        remote_root: str,
+        on_directory: Callable[[list[RemoteEntry]], None] | None = None,
+        *,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> list[RemoteEntry]:
+        """Breadth-first walk of the remote tree.
+
+        Each directory is listed with throttle backoff (#33). If `on_directory` is given it
+        is called with that directory's FILE entries right after the directory is listed, so
+        a caller (refresh) can persist progress per directory -- if a later directory wedges
+        past the retry budget, everything already handed to `on_directory` is durable.
+        """
         root = remote_root.rstrip("/")
         results: list[RemoteEntry] = []
         # queue of (absolute remote path, rel prefix); deque gives O(1) popleft
         queue: deque[tuple[str, str]] = deque([(root, "")])
         while queue:
             abs_path, prefix = queue.popleft()
-            for entry in self.list(abs_path):
+            dir_files: list[RemoteEntry] = []
+            for entry in self.list_with_backoff(abs_path, sleep=sleep):
                 value = decrypted_name(entry)
                 if value is None:
                     logger.warning(
@@ -276,13 +382,15 @@ class DriveClient:
                     results.append(RemoteEntry(rel_path=rel, is_dir=True, size=0))
                     queue.append((child_abs, f"{rel}/"))
                 else:
-                    results.append(
-                        RemoteEntry(
-                            rel_path=rel,
-                            is_dir=False,
-                            size=entry.get("totalStorageSize", 0),
-                        )
+                    file_entry = RemoteEntry(
+                        rel_path=rel,
+                        is_dir=False,
+                        size=entry.get("totalStorageSize", 0),
                     )
+                    results.append(file_entry)
+                    dir_files.append(file_entry)
+            if on_directory is not None:
+                on_directory(dir_files)
         return results
 
     def upload(

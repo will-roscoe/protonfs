@@ -103,11 +103,26 @@ class FakeDrive:
         self.created_folders.append((parent_path, name))
         return {}
 
-    def walk(self, remote_root):
+    def walk(self, remote_root, on_directory=None, *, sleep=None):
         self.walk_roots.append(remote_root)
         if self._walk_by_root is not None:
-            return list(self._walk_by_root.get(remote_root, []))
-        return list(self._walk_entries)
+            entries = list(self._walk_by_root.get(remote_root, []))
+        else:
+            entries = list(self._walk_entries)
+        # Simulate the per-directory seeding callback (#33): group file entries by parent
+        # directory and invoke the callback once per group, so incremental-persistence
+        # behaviour is exercised the same way the real walk drives it.
+        if on_directory is not None:
+            from collections import defaultdict
+
+            groups: dict[str, list] = defaultdict(list)
+            for entry in entries:
+                if not entry.is_dir:
+                    parent = entry.rel_path.rsplit("/", 1)[0] if "/" in entry.rel_path else ""
+                    groups[parent].append(entry)
+            for parent in groups or {"": []}:
+                on_directory(groups[parent])
+        return entries
 
     def trash(self, remote_paths):
         self.trashed.extend(remote_paths)
