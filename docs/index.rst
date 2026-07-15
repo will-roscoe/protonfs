@@ -8,4 +8,5 @@ and a local sync manifest.
    :maxdepth: 1
 
    getting-started/index
+   getting-started/syncing
    api/index
