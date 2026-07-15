@@ -57,6 +57,21 @@ class RemoteEntry:
     size: int
 
 
+@dataclass
+class RemoteIdentity:
+    """Plaintext identity of a remote file, for verifying a local file against the remote.
+
+    Proton exposes the *decrypted* original size (`claimedSize`) and content digests
+    (`claimedDigests`) per file, distinct from the encrypted `totalStorageSize` which runs
+    ~0.008% + padding larger. Always compare local files against these claimed* fields --
+    a local byte size matches `claimed_size` exactly, with no encryption-overhead tolerance.
+    Either field may be None if proton-drive did not report it.
+    """
+
+    claimed_size: int | None
+    sha1: str | None
+
+
 def binary_path() -> str:
     return os.environ.get(BINARY_ENV_VAR, DEFAULT_BINARY)
 
@@ -218,6 +233,28 @@ class DriveClient:
     def list(self, remote_path: str) -> list[dict]:
         result = self._run_json(["filesystem", "list", remote_path])
         return result if isinstance(result, list) else []
+
+    def remote_identities(self, remote_parent: str) -> dict[str, RemoteIdentity]:
+        """Map decrypted filename -> plaintext identity for the files directly under
+        `remote_parent`. Folders and entries with an undecryptable name are skipped.
+
+        This is the single primitive every local-vs-remote comparison should route through
+        (verify-after-push, offload-before-delete, cross-client drift): it reads the
+        plaintext `claimedSize`/`claimedDigests.sha1`, never the encrypted `totalStorageSize`.
+        """
+        identities: dict[str, RemoteIdentity] = {}
+        for entry in self.list(remote_parent):
+            if entry.get("type") == "folder":
+                continue
+            name = decrypted_name(entry)
+            if name is None:
+                continue
+            digests = entry.get("claimedDigests") or {}
+            identities[name] = RemoteIdentity(
+                claimed_size=entry.get("claimedSize"),
+                sha1=digests.get("sha1"),
+            )
+        return identities
 
     def walk(self, remote_root: str) -> list[RemoteEntry]:
         root = remote_root.rstrip("/")
