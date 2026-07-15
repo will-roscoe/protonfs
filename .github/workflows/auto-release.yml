@@ -89,6 +89,8 @@ jobs:
     if: needs.compute.outputs.released == 'true'
     uses: ./.github/workflows/release.yml
     secrets: inherit
+    with:
+      tag: ${{ needs.compute.outputs.tag }}
 
   badge:
     needs: compute

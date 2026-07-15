@@ -9,6 +9,15 @@ on:
   # (A tag pushed with GITHUB_TOKEN cannot trigger the tag-push event above, so the
   # merge-to-main path invokes this workflow directly instead.)
   workflow_call:
+    inputs:
+      tag:
+        description: >-
+          Version tag to build and release. REQUIRED from workflow_call: under
+          workflow_call github.ref_name is the caller's ref ("main"), not the tag,
+          so it must be passed in explicitly. Empty for the tag-push trigger.
+        required: false
+        type: string
+        default: ""
 
 jobs:
   build:
@@ -16,6 +25,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          # Build from the version tag so hatch-vcs resolves the exact version. On a
+          # tag-push trigger inputs.tag is empty and github.ref_name is the tag already.
+          ref: ${{ inputs.tag || github.ref_name }}
           fetch-depth: 0
           fetch-tags: true   # hatch-vcs needs the version tag present to resolve the version
 
@@ -67,4 +79,7 @@ jobs:
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${{ github.ref_name }}" dist/* --generate-notes
+          # inputs.tag under workflow_call (github.ref_name would be "main" there);
+          # github.ref_name on a direct tag-push trigger.
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: gh release create "$RELEASE_TAG" dist/* --generate-notes
