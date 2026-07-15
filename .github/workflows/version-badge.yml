@@ -1,0 +1,35 @@
+name: "Update Version Badge"
+on:
+  push:
+    paths:
+      - 'pyproject.toml'
+    branches: 
+      - main 
+  workflow_dispatch: 
+
+jobs:
+  regenerate-version-badge:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: "get version and regenerate badge"
+        run: |
+          NEW_VERSION=$(grep -m1 '^version = ' pyproject.toml | sed 's/version = "\(.*\)"/\1/' | sed 's/-/--/')
+          if [ -z "$NEW_VERSION" ]; then
+            echo "Could not read version from pyproject.toml — aborting."
+            exit 1
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          curl -o "${GITHUB_WORKSPACE}/.github/badges/version.svg" "https://img.shields.io/badge/version-${NEW_VERSION}-blue?style=flat"
+          
+          git add "${GITHUB_WORKSPACE}/.github/badges/version.svg"
+          git diff --cached --quiet || git commit -m "chore: update version badge [skip ci]"
+          git push
