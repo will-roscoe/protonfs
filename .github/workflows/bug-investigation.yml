@@ -23,6 +23,14 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Copilot CLI
+        run: npm install -g @github/copilot
+
       - name: Add investigating comment
         uses: actions/github-script@v7
         with:
@@ -34,38 +42,31 @@ jobs:
               body: '🔍 **Copilot is investigating this bug...**'
             })
 
-      - name: Copilot: Analyze bug and propose fix
-        uses: copilot/tasks@v1
-        id: investigate
-        with:
-          instructions: |
-            You are a bug investigation assistant. Analyze this GitHub issue and determine if it describes a genuine bug that can be fixed with a patch.
+      - name: Analyze bug with Copilot
+        env:
+          COPILOT_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          copilot -p "Analyze this GitHub issue and determine if it's a genuine bug that can be fixed with a patch, or if it's a feature request.
 
-            **Context:**
-            - Issue: #${{ github.event.issue.number }}
-            - Title: ${{ github.event.issue.title }}
-            - Description: ${{ github.event.issue.body }}
-            - Labels: ${{ join(github.event.issue.labels.*.name, ', ') }}
-
-            **Your task:**
-            1. Analyze the issue to determine if this is a genuine bug (where a code patch would fix it) or a feature request.
-            2. If it's a genuine bug:
-               - Identify the root cause
-               - Provide a detailed fix strategy
-               - Output: "BUG_CONFIRMED: [brief description of fix]"
-            3. If it's NOT a genuine bug (e.g., feature request, configuration issue, user error):
-               - Explain why
-               - Output: "NOT_A_BUG: [explanation]"
-            4. If unsure, ask clarifying questions in the output.
-
-            **Important:** Be conservative. Only confirm bugs that would clearly benefit from a code patch.
-
-          repo-context: true
+          Issue #${{ github.event.issue.number }}: ${{ github.event.issue.title }}
+          
+          Description: ${{ github.event.issue.body }}
+          
+          Labels: ${{ join(github.event.issue.labels.*.name, ', ') }}
+          
+          If it's a genuine bug, output exactly: BUG_CONFIRMED: [brief fix description]
+          If it's NOT a bug, output exactly: NOT_A_BUG: [explanation]
+          If unsure, output: UNCERTAIN: [clarifying questions]
+          
+          Be conservative - only confirm bugs that would clearly benefit from a code patch." \
+            --allow-tool='shell(git:*,npm:*)' \
+            --no-ask-user > investigation_result.txt
+          cat investigation_result.txt
 
       - name: Parse investigation results
         id: parse
         run: |
-          RESULT="${{ steps.investigate.outputs.result }}"
+          RESULT=$(cat investigation_result.txt)
           
           if [[ $RESULT == BUG_CONFIRMED:* ]]; then
             echo "is_bug=true" >> $GITHUB_OUTPUT
@@ -75,41 +76,39 @@ jobs:
             echo "fix_description=${RESULT#NOT_A_BUG: }" >> $GITHUB_OUTPUT
           else
             echo "is_bug=uncertain" >> $GITHUB_OUTPUT
-            echo "fix_description=$RESULT" >> $GITHUB_OUTPUT
+            echo "fix_description=${RESULT#UNCERTAIN: }" >> $GITHUB_OUTPUT
           fi
 
-      - name: Copilot: Generate fix (if confirmed bug)
+      - name: Generate fix with Copilot (if confirmed bug)
         if: steps.parse.outputs.is_bug == 'true'
-        uses: copilot/tasks@v1
-        id: generate-fix
-        with:
-          instructions: |
-            You are a skilled software engineer. Generate a minimal, focused patch to fix this bug.
+        env:
+          COPILOT_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          copilot -p "You are a skilled software engineer. Generate a minimal, focused patch to fix this bug.
 
-            **Issue:** #${{ github.event.issue.number }} - ${{ github.event.issue.title }}
-            **Description:** ${{ github.event.issue.body }}
-            **Fix strategy:** ${{ steps.parse.outputs.fix_description }}
+          Issue #${{ github.event.issue.number }}: ${{ github.event.issue.title }}
+          
+          Description: ${{ github.event.issue.body }}
+          
+          Fix strategy: ${{ steps.parse.outputs.fix_description }}
+          
+          Tasks:
+          1. Examine the repository code
+          2. Identify the files that need changes
+          3. Create a focused fix (minimal changes, no refactoring)
+          4. Output the exact files and changes needed
+          
+          Format your response as:
+          FILES_TO_CHANGE:
+          - file1.py: [description of changes]
+          - file2.py: [description of changes]
+          
+          Then provide the actual code changes." \
+            --allow-tool='shell(git:*,npm:*)' \
+            --no-ask-user > fix_plan.txt
+          cat fix_plan.txt
 
-            **Your task:**
-            1. Examine the repository code
-            2. Create a focused fix (minimal changes, no refactoring)
-            3. Include comments explaining the fix
-            4. Ensure tests pass if applicable
-            5. Output a summary of files changed
-
-          repo-context: true
-          create-pr: true
-          pr-title: "fix: ${{ github.event.issue.title }}"
-          pr-description: |
-            Fixes #${{ github.event.issue.number }}
-
-            ## Summary
-            ${{ steps.parse.outputs.fix_description }}
-
-            **Note:** This PR was automatically generated by Copilot bug investigation.
-          pr-draft: false
-
-      - name: Update issue with analysis (bug confirmed)
+      - name: Update issue (bug confirmed)
         if: steps.parse.outputs.is_bug == 'true'
         uses: actions/github-script@v7
         with:
@@ -118,17 +117,10 @@ jobs:
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: `✅ **Bug Confirmed!**
-
-            ${{ steps.parse.outputs.fix_description }}
-
-            I've generated a fix PR. You can:
-            - Review and merge the PR
-            - Comment with \`/investigate\` to suggest alternative approaches
-            - Provide additional context for a different fix strategy`
+              body: `✅ **Bug Confirmed!**\n\n${{ steps.parse.outputs.fix_description }}\n\nI've identified the fix. You can:\n- Review the fix strategy above\n- Comment with \\\`/investigate [alternative approach]\\\` to suggest a different fix\n- Create a PR based on the fix plan`
             })
 
-      - name: Update issue with analysis (not a bug)
+      - name: Update issue (not a bug)
         if: steps.parse.outputs.is_bug == 'false'
         uses: actions/github-script@v7
         with:
@@ -137,17 +129,10 @@ jobs:
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: `⚠️ **Not a Bug (or Requires More Info)**
-
-            ${{ steps.parse.outputs.fix_description }}
-
-            This doesn't appear to be a code bug that a patch would fix. Consider:
-            - Reframing as a feature request
-            - Providing more reproduction steps
-            - Checking documentation`
+              body: `⚠️ **Not a Bug (or Requires More Info)**\n\n${{ steps.parse.outputs.fix_description }}\n\nThis doesn't appear to be a code bug. Consider:\n- Reframing as a feature request\n- Providing more reproduction steps\n- Checking documentation`
             })
 
-      - name: Update issue with analysis (uncertain)
+      - name: Update issue (uncertain)
         if: steps.parse.outputs.is_bug == 'uncertain'
         uses: actions/github-script@v7
         with:
@@ -156,13 +141,7 @@ jobs:
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: `❓ **Need Clarification**
-
-            ${{ steps.parse.outputs.fix_description }}
-
-            Please provide more details so I can better investigate. After you respond, I can:
-            - Run \`/investigate\` again
-            - Propose a fix if it's confirmed as a bug`
+              body: `❓ **Need Clarification**\n\n${{ steps.parse.outputs.fix_description }}\n\nPlease provide more details. After you respond, I can:\n- Re-analyze with more context\n- Propose a fix if confirmed as a bug`
             })
 
   handle-investigate-comment:
@@ -177,6 +156,14 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Copilot CLI
+        run: npm install -g @github/copilot
+
       - name: Add comment reaction
         uses: actions/github-script@v7
         with:
@@ -188,44 +175,37 @@ jobs:
               content: 'eyes'
             })
 
-      - name: Extract suggested approach from comment
-        id: extract-approach
+      - name: Extract suggested approach
+        id: extract
         run: |
           COMMENT="${{ github.event.comment.body }}"
           APPROACH=$(echo "$COMMENT" | sed 's|/investigate||g' | xargs)
           echo "approach=$APPROACH" >> $GITHUB_OUTPUT
 
-      - name: Copilot: Generate alternative fix
-        if: steps.extract-approach.outputs.approach != ''
-        uses: copilot/tasks@v1
-        id: alt-fix
-        with:
-          instructions: |
-            A user has suggested an alternative approach to fix this bug.
+      - name: Generate alternative fix
+        if: steps.extract.outputs.approach != ''
+        env:
+          COPILOT_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          copilot -p "A user has suggested an alternative fix approach for this bug.
 
-            **Issue:** #${{ github.event.issue.number }} - ${{ github.event.issue.title }}
-            **Description:** ${{ github.event.issue.body }}
-            **User's suggested approach:** ${{ steps.extract-approach.outputs.approach }}
-
-            **Your task:**
-            1. Evaluate the user's suggestion
-            2. Generate a fix using their approach
-            3. Create a PR with this alternative fix
-            4. Explain how it differs from the original approach
-
-          repo-context: true
-          create-pr: true
-          pr-title: "fix: ${{ github.event.issue.title }} (alternative approach)"
-          pr-description: |
-            Fixes #${{ github.event.issue.number }} (alternative approach)
-
-            **User's suggested approach:** ${{ steps.extract-approach.outputs.approach }}
-
-            **Note:** This is an alternative fix approach suggested in the issue discussion.
-          pr-draft: false
+          Issue #${{ github.event.issue.number }}: ${{ github.event.issue.title }}
+          
+          Description: ${{ github.event.issue.body }}
+          
+          User's suggested approach: ${{ steps.extract.outputs.approach }}
+          
+          Tasks:
+          1. Evaluate the user's suggestion
+          2. Generate a fix using their approach
+          3. Explain how it differs from typical approaches
+          4. Output the exact files and changes needed" \
+            --allow-tool='shell(git:*,npm:*)' \
+            --no-ask-user > alternative_fix.txt
+          cat alternative_fix.txt
 
       - name: Comment with alternative fix
-        if: steps.extract-approach.outputs.approach != ''
+        if: steps.extract.outputs.approach != ''
         uses: actions/github-script@v7
         with:
           script: |
@@ -233,10 +213,5 @@ jobs:
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: `✨ **Alternative Fix Generated**
-
-            I've created a new PR using your suggested approach:
-            > ${{ steps.extract-approach.outputs.approach }}
-
-            You can now compare both approaches and choose which works best for your use case.`
+              body: `✨ **Alternative Approach Analyzed**\n\nI've analyzed your suggestion:\n> ${{ steps.extract.outputs.approach }}\n\nReview the alternative fix plan above and create a PR if it looks good!`
             })
