@@ -19,17 +19,19 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: main            # commit the badge to main even when triggered by a tag push
-          fetch-depth: 0       # hatch-vcs / git describe need full history + tags
+          fetch-depth: 0       # full history for the version tags
+          fetch-tags: true     # fetch-depth:0 alone does not guarantee tags in checkout@v4
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Resolve version and regenerate badge
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Read the release version from the latest v* tag (ignores any stray
-          # non-version tags), strip the leading 'v'. pyproject.toml has no static
-          # version under hatch-vcs, so it cannot be grepped.
-          VERSION=$(git describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null | sed 's/^v//')
+          # Read the release version from the newest v* tag by version order (does
+          # not depend on the tag being an ancestor of HEAD, unlike git describe).
+          # pyproject.toml has no static version under hatch-vcs, so it can't be grepped.
+          git fetch --tags --force --quiet
+          VERSION=$(git tag --list 'v[0-9]*' --sort=-version:refname | head -n1 | sed 's/^v//')
           if [ -z "$VERSION" ]; then
             echo "No v* release tag found — aborting."
             exit 1
