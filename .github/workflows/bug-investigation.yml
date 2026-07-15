@@ -44,7 +44,7 @@ jobs:
 
       - name: Analyze bug with Copilot
         env:
-          COPILOT_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COPILOT_GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
           copilot -p "Analyze this GitHub issue and determine if it's a genuine bug that can be fixed with a patch, or if it's a feature request.
 
@@ -82,7 +82,7 @@ jobs:
       - name: Generate fix with Copilot (if confirmed bug)
         if: steps.parse.outputs.is_bug == 'true'
         env:
-          COPILOT_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COPILOT_GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
           copilot -p "You are a skilled software engineer. Generate a minimal, focused patch to fix this bug.
 
@@ -185,7 +185,7 @@ jobs:
       - name: Generate alternative fix
         if: steps.extract.outputs.approach != ''
         env:
-          COPILOT_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COPILOT_GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
           copilot -p "A user has suggested an alternative fix approach for this bug.
 
