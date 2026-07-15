@@ -1,11 +1,15 @@
-# protonfs
+# protonfs [![](https://raw.githubusercontent.com/will-roscoe/protonfs/main/.github/badges/version.svg)](https://github.com/will-roscoe/protonfs/releases/latest)
 
-![](https://raw.githubusercontent.com/will-roscoe/protonfs/main/.github/badges/version.svg)
-![](https://raw.githubusercontent.com/will-roscoe/protonfs/main/.github/badges/pytest.svg)
-![](https://raw.githubusercontent.com/will-roscoe/protonfs/main/.github/badges/ruff.svg)
+[![](https://img.shields.io/badge/pypi-repo?logo=pypi&logoColor=%23ffd242&logoSize=auto&color=%233775a9)](https://pypi.org/project/protonfs/) 
+[![](https://img.shields.io/badge/docs-sphinx?logo=sphinx&logoSize=auto&color=%230a507a)](https://will-roscoe.github.io/protonfs) 
+[![](https://img.shields.io/badge/github-repo?&logo=github&color=%23010409)](https://github.com/will-roscoe/protonfs)
 ![](https://raw.githubusercontent.com/will-roscoe/protonfs/main/.github/badges/pyversion.svg)
-![](https://raw.githubusercontent.com/will-roscoe/protonfs/main/.github/badges/coverage.svg)
+
+[![](https://raw.githubusercontent.com/will-roscoe/protonfs/main/.github/badges/pytest.svg)](https://github.com/will-roscoe/protonfs/actions/workflows/ci.yml)
+[![](https://raw.githubusercontent.com/will-roscoe/protonfs/main/.github/badges/ruff.svg)](https://github.com/will-roscoe/protonfs/actions/workflows/ci.yml)
+[![](https://raw.githubusercontent.com/will-roscoe/protonfs/main/.github/badges/coverage.svg)](https://codecov.io/gh/will-roscoe/protonfs)
 ![](https://raw.githubusercontent.com/will-roscoe/protonfs/main/.github/badges/interrogate-badge.svg)
+
 
 Sync a local directory tree with [Proton Drive](https://proton.me/drive), via
 the official [Proton Drive CLI](https://github.com/ProtonDriveApps/sdk/tree/main/cli),

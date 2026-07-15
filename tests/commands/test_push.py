@@ -165,6 +165,86 @@ def test_push_skip_with_mixed_batch_indexes_nothing_in_that_batch(
     assert ctx.index.get("b") is None
 
 
+def test_push_silent_drop_is_caught_and_not_indexed(tmp_path: Path, make_fake_drive) -> None:
+    # #22: proton-drive reports the file transferred (count=1) but it never lands on the
+    # remote. Verification against the remote must catch this: not indexed, reported failed,
+    # and the honest transferred count is 0 -- not proton-drive's lie.
+    (tmp_path / "dump_0001").write_bytes(b"data")
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    fake = make_fake_drive(
+        dropped_files={"dump_0001"},
+        upload_result=TransferResult(
+            transferred_items=1, skipped_items=0, failed_items=0, failures=[]
+        ),
+    )
+    ctx.drive = fake
+
+    result = push(ctx, None, resolve=None, dry_run=False)
+
+    assert ctx.index.get("dump_0001") is None
+    assert result.transferred_items == 0
+    assert result.failed_items == 1
+    assert "/my-files/test" in fake.identity_calls  # actually verified against the remote
+
+
+def test_push_size_mismatch_is_treated_as_under_delivery(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    # A partial/truncated upload: present on the remote, but plaintext claimedSize does not
+    # match the local size -> not verified, not indexed.
+    (tmp_path / "dump_0001").write_bytes(b"the full contents")
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.drive = make_fake_drive(remote_size_overrides={"dump_0001": 3})
+
+    result = push(ctx, None, resolve=None, dry_run=False)
+
+    assert ctx.index.get("dump_0001") is None
+    assert result.failed_items == 1
+
+
+def test_push_partial_drop_indexes_only_verified_files(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    # One file lands, one is silently dropped: only the verified file is indexed.
+    (tmp_path / "run1").mkdir()
+    (tmp_path / "run1" / "a").write_bytes(b"a")
+    (tmp_path / "run1" / "b").write_bytes(b"b")
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.drive = make_fake_drive(dropped_files={"b"})
+
+    result = push(ctx, None, resolve=None, dry_run=False)
+
+    assert ctx.index.get("run1/a") is not None
+    assert ctx.index.get("run1/b") is None
+    assert result.transferred_items == 1
+    assert result.failed_items == 1
+
+
+def test_push_cli_under_delivery_prints_retry_hint_not_resolve(
+    tmp_path: Path, monkeypatch, make_fake_drive
+) -> None:
+    # An under-delivery is not a conflict: the CLI must NOT suggest --resolve (wrong remedy),
+    # and must tell the user it will retry on the next push.
+    from click.testing import CliRunner
+
+    from protonfs.cli import main
+
+    (tmp_path / "dump_0001").write_bytes(b"data")
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.drive = make_fake_drive(dropped_files={"dump_0001"})
+    monkeypatch.setattr("protonfs.context.load_context", lambda *a, **k: ctx)
+
+    result = CliRunner().invoke(main, ["push"])
+
+    assert result.exit_code != 0
+    assert "retried on the next push" in result.output
+    assert "--resolve" not in result.output
+
+
 def test_push_cli_conflict_failure_prints_resolve_hint(
     tmp_path: Path, monkeypatch, make_fake_drive
 ) -> None:
