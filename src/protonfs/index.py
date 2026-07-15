@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -40,7 +42,23 @@ class IndexStore:
     def save(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         raw = {rel_path: entry.to_dict() for rel_path, entry in self._entries.items()}
-        self._path.write_text(json.dumps(raw, indent=2, sort_keys=True) + "\n")
+        data = json.dumps(raw, indent=2, sort_keys=True) + "\n"
+        # Write to a temp file in the SAME directory (same filesystem, so os.replace is a
+        # true atomic rename) and swap it onto the real path. A reader — or a crash — never
+        # sees a torn or truncated index: it sees either the old file or the new one.
+        fd, tmp_name = tempfile.mkstemp(
+            dir=self._path.parent, prefix=".index.", suffix=".tmp"
+        )
+        tmp = Path(tmp_name)
+        try:
+            with os.fdopen(fd, "w") as handle:
+                handle.write(data)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp, self._path)
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
 
     def get(self, rel_path: str) -> IndexEntry | None:
         return self._entries.get(rel_path)

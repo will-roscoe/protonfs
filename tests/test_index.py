@@ -3,6 +3,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
+from protonfs import index as index_mod
 from protonfs.index import IndexEntry, IndexStore
 
 
@@ -57,3 +60,58 @@ def test_all_returns_copy_not_internal_reference(tmp_path: Path) -> None:
     snapshot = store.all()
     snapshot["a/b"] = None
     assert store.get("a/b") is not None
+
+
+def test_save_leaves_no_temp_files_behind(tmp_path: Path) -> None:
+    store = IndexStore(tmp_path)
+    store.set("a/b", _entry())
+    store.save()
+    contents = {p.name for p in (tmp_path / ".protonfs").iterdir()}
+    assert contents == {"index.json"}
+
+
+def test_save_is_atomic_original_survives_failed_replace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Write a good v1 index.
+    store = IndexStore(tmp_path)
+    store.set("a/b", _entry(size=1))
+    store.save()
+
+    # Now mutate and make the atomic swap fail partway through the next save.
+    store.set("a/b", _entry(size=999))
+
+    def boom(src, dst):
+        raise OSError("simulated crash during replace")
+
+    monkeypatch.setattr(index_mod.os, "replace", boom)
+    with pytest.raises(OSError):
+        store.save()
+
+    # The on-disk index must still be the intact v1 — never torn or truncated.
+    on_disk = json.loads((tmp_path / ".protonfs" / "index.json").read_text())
+    assert on_disk["a/b"]["size"] == 1
+
+    # And the failed write must not leave a temp file lying around.
+    contents = {p.name for p in (tmp_path / ".protonfs").iterdir()}
+    assert contents == {"index.json"}
+
+
+def test_save_swaps_via_os_replace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Guard that saving goes through an atomic os.replace, not a plain in-place write.
+    calls: list[tuple] = []
+    real_replace = index_mod.os.replace
+
+    def spy(src, dst):
+        calls.append((str(src), str(dst)))
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(index_mod.os, "replace", spy)
+    store = IndexStore(tmp_path)
+    store.set("a/b", _entry())
+    store.save()
+
+    assert len(calls) == 1
+    src, dst = calls[0]
+    assert dst.endswith("index.json")
+    assert src != dst  # replaced from a distinct temp file
