@@ -141,3 +141,34 @@ def test_refresh_flags_remote_changed(tmp_path: Path, make_fake_drive) -> None:
 
     assert result.remote_changed == 1
     assert "f" in result.changed_paths
+
+
+def test_refresh_persists_seeded_entries_before_a_throttle_interruption(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    # #33: seeding is per-directory and persisted, so if the walk wedges under throttle on
+    # a later directory, the progress already made survives for the next run.
+    import pytest
+
+    from protonfs.drive import DriveThrottleError
+    from protonfs.index import IndexStore
+
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.drive = make_fake_drive()
+
+    def wedging_walk(remote_root, on_directory=None, *, sleep=None):
+        # First directory seeds and persists...
+        on_directory([RemoteEntry(rel_path="run1/a", is_dir=False, size=4)])
+        # ...then the next directory throttles past the retry budget.
+        raise DriveThrottleError("remote is throttling `list /root/run2`")
+
+    ctx.drive.walk = wedging_walk
+
+    with pytest.raises(DriveThrottleError):
+        refresh(ctx, None, prune=False)
+
+    # A fresh IndexStore (what a re-run loads) sees the seeded entry -> progress not lost.
+    reloaded = IndexStore(tmp_path)
+    assert reloaded.get("run1/a") is not None
+    assert reloaded.get("run1/a").local_state == "metadata-only"

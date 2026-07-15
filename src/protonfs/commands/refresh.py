@@ -32,39 +32,54 @@ def refresh(
     remote_root = ctx.config.remote_root
     if subpath:
         remote_root = f"{remote_root}/{subpath}"
-    entries = ctx.drive.walk(remote_root)
+
+    # `local` may be supplied by a caller (e.g. pull --refresh) that already scanned
+    # the same tree, so we don't pay for a second recursive walk + re-hash. Scan BEFORE
+    # the remote walk so the per-directory seeding callback can consult it.
+    if local is None:
+        ignore = IgnoreMatcher.from_file(ctx.root)
+        scan_root = Path(subpath) if subpath else Path(".")
+        local = scan(ctx.root, scan_root, ignore, ctx.index, low_io=ctx.config.defaults.low_io)
+
+    result = RefreshResult()
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+    def _seed_directory(dir_files: list) -> None:
+        # #33: seed metadata-only entries for a directory's remote-only files and persist
+        # immediately, so if a later directory wedges under throttle the progress so far
+        # survives (crash-safe via #1's atomic writes) instead of being lost.
+        seeded_here = False
+        for file_entry in dir_files:
+            full_rel = f"{subpath}/{file_entry.rel_path}" if subpath else file_entry.rel_path
+            if ctx.index.get(full_rel) is None and full_rel not in local:
+                ctx.index.set(
+                    full_rel,
+                    IndexEntry(
+                        size=file_entry.size,
+                        mtime=0.0,
+                        sha256="",
+                        remote_path=f"{ctx.config.remote_root}/{full_rel}",
+                        origin_device="unknown",
+                        local_state="metadata-only",
+                        last_synced=now,
+                    ),
+                )
+                result.seeded += 1
+                seeded_here = True
+        if persist and seeded_here:
+            ctx.index.save()
+
+    entries = ctx.drive.walk(remote_root, on_directory=_seed_directory)
     remote = {e.rel_path: e.size for e in entries if not e.is_dir}
     # rel_paths from the walk are relative to remote_root; if a subpath was given,
     # re-prefix so keys match the index's repo-root-relative rel_paths.
     if subpath:
         remote = {f"{subpath}/{rel}": size for rel, size in remote.items()}
 
-    # `local` may be supplied by a caller (e.g. pull --refresh) that already scanned
-    # the same tree, so we don't pay for a second recursive walk + re-hash.
-    if local is None:
-        ignore = IgnoreMatcher.from_file(ctx.root)
-        scan_root = Path(subpath) if subpath else Path(".")
-        local = scan(ctx.root, scan_root, ignore, ctx.index, low_io=ctx.config.defaults.low_io)
+    # Change/deletion detection needs the COMPLETE remote listing (a file is only "deleted"
+    # if absent from the whole walk), so it runs after the walk finishes -- unlike seeding,
+    # it cannot be incremental.
     diff_entries = classify(local, ctx.index, remote)
-
-    result = RefreshResult()
-    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
-
-    for rel, size in remote.items():
-        if ctx.index.get(rel) is None and rel not in local:
-            ctx.index.set(
-                rel,
-                IndexEntry(
-                    size=size,
-                    mtime=0.0,
-                    sha256="",
-                    remote_path=f"{ctx.config.remote_root}/{rel}",
-                    origin_device="unknown",
-                    local_state="metadata-only",
-                    last_synced=now,
-                ),
-            )
-            result.seeded += 1
 
     for entry in diff_entries:
         # A subpath-scoped walk only saw files under `subpath`; index entries outside

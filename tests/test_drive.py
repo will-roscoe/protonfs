@@ -6,7 +6,13 @@ from pathlib import Path
 
 import pytest
 
-from protonfs.drive import DriveAuthError, DriveClient, DriveError, TransferResult
+from protonfs.drive import (
+    DriveAuthError,
+    DriveClient,
+    DriveError,
+    DriveThrottleError,
+    TransferResult,
+)
 
 
 def _stub_run(stdout: str, returncode: int = 0, stderr: str = ""):
@@ -136,7 +142,7 @@ def test_walk_flattens_nested_tree(monkeypatch):
             {"name": {"ok": True, "value": "dump_0002"}, "type": "file", "totalStorageSize": 200},
         ],
     }
-    monkeypatch.setattr(client, "list", lambda path: tree[path])
+    monkeypatch.setattr(client, "list", lambda path, timeout=None: tree[path])
 
     entries = client.walk("/root")
     by_rel = {e.rel_path: e for e in entries}
@@ -155,7 +161,7 @@ def test_walk_skips_undecryptable_names(monkeypatch):
     monkeypatch.setattr(
         client,
         "list",
-        lambda path: [
+        lambda path, timeout=None: [
             {"name": {"ok": True, "value": "good"}, "type": "file", "totalStorageSize": 1},
             {"name": {"ok": False}, "type": "file", "totalStorageSize": 9},
         ],
@@ -171,7 +177,7 @@ def test_walk_logs_warning_for_undecryptable_names(monkeypatch, caplog):
     monkeypatch.setattr(
         client,
         "list",
-        lambda path: [{"name": {"ok": False}, "type": "file", "totalStorageSize": 9}],
+        lambda path, timeout=None: [{"name": {"ok": False}, "type": "file", "totalStorageSize": 9}],
     )
     with caplog.at_level(logging.WARNING):
         client.walk("/root")
@@ -180,7 +186,7 @@ def test_walk_logs_warning_for_undecryptable_names(monkeypatch, caplog):
 
 def test_walk_empty_remote(monkeypatch):
     client = DriveClient(binary="proton-drive")
-    monkeypatch.setattr(client, "list", lambda path: [])
+    monkeypatch.setattr(client, "list", lambda path, timeout=None: [])
     assert client.walk("/root") == []
 
 
@@ -244,3 +250,102 @@ def test_is_authenticated_propagates_secrets_errors(monkeypatch: pytest.MonkeyPa
 
     with pytest.raises(DriveSecretsError):
         client.is_authenticated()
+
+
+# --- #33: throttle-resilient listing --------------------------------------------------
+
+
+def _client(monkeypatch: pytest.MonkeyPatch) -> DriveClient:
+    client = DriveClient(binary="proton-drive")
+    monkeypatch.setattr("protonfs.drive.shutil.which", lambda _: "/usr/bin/proton-drive")
+    return client
+
+
+def test_list_with_backoff_retries_on_timeout_then_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _client(monkeypatch)
+    calls = {"n": 0}
+
+    def flaky(path, timeout=None):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise subprocess.TimeoutExpired(cmd="proton-drive", timeout=timeout)
+        return [{"name": {"ok": True, "value": "a"}, "type": "file"}]
+
+    monkeypatch.setattr(client, "list", flaky)
+    slept: list[float] = []
+    out = client.list_with_backoff("/x", base_delay=1, sleep=slept.append)
+
+    assert calls["n"] == 3
+    assert out == [{"name": {"ok": True, "value": "a"}, "type": "file"}]
+    assert slept == [1, 2]  # exponential backoff between attempts
+
+
+def test_list_with_backoff_raises_throttle_error_after_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _client(monkeypatch)
+
+    def always_timeout(path, timeout=None):
+        raise subprocess.TimeoutExpired(cmd="proton-drive", timeout=timeout)
+
+    monkeypatch.setattr(client, "list", always_timeout)
+    with pytest.raises(DriveThrottleError):
+        client.list_with_backoff("/x", retries=2, base_delay=0.01, sleep=lambda _: None)
+
+
+def test_list_with_backoff_does_not_retry_a_non_throttle_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _client(monkeypatch)
+    calls = {"n": 0}
+
+    def permanent_failure(path, timeout=None):
+        calls["n"] += 1
+        raise DriveError("no such remote path")
+
+    monkeypatch.setattr(client, "list", permanent_failure)
+    with pytest.raises(DriveError) as excinfo:
+        client.list_with_backoff("/x", sleep=lambda _: None)
+
+    assert not isinstance(excinfo.value, DriveThrottleError)
+    assert calls["n"] == 1  # raised immediately, never retried
+
+
+def test_list_with_backoff_caps_the_delay(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _client(monkeypatch)
+
+    def always_timeout(path, timeout=None):
+        raise subprocess.TimeoutExpired(cmd="proton-drive", timeout=timeout)
+
+    monkeypatch.setattr(client, "list", always_timeout)
+    slept: list[float] = []
+    with pytest.raises(DriveThrottleError):
+        client.list_with_backoff(
+            "/x", retries=5, base_delay=10, cap=15, sleep=slept.append
+        )
+
+    assert slept == [10, 15, 15, 15, 15]  # 10, 20->15, 40->15, ... capped at 15
+
+
+def test_walk_invokes_on_directory_per_directory_with_file_entries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _client(monkeypatch)
+    tree = {
+        "/root": [
+            {"name": {"ok": True, "value": "sub"}, "type": "folder"},
+            {"name": {"ok": True, "value": "top.txt"}, "type": "file", "totalStorageSize": 3},
+        ],
+        "/root/sub": [
+            {"name": {"ok": True, "value": "inner.txt"}, "type": "file", "totalStorageSize": 7},
+        ],
+    }
+    monkeypatch.setattr(client, "list", lambda path, timeout=None: tree[path])
+
+    seen: list[list[str]] = []
+    client.walk("/root", on_directory=lambda files: seen.append([f.rel_path for f in files]))
+
+    # One callback per directory, each carrying only that directory's file entries.
+    assert seen == [["top.txt"], ["sub/inner.txt"]]
