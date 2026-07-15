@@ -1,8 +1,15 @@
 name: CI
 
 on:
+  # PRs always run the matrix. Pushes to main only run it when something that can
+  # affect tests changed (Python sources, deps, or this workflow) — not on badge/
+  # README/docs-only commits.
   push:
     branches: [main]
+    paths:
+      - '**.py'
+      - 'pyproject.toml'
+      - '.github/workflows/ci.yml'
   pull_request:
   workflow_dispatch:
   workflow_call:
@@ -73,20 +80,45 @@ jobs:
       - name: Install package with dev dependencies
         run: pip install -e .[dev]
 
-      - name: Coverage (single canonical run)
-        run: pytest -q --cov=src/protonfs --cov-report=xml:coverage.xml
+      - name: Test + coverage (single canonical run)
+        run: >
+          pytest -q --cov=src/protonfs --cov-report=xml:coverage.xml
+          --junitxml=junit.xml -o junit_family=legacy
+        continue-on-error: true
+
+      - name: Lint status
+        id: ruff
+        run: |
+          if ruff check src tests; then
+            echo "status=passing" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failing" >> "$GITHUB_OUTPUT"
+          fi
         continue-on-error: true
 
       - name: Generate badges
         run: |
           mkdir -p .github/badges
+          # coverage + docstring coverage
           genbadge coverage -i coverage.xml -o .github/badges/coverage.svg
           interrogate src/protonfs/ -g .github/badges/interrogate-badge.svg || true
+          # pytest results (single canonical run, from junit.xml)
+          genbadge tests -i junit.xml -o .github/badges/pytest.svg
+          # ruff lint status
+          if [ "${{ steps.ruff.outputs.status }}" = "passing" ]; then RC=brightgreen; else RC=red; fi
+          curl -fsS -o .github/badges/ruff.svg \
+            "https://img.shields.io/badge/ruff-${{ steps.ruff.outputs.status }}-${RC}?logo=ruff&logoColor=white"
+          # supported python versions, sourced from the test matrix (single source of truth)
+          PYVERS=$(python -c "import yaml; m=yaml.safe_load(open('.github/workflows/ci.yml'))['jobs']['test']['strategy']['matrix']['python-version']; print(' | '.join(m))")
+          ENC=$(printf '%s' "$PYVERS" | sed 's/ /%20/g; s/|/%7C/g')
+          curl -fsS -o .github/badges/pyversion.svg \
+            "https://img.shields.io/badge/python-${ENC}-blue?logo=python&logoColor=white"
 
       - name: Commit updated badges
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add .github/badges/coverage.svg .github/badges/interrogate-badge.svg
+          git add .github/badges/coverage.svg .github/badges/interrogate-badge.svg \
+                  .github/badges/pytest.svg .github/badges/ruff.svg .github/badges/pyversion.svg
           git diff --cached --quiet || git commit -m "chore: update CI badges [skip ci]"
           git push

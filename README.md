@@ -1,11 +1,11 @@
 # protonfs
 
-![](https://github.com/will-roscoe/protonfs/blob/main/.github/badges/version.svg)
-![](https://github.com/will-roscoe/protonfs/blob/main/.github/badges/pytest.svg)
-![](https://github.com/will-roscoe/protonfs/blob/main/.github/badges/ruff.svg)
-![](https://github.com/will-roscoe/protonfs/blob/main/.github/badges/pyversion.svg)
-![](https://github.com/will-roscoe/protonfs/blob/main/.github/badges/coverage.svg)
-![](https://github.com/will-roscoe/protonfs/blob/main/.github/badges/interrogate-badge.svg)
+![](https://raw.githubusercontent.com/will-roscoe/protonfs/main/.github/badges/version.svg)
+![](https://raw.githubusercontent.com/will-roscoe/protonfs/main/.github/badges/pytest.svg)
+![](https://raw.githubusercontent.com/will-roscoe/protonfs/main/.github/badges/ruff.svg)
+![](https://raw.githubusercontent.com/will-roscoe/protonfs/main/.github/badges/pyversion.svg)
+![](https://raw.githubusercontent.com/will-roscoe/protonfs/main/.github/badges/coverage.svg)
+![](https://raw.githubusercontent.com/will-roscoe/protonfs/main/.github/badges/interrogate-badge.svg)
 
 Sync a local directory tree with [Proton Drive](https://proton.me/drive), via
 the official [Proton Drive CLI](https://github.com/ProtonDriveApps/sdk/tree/main/cli),
