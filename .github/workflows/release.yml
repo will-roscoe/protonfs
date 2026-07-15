@@ -62,6 +62,13 @@ jobs:
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          # Upload gates on the trusted-publisher OIDC identity (works for both the
+          # release.yml tag-push path and the auto-release.yml workflow_call path).
+          # PEP 740 attestations are disabled: PyPI binds attestation verification to
+          # release.yml, so an attestation signed by the auto-release.yml entry workflow
+          # is rejected ("Invalid attestations") even though OIDC auth succeeds.
+          attestations: false
 
   github-release:
     needs: build
