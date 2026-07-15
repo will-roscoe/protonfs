@@ -1,0 +1,97 @@
+name: Auto Release
+
+# Auto-bump + auto-tag on merge to main (issue #31). Reads the Conventional Commit
+# messages since the last release tag, decides the next SemVer, tags it, then runs
+# the release + version-badge workflows in the SAME run.
+#
+# Why call them via workflow_call instead of letting the tag-push trigger them:
+# a tag pushed with the default GITHUB_TOKEN does not emit events that start other
+# workflows (GitHub's recursion guard). Orchestrating here keeps everything in one
+# run with no personal access token required.
+#
+# The version-badge job commits the refreshed badge to main with "[skip ci]", so it
+# does not re-trigger this workflow.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Never run two auto-releases at once (they would race on tag creation).
+concurrency:
+  group: auto-release
+  cancel-in-progress: false
+
+permissions:
+  contents: write   # create/push the tag, create the GitHub release, commit the badge
+  id-token: write   # PyPI trusted publishing in the called release workflow
+
+jobs:
+  compute:
+    runs-on: ubuntu-latest
+    outputs:
+      released: ${{ steps.decide.outputs.released }}
+      tag: ${{ steps.decide.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Decide next version and tag it
+        id: decide
+        run: |
+          set -euo pipefail
+          git fetch --tags --force --quiet
+
+          LATEST=$(git tag --list 'v[0-9]*' --sort=-version:refname | head -n1)
+          echo "latest tag: ${LATEST:-<none>}"
+
+          if [ -n "$LATEST" ]; then
+            RANGE="${LATEST}..HEAD"
+          else
+            RANGE="HEAD"
+          fi
+
+          # NUL-separated commit bodies since the last tag -> the bump computer.
+          NEXT=$(git log -z --format=%B "$RANGE" \
+            | CURRENT_VERSION="$LATEST" python .github/scripts/compute_next_version.py)
+
+          if [ -z "$NEXT" ]; then
+            echo "No feat/fix/perf/breaking commits since ${LATEST:-start} — no release."
+            echo "released=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          TAG="v${NEXT}"
+          echo "next version: $TAG"
+
+          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
+            echo "Tag ${TAG} already exists — skipping to avoid a duplicate release."
+            echo "released=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Release $TAG"
+          git push origin "$TAG"
+
+          echo "released=true" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+  release:
+    needs: compute
+    if: needs.compute.outputs.released == 'true'
+    uses: ./.github/workflows/release.yml
+    secrets: inherit
+
+  badge:
+    needs: compute
+    if: needs.compute.outputs.released == 'true'
+    uses: ./.github/workflows/version-badge.yml
+    secrets: inherit

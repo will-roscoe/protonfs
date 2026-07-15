@@ -14,7 +14,7 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 
-from protonfs.drive import RemoteEntry, TransferResult
+from protonfs.drive import RemoteEntry, RemoteIdentity, TransferResult
 
 
 class FakeDrive:
@@ -25,6 +25,8 @@ class FakeDrive:
         walk_by_root: dict[str, list[RemoteEntry]] | None = None,
         trash_listing: list[dict] | None = None,
         upload_result: TransferResult | None = None,
+        dropped_files: set[str] | None = None,
+        remote_size_overrides: dict[str, int] | None = None,
         version: str | None = "v0.4.6",
         authed: bool = True,
     ) -> None:
@@ -36,11 +38,18 @@ class FakeDrive:
         self.deleted: list[str] = []
         self.restored: list[str] = []
         self.walk_roots: list[str] = []
+        self.identity_calls: list[str] = []
         # configured responses
         self._walk_entries = walk_entries or []
         self._walk_by_root = walk_by_root
         self._trash_listing = trash_listing
         self._upload_result = upload_result
+        # #22 simulation: names proton-drive reports as transferred but that never land,
+        # and per-name size overrides to simulate a truncated/partial upload on the remote.
+        self._dropped_files = dropped_files or set()
+        self._remote_size_overrides = remote_size_overrides or {}
+        # remote_parent -> {name: claimed_size} for files that actually landed.
+        self._remote_files: dict[str, dict[str, int]] = {}
         self._version = version
         self._authed = authed
 
@@ -54,9 +63,34 @@ class FakeDrive:
         self.upload_calls.append(
             (tuple(str(p) for p in local_paths), remote_parent, file_strategy)
         )
-        if self._upload_result is not None:
-            return self._upload_result
-        return TransferResult(len(local_paths), 0, 0, [])
+        result = (
+            self._upload_result
+            if self._upload_result is not None
+            else TransferResult(len(local_paths), 0, 0, [])
+        )
+        # Model what actually lands on the remote: every uploaded file EXCEPT the ones
+        # proton-drive reported as failures and the ones configured as silently dropped.
+        failed = {f["name"] for f in result.failures}
+        bucket = self._remote_files.setdefault(remote_parent, {})
+        for p in local_paths:
+            name = Path(p).name
+            if name in failed or name in self._dropped_files:
+                continue
+            if name in self._remote_size_overrides:
+                bucket[name] = self._remote_size_overrides[name]
+            else:
+                try:
+                    bucket[name] = Path(p).stat().st_size
+                except OSError:
+                    bucket[name] = 0
+        return result
+
+    def remote_identities(self, remote_parent):
+        self.identity_calls.append(remote_parent)
+        bucket = self._remote_files.get(remote_parent, {})
+        return {
+            name: RemoteIdentity(claimed_size=size, sha1=None) for name, size in bucket.items()
+        }
 
     def download(self, remote_paths, local_folder, file_strategy=None, folder_strategy=None):
         self.download_calls.append((tuple(remote_paths), str(local_folder), file_strategy))

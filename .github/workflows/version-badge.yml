@@ -6,6 +6,9 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+  # Callable from auto-release.yml (the GITHUB_TOKEN-pushed tag can't trigger the
+  # tag-push event above, so the merge-to-main path invokes this directly).
+  workflow_call:
 
 jobs:
   regenerate-version-badge:

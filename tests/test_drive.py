@@ -80,6 +80,33 @@ def test_run_json_non_auth_error_not_misclassified(monkeypatch: pytest.MonkeyPat
     assert not isinstance(excinfo.value, DriveAuthError)
 
 
+def test_remote_identities_parses_claimed_fields_and_skips_folders(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # #22: remote_identities reads the PLAINTEXT claimedSize / claimedDigests.sha1, ignores
+    # folders, and drops entries whose name could not be decrypted.
+    client = DriveClient(binary="proton-drive")
+    monkeypatch.setattr("protonfs.drive.shutil.which", lambda _: "/usr/bin/proton-drive")
+    payload = (
+        "["
+        '{"name": {"ok": true, "value": "f1"}, "type": "file", "claimedSize": 100,'
+        ' "claimedDigests": {"sha1": "aa"}, "totalStorageSize": 128},'
+        '{"name": {"ok": true, "value": "sub"}, "type": "folder"},'
+        '{"name": {"ok": false, "value": ""}, "type": "file", "claimedSize": 7},'
+        '{"name": {"ok": true, "value": "f2"}, "type": "file", "claimedSize": 200}'
+        "]"
+    )
+    monkeypatch.setattr(subprocess, "run", _stub_run(payload))
+
+    identities = client.remote_identities("/my-files/test")
+
+    assert set(identities) == {"f1", "f2"}  # folder + undecryptable entry excluded
+    assert identities["f1"].claimed_size == 100  # plaintext size, not totalStorageSize (128)
+    assert identities["f1"].sha1 == "aa"
+    assert identities["f2"].claimed_size == 200
+    assert identities["f2"].sha1 is None
+
+
 def test_list_raises_drive_error_on_bad_json(monkeypatch: pytest.MonkeyPatch) -> None:
     client = DriveClient(binary="proton-drive")
     monkeypatch.setattr("protonfs.drive.shutil.which", lambda _: "/usr/bin/proton-drive")

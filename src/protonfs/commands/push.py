@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime
+import logging
 from pathlib import Path
 
 from protonfs.batching import batches, group_by_parent
@@ -10,6 +11,15 @@ from protonfs.drive import DriveError, TransferResult
 from protonfs.ignore import IgnoreMatcher
 from protonfs.index import IndexEntry
 from protonfs.localscan import scan
+
+logger = logging.getLogger(__name__)
+
+# #22: proton-drive can report a file as transferred that never lands on the remote.
+# Files that fail post-upload verification are tagged with this on their failure entry so
+# the CLI can tell them apart from genuine conflicts (the remedy is a plain retry, not
+# --resolve). See `UNDERDELIVERED_KIND`.
+UNDERDELIVERED_KIND = "under-delivered"
+UNDERDELIVERED_ERROR = "claimed transferred but not verified on the remote (under-delivered)"
 
 
 def _ensure_remote_dir(ctx: RepoContext, remote_dir: str) -> None:
@@ -58,10 +68,13 @@ def push(
             f"{ctx.config.remote_root}/{parent}" if parent != "." else ctx.config.remote_root
         )
         _ensure_remote_dir(ctx, remote_parent)
+
+        # Files proton-drive did not report as failed/skipped -- candidates to VERIFY
+        # against the remote before we trust them as delivered (#22).
+        candidates: list[str] = []
         for batch in batches(rels):
             local_paths = [ctx.root / rel for rel in batch]
             result = ctx.drive.upload(local_paths, remote_parent, file_strategy=strategy)
-            total.transferred_items += result.transferred_items
             total.skipped_items += result.skipped_items
             total.failed_items += result.failed_items
             total.failures += result.failures
@@ -73,22 +86,44 @@ def push(
             if result.skipped_items > 0:
                 continue
             failed_names = {f["name"] for f in result.failures}
-            for rel in batch:
-                if Path(rel).name in failed_names:
-                    continue
-                entry = local[rel]
-                remote_path = f"{remote_parent}/{Path(rel).name}"
-                ctx.index.set(
-                    rel,
-                    IndexEntry(
-                        size=entry.size,
-                        mtime=entry.mtime,
-                        sha256=entry.sha256,
-                        remote_path=remote_path,
-                        origin_device=ctx.config.device_id,
-                        local_state="present",
-                        last_synced=now,
-                    ),
+            candidates += [rel for rel in batch if Path(rel).name not in failed_names]
+
+        if not candidates:
+            continue
+
+        # #22: do NOT trust proton-drive's transferred count -- re-list the remote parent
+        # and confirm each candidate actually landed (present, and plaintext claimedSize
+        # matches). A file that was claimed-transferred but is absent/short is a silent
+        # under-delivery: report it as failed and leave it unindexed so the next push
+        # retries it, instead of recording false success and risking data loss on offload.
+        identities = ctx.drive.remote_identities(remote_parent)
+        for rel in candidates:
+            entry = local[rel]
+            name = Path(rel).name
+            ident = identities.get(name)
+            verified = ident is not None and (
+                ident.claimed_size is None or ident.claimed_size == entry.size
+            )
+            if not verified:
+                reason = "absent" if ident is None else f"size {ident.claimed_size} != {entry.size}"
+                logger.warning("push under-delivery: %s not verified on remote (%s)", rel, reason)
+                total.failed_items += 1
+                total.failures.append(
+                    {"name": name, "error": UNDERDELIVERED_ERROR, "kind": UNDERDELIVERED_KIND}
                 )
+                continue
+            ctx.index.set(
+                rel,
+                IndexEntry(
+                    size=entry.size,
+                    mtime=entry.mtime,
+                    sha256=entry.sha256,
+                    remote_path=f"{remote_parent}/{name}",
+                    origin_device=ctx.config.device_id,
+                    local_state="present",
+                    last_synced=now,
+                ),
+            )
+            total.transferred_items += 1
     ctx.index.save()
     return total

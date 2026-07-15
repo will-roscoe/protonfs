@@ -102,7 +102,14 @@ def push(path: str | None, resolve: str | None, dry_run: bool) -> None:
     for failure in result.failures:
         click.echo(f"  FAILED {failure['name']}: {failure['error']}")
     if result.failed_items:
-        if not resolve:
+        under_delivered = [f for f in result.failures if f.get("kind") == "under-delivered"]
+        conflicts = [f for f in result.failures if f.get("kind") != "under-delivered"]
+        if under_delivered:
+            click.echo(
+                f"  -> {len(under_delivered)} file(s) were reported transferred but did not "
+                "land on Drive; they were NOT indexed and will be retried on the next push."
+            )
+        if conflicts and not resolve:
             click.echo(
                 "  -> these are remote conflicts; re-run with "
                 "--resolve=merge|keep-both|replace|skip to resolve them."

@@ -4,8 +4,11 @@ on:
   push:
     tags:
       - "v*"
-  workflow_dispatch: 
-    
+  workflow_dispatch:
+  # Callable from auto-release.yml after it creates the version tag on merge to main.
+  # (A tag pushed with GITHUB_TOKEN cannot trigger the tag-push event above, so the
+  # merge-to-main path invokes this workflow directly instead.)
+  workflow_call:
 
 jobs:
   build:
@@ -14,6 +17,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          fetch-tags: true   # hatch-vcs needs the version tag present to resolve the version
 
       - uses: actions/setup-python@v5
         with:
