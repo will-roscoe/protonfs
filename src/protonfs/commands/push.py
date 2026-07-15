@@ -125,5 +125,10 @@ def push(
                 ),
             )
             total.transferred_items += 1
+
+        # #3: persist after each parent group so an interruption (Ctrl-C, dropped
+        # connection) resumes from here on the next run instead of re-doing everything.
+        # Composed with #1's atomic writes, each of these saves is crash-safe.
+        ctx.index.save()
     ctx.index.save()
     return total
