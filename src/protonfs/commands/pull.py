@@ -81,5 +81,8 @@ def pull(
                         last_synced=now,
                     ),
                 )
+        # #3: persist after each parent group so an interrupted pull resumes from here
+        # rather than restarting. Crash-safe once composed with #1's atomic writes.
+        ctx.index.save()
     ctx.index.save()
     return total
