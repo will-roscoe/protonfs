@@ -54,6 +54,21 @@ def test_lock_freed_when_contender_releases(tmp_path: Path) -> None:
         pass
 
 
+def test_degrades_to_no_op_without_fcntl(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # On a platform without fcntl (e.g. Windows) the lock is a no-op: it must not raise,
+    # even when a "held" lock file already exists. Real Windows locking is issue #9.
+    import protonfs.locking as locking
+
+    monkeypatch.setattr(locking, "fcntl", None)
+    with locking.repo_lock(tmp_path):
+        pass
+    # A second acquisition also succeeds (no contention is enforced without fcntl).
+    with locking.repo_lock(tmp_path):
+        pass
+
+
 def test_cli_push_reports_lock_contention_cleanly(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, make_fake_drive
 ) -> None:

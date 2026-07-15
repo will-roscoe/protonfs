@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 try:
     import fcntl
-except ImportError:  # non-POSIX (e.g. Windows). Real Windows locking is issue #9's scope.
+except ImportError:  # pragma: no cover - non-POSIX (Windows); real locking is issue #9
     fcntl = None  # type: ignore[assignment]
 
 LOCK_FILE_NAME = "lock"
