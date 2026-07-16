@@ -8,7 +8,7 @@ from pathlib import Path
 
 from protonfs.batching import batches, group_by_parent
 from protonfs.context import RepoContext
-from protonfs.diff import SyncState, classify
+from protonfs.diff import SyncState, classify, within_subpath
 from protonfs.drive import RemoteEntry, TransferResult
 from protonfs.ignore import IgnoreMatcher
 from protonfs.index import IndexEntry
@@ -163,7 +163,13 @@ def pull(
     # lean and brings down only files absent locally -- it never overwrites a local file, so
     # it cannot clobber a local edit.
     remote = _remote_view(ctx, subpath) if resolve is not None else None
-    diff_entries = classify(local, ctx.index, remote)
+    # #96: classify() reasons over the whole repo-wide index, but the scan (and walk)
+    # above are scoped to `subpath` -- without this filter every metadata-only index
+    # entry elsewhere in the repo classifies as pullable and `pull SUBPATH` downloads
+    # unrelated directories (and rate-limits itself doing so).
+    diff_entries = [
+        e for e in classify(local, ctx.index, remote) if within_subpath(e.rel_path, subpath)
+    ]
 
     # Safe to bring down as-is: absent locally (remote-only / metadata-only), plus -- when we
     # have a remote view -- files the remote changed while the local copy stayed in sync.
