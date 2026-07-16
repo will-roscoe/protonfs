@@ -26,6 +26,7 @@ from protonfs.cli import main
 EXPECTED_TOP_LEVEL_COMMANDS = frozenset(
     {
         "setup",
+        "deinit",
         "status",
         "ls",
         "push",
@@ -49,6 +50,7 @@ EXPECTED_CONFIG_SUBCOMMANDS = frozenset({"get", "set"})
 # subcommand of `config`).
 EXPECTED_OPTIONS: dict[str, frozenset[str]] = {
     "setup": frozenset({"--dry-run", "--migrate-lfs", "--no-migrate-lfs"}),
+    "deinit": frozenset({"--dry-run", "--yes"}),
     "status": frozenset(),
     "ls": frozenset({"--remote", "--trash"}),
     "push": frozenset({"--resolve", "--dry-run"}),
@@ -67,6 +69,7 @@ EXPECTED_OPTIONS: dict[str, frozenset[str]] = {
 
 EXPECTED_ARGUMENTS: dict[str, tuple[str, ...]] = {
     "setup": (),
+    "deinit": (),
     "status": ("path",),
     "ls": ("path",),
     "push": ("path",),
