@@ -9,5 +9,7 @@ and a local sync manifest.
 
    getting-started/index
    getting-started/syncing
+   reference/index
+   guarantees
    stability
    api/index
