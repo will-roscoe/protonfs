@@ -23,6 +23,8 @@ and ``shell-init``) share an error boundary: a Drive/auth failure, a locked
 keyring, or a held repo lock all surface as a clean one-line error instead of a
 Python traceback. An auth failure additionally suggests ``protonfs auth login``.
 
+.. _cmd-setup:
+
 ``setup``
 ---------
 **Synopsis:** ``protonfs setup [--dry-run] [--migrate-lfs/--no-migrate-lfs]``
@@ -45,6 +47,30 @@ Examples::
     protonfs setup                        # first-time setup in the current directory
     protonfs setup --dry-run               # see what setup would do first
     protonfs setup --no-migrate-lfs        # set up without touching git-LFS either way
+
+.. _cmd-deinit:
+
+``deinit``
+----------
+**Synopsis:** ``protonfs deinit [--dry-run] [--yes]``
+
+The inverse of ``setup``: removes every file ``setup`` writes under ``.protonfs/``
+— the shared ``config.json``, the per-device ``config.local.json``, the index,
+the resumable-refresh state, ``ignore``/``include``, and the control
+``.gitattributes``/``.gitignore`` — after printing a summary and asking for
+confirmation. It **only ever looks inside** ``.protonfs/``: synced payload files,
+local or remote, are never touched, so deinit is a clean teardown of protonfs's own
+bookkeeping and nothing else.
+
+- ``--dry-run`` — list what would be removed and delete nothing.
+- ``--yes`` — skip the confirmation prompt (for scripts).
+
+Examples::
+
+    protonfs deinit --dry-run    # see exactly which .protonfs/ files would go
+    protonfs deinit              # remove them after confirming
+
+.. _cmd-status:
 
 ``status``
 ----------
@@ -70,6 +96,8 @@ Examples::
     protonfs status subdir/
     protonfs status; echo "exit=$?"
     protonfs status --format json | jq .counts
+
+.. _cmd-ls:
 
 ``ls``
 ------
@@ -105,6 +133,8 @@ Examples::
     protonfs ls --state remote-only --format plain | cut -f1
     protonfs ls sim/ --dirs --format json    # scriptable per-dir sizes/counts
 
+.. _cmd-push:
+
 ``push``
 --------
 **Synopsis:** ``protonfs push [PATH]... [--resolve {merge,keep-both,replace,skip}] [--dry-run]``
@@ -135,6 +165,8 @@ Examples::
     protonfs push                         # everything in scope that is new/changed
     protonfs push subdir/ --resolve replace
     protonfs push --dry-run
+
+.. _cmd-pull:
 
 ``pull``
 --------
@@ -169,6 +201,8 @@ Examples::
     protonfs pull path/to/file --resolve remote
     protonfs pull --resolve both            # fetch remote copies as *.remote for merging
 
+.. _cmd-offload:
+
 ``offload``
 -----------
 **Synopsis:** ``protonfs offload [PATH]... [--no-verify] [--dry-run] [--yes]``
@@ -199,6 +233,8 @@ Examples::
     protonfs offload --dry-run
     protonfs offload --yes --no-verify         # unsafe: trust the index alone
 
+.. _cmd-rm:
+
 ``rm``
 ------
 **Synopsis:** ``protonfs rm PATH... [-r/--recursive] [-f/--force] [--yes]``
@@ -222,6 +258,8 @@ Examples::
     protonfs rm -r stale-dir/ --yes
     protonfs rm -f duplicate.tmp             # trash, then attempt permanent delete
 
+.. _cmd-restore:
+
 ``restore``
 -----------
 **Synopsis:** ``protonfs restore PATH...``
@@ -239,6 +277,8 @@ Examples::
     protonfs restore old-dump.ev
     protonfs restore stale-dir/
 
+.. _cmd-trash-list:
+
 ``trash list``
 ---------------
 **Synopsis:** ``protonfs trash list``
@@ -253,6 +293,8 @@ can silently block a restore or shadow one another.
 Examples::
 
     protonfs trash list
+
+.. _cmd-trash-empty:
 
 ``trash empty``
 -----------------
@@ -276,6 +318,8 @@ Examples::
     protonfs trash list                     # see what's there and any duplicates
     protonfs trash empty                    # prompts for typed confirmation
     protonfs trash empty --yes              # scripts / non-interactive use
+
+.. _cmd-refresh:
 
 ``refresh``
 -----------
@@ -304,6 +348,8 @@ Examples::
     protonfs refresh                      # seed everything not yet known
     protonfs refresh subdir/ --prune       # scope to a subtree, drop remote-deleted entries
 
+.. _cmd-install-drive:
+
 ``install-drive``
 ------------------
 **Synopsis:** ``protonfs install-drive [--version VERSION] [--skip-keyring]``
@@ -324,6 +370,8 @@ Examples::
     protonfs install-drive
     protonfs install-drive --version 0.5.0
     protonfs install-drive --skip-keyring
+
+.. _cmd-upgrade:
 
 ``upgrade``
 ------------
@@ -346,6 +394,8 @@ Examples::
     protonfs upgrade             # binary + migrations
     protonfs upgrade --repo-only # just bring .protonfs/ current
 
+.. _cmd-doctor:
+
 ``doctor``
 ----------
 **Synopsis:** ``protonfs doctor [--fix]``
@@ -364,6 +414,8 @@ Examples::
     protonfs doctor
     protonfs doctor --fix
 
+.. _cmd-shell-init:
+
 ``shell-init``
 --------------
 **Synopsis:** ``protonfs shell-init``
@@ -377,6 +429,8 @@ Example::
 
     eval "$(protonfs shell-init)"
     proton-drive filesystem list /my-files
+
+.. _cmd-auth:
 
 ``auth``
 --------
@@ -394,6 +448,8 @@ Examples::
     protonfs auth login
     protonfs auth status
     protonfs auth logout
+
+.. _cmd-config:
 
 ``config``
 ----------
