@@ -371,10 +371,13 @@ def shell_init() -> None:
 @click.argument("action", type=click.Choice(["login", "logout", "status"]))
 @_drive_error_boundary
 def auth(action: str) -> None:
-    """Authenticate the proton-drive CLI: login | logout | status (passthrough)."""
-    from protonfs.commands.auth import auth_passthrough
+    """Authenticate the proton-drive CLI: login | logout | status."""
+    from protonfs.commands.auth import auth_passthrough, auth_status
 
-    code = auth_passthrough(action)
+    if action == "status":
+        code = auth_status()
+    else:
+        code = auth_passthrough(action)
     if code != 0:
         raise click.exceptions.Exit(code)
 
