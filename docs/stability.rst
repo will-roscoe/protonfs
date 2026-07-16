@@ -30,10 +30,12 @@ key with a backward-compatible default) remain minor/patch as normal.
 
 Release-override directives (from 1.0.0)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-A ``+:<spec>`` token anywhere in a commit message overrides the Conventional Commit
-classification for that release entirely, where ``<spec>`` is ``major`` | ``minor`` |
-``patch`` | ``pre`` | ``prepre`` | ``rc``. The pre-release forms follow SemVer 2.0.0
-precedence with channels ``alpha < beta < rc``:
+A ``+:<spec>`` token standing **alone on its own line** of a commit message
+(footer-style) overrides the Conventional Commit classification for that release
+entirely, where ``<spec>`` is ``major`` | ``minor`` | ``patch`` | ``pre`` |
+``prepre`` | ``rc``. Prose mentions and quoted examples (like the ones on this page)
+never actuate a release. The pre-release forms follow SemVer 2.0.0 precedence with
+channels ``alpha < beta < rc``:
 
 * From a final release ``X.Y.Z``: ``+:pre`` -> ``X.(Y+1).0-alpha``, ``+:prepre`` ->
   ``X.(Y+1).0-alpha.0``, ``+:rc`` -> ``X.(Y+1).0-rc`` -- a pre-release always belongs
