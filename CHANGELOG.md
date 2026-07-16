@@ -8,6 +8,17 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 
 ## [Unreleased]
 
+## [1.0.3] - 2026-07-16
+
+### Bug fixes
+
+- **pull**: scope pull/status to the given subpath (#96) (#98)
+
+### Documentation
+
+- docstring coverage 48→98%, task guide, README↔docs sync, furo fix (#89)
+- add GitHub community-standards files (#90)
+
 ## [1.0.2] - 2026-07-16
 
 ### Bug fixes
@@ -314,7 +325,8 @@ the preceding development history and its first tagged release:
   line-matching, git-mutation error wrapping, `pathspec` deprecation, subpath
   prune data-loss fix.
 
-[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v1.0.2...HEAD
+[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v1.0.3...HEAD
+[1.0.3]: https://github.com/will-roscoe/protonfs/compare/v1.0.2...v1.0.3
 [1.0.2]: https://github.com/will-roscoe/protonfs/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/will-roscoe/protonfs/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/will-roscoe/protonfs/compare/v0.17.0...v1.0.0
