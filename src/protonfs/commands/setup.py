@@ -1,4 +1,10 @@
 # src/protonfs/commands/setup.py
+"""``protonfs setup``: install/verify proton-drive, init ``.protonfs/``, migrate off git-LFS.
+
+Composed of small ``ensure_*`` guards (binary, keyring, auth, config) run in a
+deliberate order, plus the optional git-LFS → Proton Drive migration and its
+control-file bookkeeping.
+"""
 from __future__ import annotations
 
 import subprocess
@@ -18,6 +24,12 @@ from protonfs.secretservice import SecretServiceError, ensure_secret_service
 
 
 def ensure_cli_present(drive: DriveClient) -> str:
+    """Return the proton-drive CLI version, or fail with install guidance if absent.
+
+    :param drive: the drive client to probe.
+    :returns: the raw ``proton-drive version`` string.
+    :raises click.ClickException: when the binary is not found/runnable.
+    """
     version = drive.version()
     if version is None:
         raise click.ClickException(
@@ -50,6 +62,11 @@ def ensure_secrets(drive: DriveClient) -> None:
 
 
 def ensure_authenticated(drive: DriveClient) -> None:
+    """Fail unless proton-drive has an active session.
+
+    :param drive: the drive client to check.
+    :raises click.ClickException: when not authenticated (points at ``auth login``).
+    """
     if not drive.is_authenticated():
         raise click.ClickException(
             "Not authenticated with Proton Drive. Run `protonfs auth login`, "
@@ -58,6 +75,15 @@ def ensure_authenticated(drive: DriveClient) -> None:
 
 
 def ensure_config(root: Path) -> Config:
+    """Load the repo's config, or interactively create it, returning the result.
+
+    An existing repo is migrated in passing (any ``device_id`` in the shared config
+    is relocated to ``config.local.json``); a fresh repo prompts for its Drive
+    ``remote_root``.
+
+    :param root: the protonfs root.
+    :returns: the loaded or newly-initialised :class:`~protonfs.config.Config`.
+    """
     existing = load_layered_config(root)
     if existing is not None:
         # #21: repos set up before per-device layering existed may still have device_id
@@ -139,6 +165,11 @@ def write_git_control_files(root: Path) -> None:
 
 
 def _untrack_lfs_patterns(root: Path) -> list[str]:
+    """Strip ``filter=lfs`` rules from the repo's root ``.gitattributes``, returning them.
+
+    :param root: the git repo root.
+    :returns: the pathspec patterns whose LFS rules were removed (empty if none / no file).
+    """
     gitattributes = root / ".gitattributes"
     if not gitattributes.exists():
         return []
@@ -154,6 +185,11 @@ def _untrack_lfs_patterns(root: Path) -> list[str]:
 
 
 def _append_gitignore(root: Path, patterns: list[str]) -> None:
+    """Append ``patterns`` to the repo's root ``.gitignore``, skipping any already present.
+
+    :param root: the git repo root.
+    :param patterns: pathspecs to gitignore (typically the just-untracked LFS patterns).
+    """
     gitignore = root / ".gitignore"
     existing = gitignore.read_text() if gitignore.exists() else ""
     existing_lines = {line.strip() for line in existing.splitlines()}
@@ -167,6 +203,25 @@ def _append_gitignore(root: Path, patterns: list[str]) -> None:
 
 
 def migrate_lfs(ctx: RepoContext, dry_run: bool = False) -> bool:
+    """Migrate a repo's git-LFS-tracked files to Proton Drive, then untrack them in git.
+
+    Materialises LFS content (``git lfs pull``), uploads it to Drive via ``push``, and
+    only then — after confirmation — removes the ``filter=lfs`` rules, gitignores the
+    paths, ``git rm --cached`` them, and makes a single migration commit. Uploads
+    happen before any git tracking is touched, so a failed upload aborts with the repo
+    untouched.
+
+    :param ctx: the loaded repo context.
+    :param dry_run: when true, print the plan and change nothing.
+    :returns: ``True`` if a migration ran (or would, under dry-run); ``False`` when the
+        repo has no LFS tracking.
+    :raises click.ClickException: on a failed upload or a failed git step (the message
+        states whether uploads had already succeeded).
+
+    .. warning:: This rewrites ``.gitattributes`` and commits across the WHOLE
+        enclosing repo; :func:`is_git_toplevel` gates it so a subdirectory setup never
+        migrates the parent repo off LFS.
+    """
     root = ctx.root
     if not is_lfs_tracked(root):
         click.echo("No git-lfs tracking found -- skipping migration.")
@@ -229,6 +284,14 @@ def migrate_lfs(ctx: RepoContext, dry_run: bool = False) -> bool:
 
 
 def clean_pointer_stubs(root: Path) -> int:
+    """Delete leftover git-LFS pointer-stub files under ``root``, returning the count.
+
+    :param root: the repo root to sweep.
+    :returns: the number of stub files removed.
+
+    .. warning:: Only call as part of an ACTUAL migration; outside one, pointer stubs
+        are legitimately LFS-managed files and deleting them is data loss (#19).
+    """
     stubs = find_pointer_stubs(root, Path("."))
     for stub in stubs:
         stub.unlink()
@@ -236,6 +299,12 @@ def clean_pointer_stubs(root: Path) -> int:
 
 
 def maybe_uninstall_lfs_filters(root: Path) -> None:
+    """Run ``git lfs uninstall`` when no ``filter=lfs`` rules remain in ``.gitattributes``.
+
+    No-op when LFS rules still exist or git-lfs is not installed.
+
+    :param root: the git repo root.
+    """
     gitattributes = root / ".gitattributes"
     still_has_lfs = gitattributes.exists() and "filter=lfs" in gitattributes.read_text()
     if still_has_lfs:
@@ -248,6 +317,21 @@ def maybe_uninstall_lfs_filters(root: Path) -> None:
 
 
 def run_setup(root: Path, dry_run: bool = False, migrate: bool | None = None) -> None:
+    """Run the full ``protonfs setup`` flow for ``root``.
+
+    In order: verify the proton-drive binary, bootstrap the keyring, check auth,
+    create/load config, write the ``.protonfs/`` control files, ensure the remote root
+    exists on Drive, and — when appropriate — migrate the repo off git-LFS.
+
+    :param root: the directory to set up as a protonfs root.
+    :param dry_run: when true, preview without persisting or touching Drive/git.
+    :param migrate: force (``True``) or skip (``False``) the git-LFS migration;
+        ``None`` migrates only when ``root`` is the git toplevel.
+    :raises click.ClickException: on any failed precondition (binary, keyring, auth,
+        Drive error, failed LFS upload, declined confirmation).
+
+    .. seealso:: :func:`migrate_lfs` for the LFS migration this may invoke.
+    """
     drive = DriveClient()
     version = ensure_cli_present(drive)
     click.echo(f"proton-drive CLI found: {version}")

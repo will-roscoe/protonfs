@@ -1,4 +1,5 @@
 # src/protonfs/commands/refresh.py
+"""``protonfs refresh``: discover remote files and seed the local index (metadata-only)."""
 from __future__ import annotations
 
 import datetime
@@ -15,6 +16,17 @@ from protonfs.localscan import ScanEntry, scan
 
 @dataclass
 class RefreshResult:
+    """Outcome of a :func:`refresh` pass.
+
+    :ivar seeded: metadata-only index entries created for remote-only files.
+    :ivar remote_changed: files whose remote copy diverged from the index.
+    :ivar remote_deleted: index entries whose remote file is gone.
+    :ivar pruned: remote-deleted entries removed from the index (only with ``prune``).
+    :ivar changed_paths: rel-paths counted in ``remote_changed``.
+    :ivar deleted_paths: rel-paths counted in ``remote_deleted``.
+    :ivar resumed: whether this pass resumed a previously-interrupted remote walk.
+    """
+
     seeded: int = 0
     remote_changed: int = 0
     remote_deleted: int = 0
@@ -31,6 +43,30 @@ def refresh(
     persist: bool = True,
     local: dict[str, ScanEntry] | None = None,
 ) -> RefreshResult:
+    """Discover remote files and seed the local index with metadata-only entries.
+
+    Walks the remote tree (scoped to ``subpath`` when given), creating a
+    metadata-only :class:`~protonfs.index.IndexEntry` for every remote-only file and,
+    on a full (non-resumed) pass, detecting remote changes and deletions. Seeding is
+    persisted per-directory so an interrupted walk under API throttling keeps its
+    progress; the walk itself is resumable from a saved BFS frontier.
+
+    :param ctx: the loaded repo context.
+    :param subpath: repo-root-relative subtree to refresh, or ``None`` for everything.
+    :param prune: when true, remove index entries whose remote file has been deleted.
+    :param persist: when false (a dry-run preview), make no on-disk changes and leave
+        no resume-state behind.
+    :param local: a pre-computed local scan to reuse (e.g. from ``pull --refresh``),
+        avoiding a second recursive walk + re-hash.
+    :returns: a :class:`RefreshResult` tallying what was seeded/changed/deleted/pruned.
+
+    .. note::
+        On a resumed pass, change/deletion detection is skipped: the walk only
+        re-listed the frontier directories, so the partial listing cannot distinguish
+        a genuinely deleted remote file from one simply not re-listed yet.
+
+    .. seealso:: :mod:`protonfs.refreshstate` for the resumable-frontier persistence.
+    """
     remote_root = ctx.config.remote_root
     if subpath:
         remote_root = f"{remote_root}/{subpath}"

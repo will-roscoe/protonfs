@@ -34,6 +34,16 @@ from protonfs.secretservice import (
 
 @dataclass
 class Check:
+    """One doctor check result.
+
+    :ivar name: short label for the thing checked (e.g. ``"session bus"``).
+    :ivar ok: whether the check passed; only ``ok=False`` fails doctor's exit code.
+    :ivar detail: the concrete finding shown after the label.
+    :ivar hint: optional remediation advice, printed under the result.
+    :ivar warn: render as ``[warn]`` rather than ``[ok]`` -- advisory only, never
+        fails the exit code; meaningful only alongside ``ok=True``.
+    """
+
     name: str
     ok: bool
     detail: str
@@ -200,6 +210,19 @@ def repo_currency_checks(root: Path) -> list[Check]:
 
 
 def run_doctor(fix: bool = False, root: Path | None = None) -> list[Check]:
+    """Run every doctor check and return the results (does not print anything).
+
+    Covers the runtime environment (proton-drive binary, D-Bus session bus, Secret
+    Service keyring) and, from #73, version/state currency (support matrix, upstream
+    advisory, index schema, pending migrations, config layering).
+
+    :param fix: when true, actively bootstrap the keyring rather than only reporting
+        on it.
+    :param root: the directory whose repo-currency is checked; defaults to the cwd.
+    :returns: the ordered list of :class:`Check` results.
+
+    .. seealso:: :func:`render` to print these, :func:`doctor` for the full command.
+    """
     checks: list[Check] = []
     root = root or Path.cwd()
 
@@ -308,6 +331,14 @@ def run_doctor(fix: bool = False, root: Path | None = None) -> list[Check]:
 
 
 def render(checks: list[Check], console_echo=click.echo) -> bool:
+    """Print each check as ``[ok]``/``[warn]``/``[FAIL]`` and return overall success.
+
+    :param checks: the results from :func:`run_doctor`.
+    :param console_echo: sink for each line (defaults to :func:`click.echo`;
+        overridable for tests).
+    :returns: ``True`` when no check failed (``[warn]`` results do not count as
+        failures).
+    """
     all_ok = True
     for check in checks:
         mark = ("warn" if check.warn else "ok  ") if check.ok else "FAIL"
@@ -319,6 +350,13 @@ def render(checks: list[Check], console_echo=click.echo) -> bool:
 
 
 def doctor(fix: bool = False) -> bool:
+    """Run the checks, print them, and return whether the host can run proton-drive.
+
+    :param fix: when true, bootstrap the keyring rather than only reporting on it.
+    :returns: ``True`` when every check passed (warnings allowed).
+
+    .. seealso:: :func:`run_doctor` (the checks) and :func:`render` (the output).
+    """
     checks = run_doctor(fix=fix)
     ok = render(checks)
     if ok:

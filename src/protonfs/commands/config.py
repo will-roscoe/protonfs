@@ -40,6 +40,12 @@ _BOOL_KEYS = {"defaults.low_io"}
 
 
 def _get_nested(data: dict, dotted_key: str):
+    """Read a value from a nested dict by dotted key, or ``None`` if any segment is absent.
+
+    :param data: the (possibly nested) config dict.
+    :param dotted_key: a ``a.b.c`` path into it.
+    :returns: the value at that path, or ``None`` when the path does not resolve.
+    """
     node = data
     for part in dotted_key.split("."):
         if not isinstance(node, dict) or part not in node:
@@ -49,6 +55,12 @@ def _get_nested(data: dict, dotted_key: str):
 
 
 def _set_nested(data: dict, dotted_key: str, value) -> None:
+    """Set a value in a nested dict by dotted key, creating intermediate dicts as needed.
+
+    :param data: the dict to mutate in place.
+    :param dotted_key: a ``a.b.c`` path; intermediate levels are auto-created.
+    :param value: the value to store at the leaf.
+    """
     parts = dotted_key.split(".")
     node = data
     for part in parts[:-1]:
@@ -57,12 +69,26 @@ def _set_nested(data: dict, dotted_key: str, value) -> None:
 
 
 def _coerce_value(key: str, raw: str):
+    """Coerce a raw string CLI value to the type the config key expects.
+
+    Boolean keys accept ``1/true/yes/on`` (case-insensitive) as true; every other
+    key is stored as the raw string.
+
+    :param key: the config key being set.
+    :param raw: the raw string value from the command line.
+    :returns: a ``bool`` for boolean keys, else the unchanged string.
+    """
     if key in _BOOL_KEYS:
         return raw.strip().lower() in ("1", "true", "yes", "on")
     return raw
 
 
 def _require_known_key(key: str) -> None:
+    """Reject an unknown config key with a helpful list of the known ones.
+
+    :param key: the key to validate.
+    :raises click.ClickException: when ``key`` is not a recognised config key.
+    """
     if key not in KNOWN_KEYS:
         raise click.ClickException(
             f"unknown config key {key!r}. Known keys: {', '.join(KNOWN_KEYS)}"
