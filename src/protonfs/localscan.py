@@ -1,3 +1,10 @@
+"""Walks the local filesystem to produce the "local" side of a three-way diff.
+
+:func:`scan` rglobs a repo (or subpath), skipping ignored files and the ``.protonfs``
+control directory, hashing each remaining file into a :class:`ScanEntry`. Its output
+feeds :func:`~protonfs.diff.classify` as the ``local`` argument.
+"""
+
 from __future__ import annotations
 
 import hashlib
@@ -16,6 +23,18 @@ POINTER_STUB_MAX_SIZE = 200
 
 @dataclass
 class ScanEntry:
+    """One file's state as observed by a local filesystem scan.
+
+    :ivar rel_path: Repo-relative path.
+    :ivar size: File size in bytes, from ``stat()``.
+    :ivar mtime: Modification time (seconds since epoch), from ``stat()``.
+    :ivar sha256: protonfs's own content checksum.
+    :ivar sha1: Matches proton's plaintext ``claimedDigests.sha1``, for comparison against
+        a :class:`~protonfs.drive.RemoteEntry` without needing a second hash pass.
+    :ivar is_lfs_pointer: True if this is an un-smudged git-LFS pointer stub rather than
+        real content (#32); :func:`~protonfs.diff.classify` short-circuits on this flag.
+    """
+
     rel_path: str
     size: int
     mtime: float
@@ -25,6 +44,16 @@ class ScanEntry:
 
 
 def hash_file(path: Path) -> str:
+    """Compute the sha256 hex digest of ``path``'s contents.
+
+    :param path: File to hash.
+    :returns: Hex-encoded sha256 digest.
+
+    .. note::
+       Reads in 1 MiB chunks to bound memory use on large files. When both sha256 and
+       sha1 are needed (as in :func:`scan`), prefer :func:`hash_file_digests`, which
+       computes both in a single read pass.
+    """
     digest = hashlib.sha256()
     with path.open("rb") as fh:
         for chunk in iter(lambda: fh.read(1024 * 1024), b""):
@@ -51,6 +80,23 @@ def scan(
     index: IndexStore,
     low_io: bool = False,
 ) -> dict[str, ScanEntry]:
+    """Walk ``root / subpath`` and build a :class:`ScanEntry` for every synced file.
+
+    :param root: Repo root.
+    :param subpath: Subdirectory to scan, relative to ``root`` (``Path(".")`` for the
+        whole repo).
+    :param ignore: Matcher used to exclude files (see :class:`~protonfs.ignore.IgnoreMatcher`).
+    :param index: The repo's :class:`~protonfs.index.IndexStore`, consulted for cached
+        hashes when ``low_io`` is set.
+    :param low_io: If True, reuse a file's previously indexed sha256/sha1 instead of
+        rehashing it, whenever the index has an entry with matching ``size`` and
+        ``mtime``. Trades a small risk of missing a same-size/same-mtime content change
+        for avoiding a full read of every file on each scan.
+    :returns: Dict of :class:`ScanEntry` keyed by repo-relative path. The ``.protonfs``
+        control directory and any path matched by ``ignore`` are excluded.
+
+    .. seealso:: :func:`~protonfs.diff.classify`, which consumes this as its ``local`` arg.
+    """
     entries: dict[str, ScanEntry] = {}
     base = root / subpath if subpath != Path(".") else root
     for file_path in sorted(base.rglob("*")):

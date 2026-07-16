@@ -1,4 +1,14 @@
 # src/protonfs/diff.py
+"""Three-way diff between local scan, index, and remote listing.
+
+:func:`classify` is the entry point: given what's on disk (a local scan), what the index
+last recorded, and (optionally) what the remote currently lists, it decides a
+:class:`SyncState` for every known path. With no remote view it can only distinguish
+"local has it" / "index has it" / neither; with a remote view it can additionally tell
+local deletions, remote deletions, and remote-side changes apart (see
+:func:`_classify_absent` and :func:`_classify_present`).
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -10,6 +20,28 @@ from protonfs.localscan import ScanEntry
 
 
 class SyncState(str, Enum):
+    """Classification of a single path's sync status, as produced by :func:`classify`.
+
+    :cvar SYNCED: Local matches the index; no remote divergence detected.
+    :cvar LOCAL_ONLY: Present locally, never recorded in the index.
+    :cvar REMOTE_ONLY: Listed remotely but absent both locally and in the index.
+    :cvar METADATA_ONLY: Index has a metadata-only record (never materialized locally)
+        and, when a remote view exists, the remote still matches it.
+    :cvar CONFLICT: Local diverged from the index and no remote view is available to
+        attribute the divergence to a direction.
+    :cvar LOCAL_MODIFIED: Local diverged from the index; remote did not.
+    :cvar REMOTE_MODIFIED: Remote diverged from the index; local did not.
+    :cvar BOTH_MODIFIED: Both local and remote diverged from the index independently.
+    :cvar LOCAL_DELETED: A previously-materialized local file is now gone locally but
+        still present on the remote.
+    :cvar REMOTE_CHANGED: No local file, but the index's remote-side record and the
+        current remote listing disagree.
+    :cvar REMOTE_DELETED: An index entry exists but the remote no longer lists it.
+    :cvar LFS_POINTER: Local file is an un-smudged git-LFS pointer stub (#32), short-
+        circuited before any content comparison so its stub hash is never mistaken for
+        the tracked file's real content.
+    """
+
     SYNCED = "synced"
     LOCAL_ONLY = "local-only"
     REMOTE_ONLY = "remote-only"
@@ -26,6 +58,12 @@ class SyncState(str, Enum):
 
 @dataclass
 class DiffEntry:
+    """One path's classification result.
+
+    :ivar rel_path: Repo-relative path.
+    :ivar state: The :class:`SyncState` assigned by :func:`classify`.
+    """
+
     rel_path: str
     state: SyncState
 
@@ -66,6 +104,21 @@ def classify(
     index: IndexStore,
     remote: dict[str, RemoteEntry] | None = None,
 ) -> list[DiffEntry]:
+    """Classify every known path's :class:`SyncState` across local, index, and remote.
+
+    :param local: Local scan results, keyed by relative path (see
+        :func:`~protonfs.localscan.scan`).
+    :param index: The repo's :class:`~protonfs.index.IndexStore`.
+    :param remote: Current remote listing keyed by relative path, or ``None`` if no
+        remote walk was performed. Without it, deletions/changes on the remote side
+        cannot be distinguished -- see :func:`_classify_absent`.
+    :returns: One :class:`DiffEntry` per path in ``local | index.all() | (remote or {})``,
+        sorted by ``rel_path``.
+
+    .. seealso::
+       :func:`within_subpath` -- filter this result when the scan/walk that produced
+       ``local``/``remote`` was itself scoped to a subpath.
+    """
     known_paths = set(local) | set(index.all())
     if remote is not None:
         known_paths |= set(remote)
