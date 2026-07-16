@@ -112,6 +112,26 @@ The standard loop on any client:
    protonfs push --resolve replace   # send local-only up
    protonfs pull --refresh           # bring remote-only down (if this machine wants them)
 
+Resolving a divergence on pull
+------------------------------
+
+A file that was edited **locally** *and* changed on the **remote** since the last
+sync is a divergence. A bare ``pull`` never touches such a file — it leaves it in
+place, reports it, and exits non-zero — so a local edit is never silently
+overwritten. Choose a side explicitly with ``--resolve``:
+
+.. code-block:: bash
+
+   protonfs pull --resolve remote <path>   # overwrite the local copy with the remote one
+   protonfs pull --resolve local <path>    # keep local (it stays queued for the next push)
+   protonfs pull --resolve both <path>     # fetch the remote copy as <name>.remote to merge
+
+``--resolve=both`` writes the remote version alongside your file under a
+``.remote`` suffix (untracked) so you can diff and merge by hand, then delete the
+suffixed copy. Files that changed only on the remote (your local copy is still in
+sync) are brought down normally by ``pull --resolve <any>``; no local edit is at
+risk there.
+
 ``status`` also sets an **exit code** so an unattended caller can branch without
 parsing the printed counts:
 

@@ -180,6 +180,84 @@ def test_pull_refresh_dry_run_previews_seeded_files_without_persisting(
     assert load_context(tmp_path).index.all() == {}
 
 
+def _diverged_setup(tmp_path: Path):
+    """A file present locally with content differing from its index entry, and a remote
+    walk entry whose sha1 differs from the index -> classify() sees BOTH_MODIFIED."""
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    (tmp_path / "run1").mkdir()
+    (tmp_path / "run1" / "dump").write_bytes(b"LOCAL-EDIT")
+    ctx.index.set(
+        "run1/dump",
+        IndexEntry(
+            size=4,
+            mtime=1.0,
+            sha256="index-sha256",  # != hash of b"LOCAL-EDIT" -> local changed
+            sha1="index-sha1",  # != remote sha1 below -> remote changed
+            remote_path="/my-files/test/run1/dump",
+            origin_device="d1",
+            local_state="present",
+            last_synced="2026-07-08T00:00:00+00:00",
+        ),
+    )
+    return ctx
+
+
+def _both_modified_walk():
+    # remote copy of run1/dump with a sha1 differing from the index -> remote diverged
+    return [RemoteEntry("run1/dump", is_dir=False, size=9, claimed_size=9, sha1="remote-sha1")]
+
+
+def test_pull_resolve_remote_overwrites_local(tmp_path: Path, make_fake_drive) -> None:
+    ctx = _diverged_setup(tmp_path)
+    ctx.drive = make_fake_drive(walk_entries=_both_modified_walk())
+
+    result = pull(ctx, None, resolve="remote", dry_run=False)
+
+    assert result.transferred_items == 1
+    assert (tmp_path / "run1" / "dump").read_bytes() == b"downloaded"  # remote won
+    assert ctx.index.get("run1/dump").local_state == "present"
+    assert result.failed_items == 0
+
+
+def test_pull_resolve_local_keeps_local_and_skips(tmp_path: Path, make_fake_drive) -> None:
+    ctx = _diverged_setup(tmp_path)
+    ctx.drive = make_fake_drive(walk_entries=_both_modified_walk())
+
+    result = pull(ctx, None, resolve="local", dry_run=False)
+
+    assert result.skipped_items == 1
+    assert (tmp_path / "run1" / "dump").read_bytes() == b"LOCAL-EDIT"  # untouched
+    assert ctx.index.get("run1/dump").sha256 == "index-sha256"  # index unchanged
+    assert result.failed_items == 0
+
+
+def test_pull_resolve_both_fetches_remote_under_suffix(tmp_path: Path, make_fake_drive) -> None:
+    ctx = _diverged_setup(tmp_path)
+    ctx.drive = make_fake_drive(walk_entries=_both_modified_walk())
+
+    result = pull(ctx, None, resolve="both", dry_run=False)
+
+    assert (tmp_path / "run1" / "dump").read_bytes() == b"LOCAL-EDIT"  # local untouched
+    assert (tmp_path / "run1" / "dump.remote").read_bytes() == b"downloaded"  # remote alongside
+    assert ctx.index.get("run1/dump.remote") is None  # suffixed copy is not tracked
+    assert result.transferred_items == 1
+
+
+def test_pull_no_resolve_reports_conflict_and_does_not_touch(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    ctx = _diverged_setup(tmp_path)
+    ctx.drive = make_fake_drive()  # no walk needed; resolve=None takes no remote view
+
+    result = pull(ctx, None, resolve=None, dry_run=False)
+
+    assert result.failed_items == 1
+    assert result.failures[0]["kind"] == "conflict"
+    assert (tmp_path / "run1" / "dump").read_bytes() == b"LOCAL-EDIT"  # untouched
+    assert result.transferred_items == 0
+
+
 def test_pull_cli_empty_index_without_refresh_prints_hint(
     tmp_path: Path, monkeypatch
 ) -> None:
