@@ -8,6 +8,20 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-07-16
+
+### Features
+
+- **release**: +:<spec> version directives, prerelease ladder, generated release notes (#85)
+
+### Documentation
+
+- upgrade guide for protonfs upgrade + support matrix (#83)
+
+### Tests
+
+- **live**: poll for post-restore visibility instead of asserting at t=0 (#84)
+
 ## [0.17.0] - 2026-07-16
 
 ### Added
@@ -229,7 +243,8 @@ the preceding development history and its first tagged release:
   line-matching, git-mutation error wrapping, `pathspec` deprecation, subpath
   prune data-loss fix.
 
-[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v0.17.0...HEAD
+[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/will-roscoe/protonfs/compare/v0.17.0...v1.0.0
 [0.17.0]: https://github.com/will-roscoe/protonfs/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/will-roscoe/protonfs/compare/v0.15.1...v0.16.0
 [0.15.1]: https://github.com/will-roscoe/protonfs/compare/v0.15.0...v0.15.1
