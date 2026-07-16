@@ -46,10 +46,26 @@ never installs a binary it cannot verify.
 You should then log in to proton drive if you have not already done so.
 Follow the standard proton-drive auth instructions or login interactively using :code:`protonfs auth login`.
 
-.. Quick Start
-.. -----------
+Configuration
+-------------
+``protonfs setup`` writes ``.protonfs/config.json`` (the shared, committed remote
+root and defaults) and ``.protonfs/ignore``. Config is layered — environment
+variable, then per-device ``.protonfs/config.local.json``, then the shared
+``.protonfs/config.json``, then a global ``~/.config/protonfs/config.json``, then
+a built-in default — and read/written with :code:`protonfs config get/set`. See
+:doc:`../reference/index` for the ``config`` command and :doc:`../stability` for
+the full precedence list and environment variables.
 
+By default every file under scope is synced, minus anything matched by
+``.protonfs/ignore``. To sync *only* certain file types instead, add an
+allowlist at ``.protonfs/include`` (same gitignore syntax); see the "Scoping
+what gets synced" section of the project README for details.
 
-.. Configuration
-.. -------------
+Next steps
+----------
+* :doc:`syncing` — the day-to-day push/pull/status workflow, and how multiple
+  machines stay in sync.
+* :doc:`../reference/index` — every command's arguments, behavior, and examples.
+* :doc:`../guarantees` — what protonfs guarantees about durability and how it
+  resolves drift.
 
