@@ -588,9 +588,10 @@ class DriveClient:
                 f"cannot restore {original_path}: {len(same_named)} trashed items "
                 f"are named {name!r} and proton-drive >= 0.5.0 restores trash "
                 f"entries by name, first match wins; the first match is not the "
-                f"one trashed from {parent or '/'}. Restore it via the Drive web "
-                f"UI, or permanently delete the older same-named trash entries "
-                f"first."
+                f"one trashed from {parent or '/'}. Run `protonfs trash list` to see "
+                f"the duplicates, then restore it via the Drive web UI, or resolve the "
+                f"ambiguity with `protonfs trash empty` (irreversible, account-global) "
+                f"or by permanently deleting the older same-named trash entries first."
             )
         escaped = name.replace("/", "\\/")
         result = self._run_json(["filesystem", "restore", f"/trash/{escaped}"])
@@ -606,6 +607,25 @@ class DriveClient:
     def delete(self, remote_paths: list[str]) -> list[dict]:
         result = self._run_json(["filesystem", "delete", *remote_paths])
         return result if isinstance(result, list) else []
+
+    def parent_name(self, parent_uid: str) -> str | None:
+        """Best-effort decrypted name of a trashed node's original parent, given its
+        ``parentUid`` from a `/trash` listing entry. proton-drive accepts a bare node
+        UID in place of a path segment (per `filesystem info --help`), so this is
+        tried directly; returns None on any failure or undecryptable name so callers
+        (``protonfs trash list``) can show "(unknown)" rather than fail the listing.
+        """
+        try:
+            result = self._run_json(["filesystem", "info", parent_uid])
+        except DriveError:
+            return None
+        return decrypted_name(result) if isinstance(result, dict) else None
+
+    def empty_trash(self) -> None:
+        """Permanently empty /trash for the whole account. Irreversible and NOT
+        scoped to this repo's remote_root -- callers must confirm explicitly before
+        calling this (see `protonfs trash empty`)."""
+        self._run_json(["filesystem", "empty-trash"])
 
     def create_folder(self, parent_path: str, name: str) -> dict:
         result = self._run_json(["filesystem", "create-folder", parent_path, name])

@@ -406,6 +406,44 @@ def auth(action: str) -> None:
 
 
 @main.group()
+def trash() -> None:
+    """Inspect and empty Proton Drive's trash (#70)."""
+
+
+@trash.command("list")
+@_drive_error_boundary
+def trash_list_cmd() -> None:
+    """List /trash: name, original parent (best-effort), same-name duplicate count.
+
+    A nonzero duplicate count is the ambiguity `restore` refuses to resolve on its
+    own (#56): proton-drive resolves /trash paths by name, first match wins.
+    """
+    from rich.console import Console
+
+    from protonfs.commands.trash import list_trash
+    from protonfs.context import load_context
+
+    ctx = load_context()
+    list_trash(ctx, Console())
+
+
+@trash.command("empty")
+@click.option("--yes", is_flag=True, help="Skip the typed confirmation prompt.")
+@_drive_error_boundary
+def trash_empty_cmd(yes: bool) -> None:
+    """Permanently empty /trash for the whole account (irreversible, account-global).
+
+    Requires typing an exact confirmation phrase unless --yes is passed. This is NOT
+    scoped to this repo's remote_root -- it empties every trashed item on the account.
+    """
+    from protonfs.commands.trash import empty_trash
+    from protonfs.context import load_context
+
+    ctx = load_context()
+    empty_trash(ctx, confirmed=yes)
+
+
+@main.group()
 def config() -> None:
     """Get/set protonfs config (#21): env > local > shared > global > built-in default."""
 
