@@ -100,6 +100,7 @@ def push(
     subpath: str | None,
     resolve: str | None,
     dry_run: bool,
+    on_progress=None,
 ) -> TransferResult:
     """Upload local-only and locally-changed files to Drive.
 
@@ -113,6 +114,8 @@ def push(
         for files that diverged on both sides, or ``None`` to surface them unresolved.
     :param dry_run: when true, report what would upload without transferring or
         persisting anything.
+    :param on_progress: optional ``(done, total)`` callback invoked after each uploaded
+        batch (#93), so a long push can render progress; ``None`` disables it.
     :returns: a :class:`~protonfs.drive.TransferResult` of what was uploaded/skipped.
     :raises protonfs.drive.DriveError: on a Drive or lock failure.
 
@@ -151,6 +154,7 @@ def push(
     strategy = resolve
     groups = group_by_parent(to_push)
     total = TransferResult(0, 0, 0, [])
+    done = 0  # files handed to proton-drive so far, for on_progress (#93)
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
     for parent, rels in groups.items():
@@ -170,6 +174,8 @@ def push(
             total.failures.append(
                 {"name": Path(rel).name, "error": LFS_POINTER_ERROR, "kind": LFS_POINTER_KIND}
             )
+        # #93: refused stubs still count as processed, so progress never stalls short.
+        done += len(pointer_rels)
         rels = [rel for rel in rels if rel not in pointer_rels]
         if not rels:
             continue
@@ -183,6 +189,9 @@ def push(
             total.skipped_items += result.skipped_items
             total.failed_items += result.failed_items
             total.failures += result.failures
+            done += len(batch)
+            if on_progress is not None:
+                on_progress(done, len(to_push))
 
             # D2.1: a skip is reported only as an aggregate count, so we cannot tell
             # WHICH files in the batch were skipped. Rather than falsely record an

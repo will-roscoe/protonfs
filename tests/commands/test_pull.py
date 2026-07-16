@@ -332,3 +332,75 @@ def test_pull_cli_empty_index_without_refresh_prints_hint(
     assert result.exit_code == 0
     assert "protonfs refresh" in result.output
     assert "pull --refresh" in result.output
+
+
+# --- #93: on_progress reporting --------------------------------------------------------
+
+
+def test_pull_reports_progress_per_batch(tmp_path: Path, monkeypatch, make_fake_drive) -> None:
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    for rel in ("run1/a", "run1/b", "run2/c"):
+        ctx.index.set(rel, _metadata_only_entry(f"/my-files/test/{rel}"))
+    ctx.drive = make_fake_drive()
+    # Single-file batches so the callback cadence is asserted, not just the final call.
+    monkeypatch.setattr(
+        "protonfs.commands.pull.batches", lambda items, size=1: [[i] for i in items]
+    )
+
+    calls: list[tuple[int, int]] = []
+    result = pull(
+        ctx, None, resolve=None, dry_run=False, on_progress=lambda d, t: calls.append((d, t))
+    )
+
+    assert result.transferred_items == 3
+    assert [t for _, t in calls] == [3, 3, 3]  # total is the whole pull, not the batch
+    assert [d for d, _ in calls] == [1, 2, 3]  # monotonic across parent groups
+
+
+def test_pull_cli_progress_silent_when_stderr_not_a_tty(
+    tmp_path: Path, monkeypatch, make_fake_drive
+) -> None:
+    """#93: progress is an interactive-only stderr overlay -- non-TTY invocations
+    (scripts, CI, CliRunner) must see exactly the frozen 1.0 output."""
+    from click.testing import CliRunner
+
+    from protonfs.cli import main
+
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.index.set("run1/a", _metadata_only_entry("/my-files/test/run1/a"))
+    ctx.index.save()
+    ctx.drive = make_fake_drive()
+    monkeypatch.setattr("protonfs.context.load_context", lambda *a, **k: ctx)
+
+    result = CliRunner().invoke(main, ["pull"])
+
+    assert result.exit_code == 0, result.output
+    assert "\r" not in result.output  # no progress overlay leaked
+
+
+def test_progress_printer_renders_on_tty(monkeypatch, capsys) -> None:
+    import sys
+
+    from protonfs.cli import _progress_printer
+
+    monkeypatch.setattr(sys.stderr, "isatty", lambda: True)
+    render = _progress_printer("pull")
+    assert render is not None
+
+    render(1, 2)
+    render(2, 2)
+
+    err = capsys.readouterr().err
+    assert "\rpull: 1/2 file(s)" in err
+    assert "\rpull: 2/2 file(s)\n" in err  # newline finishes the line at done == total
+
+
+def test_progress_printer_disabled_off_tty(monkeypatch) -> None:
+    import sys
+
+    from protonfs.cli import _progress_printer
+
+    monkeypatch.setattr(sys.stderr, "isatty", lambda: False)
+    assert _progress_printer("pull") is None

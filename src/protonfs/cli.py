@@ -74,6 +74,26 @@ def _accumulate_transfer(total, part) -> None:
     total.failures += part.failures
 
 
+def _progress_printer(verb: str):
+    """A per-batch ``(done, total)`` progress renderer for long transfers (#93).
+
+    Returns ``None`` when stderr is not a TTY, so scripts, CI logs, and the test
+    runner see exactly the frozen 1.0 output -- progress is an interactive-only
+    overlay on stderr, never part of the stdout contract.
+    """
+    import sys
+
+    if not sys.stderr.isatty():
+        return None
+
+    def _render(done: int, total: int) -> None:
+        click.echo(f"\r{verb}: {done}/{total} file(s)", nl=False, err=True)
+        if done >= total:
+            click.echo(err=True)  # finish the line after the last batch
+
+    return _render
+
+
 @click.group()
 @click.version_option(__version__, prog_name="protonfs")
 def main() -> None:
@@ -186,9 +206,12 @@ def push(path: tuple[str, ...], resolve: str | None, dry_run: bool) -> None:
 
     ctx = load_context()
     result = TransferResult(0, 0, 0, [])
+    progress = _progress_printer("push")
     with repo_lock(ctx.root):
         for subpath in _normalize_paths(path):
-            _accumulate_transfer(result, push_files(ctx, subpath, resolve, dry_run))
+            _accumulate_transfer(
+                result, push_files(ctx, subpath, resolve, dry_run, on_progress=progress)
+            )
     click.echo(
         f"transferred={result.transferred_items} skipped={result.skipped_items} "
         f"failed={result.failed_items}"
@@ -246,10 +269,14 @@ def pull(path: tuple[str, ...], resolve: str | None, dry_run: bool, refresh: boo
         click.echo("index empty; run `protonfs refresh` first (or `pull --refresh`)")
         return
     result = TransferResult(0, 0, 0, [])
+    progress = _progress_printer("pull")
     with repo_lock(ctx.root):
         for subpath in _normalize_paths(path):
             _accumulate_transfer(
-                result, pull_files(ctx, subpath, resolve, dry_run, refresh=refresh)
+                result,
+                pull_files(
+                    ctx, subpath, resolve, dry_run, refresh=refresh, on_progress=progress
+                ),
             )
     click.echo(
         f"transferred={result.transferred_items} skipped={result.skipped_items} "
