@@ -39,10 +39,12 @@ EXPECTED_TOP_LEVEL_COMMANDS = frozenset(
         "shell-init",
         "auth",
         "config",
+        "trash",
     }
 )
 
 EXPECTED_CONFIG_SUBCOMMANDS = frozenset({"get", "set"})
+EXPECTED_TRASH_SUBCOMMANDS = frozenset({"list", "empty"})
 
 # For each command: the exact set of option flag-strings (as passed to `click.option`,
 # e.g. "-r"/"--recursive") and argument names, keyed by command name (dotted for a
@@ -63,6 +65,8 @@ EXPECTED_OPTIONS: dict[str, frozenset[str]] = {
     "auth": frozenset(),
     "config.get": frozenset(),
     "config.set": frozenset({"--global", "--local"}),
+    "trash.list": frozenset(),
+    "trash.empty": frozenset({"--yes"}),
 }
 
 EXPECTED_ARGUMENTS: dict[str, tuple[str, ...]] = {
@@ -81,6 +85,8 @@ EXPECTED_ARGUMENTS: dict[str, tuple[str, ...]] = {
     "auth": ("action",),
     "config.get": ("key",),
     "config.set": ("key", "value"),
+    "trash.list": (),
+    "trash.empty": (),
 }
 
 
@@ -107,6 +113,12 @@ def test_config_subcommand_set_is_frozen() -> None:
     config_group = main.commands["config"]
     assert isinstance(config_group, click.Group)
     assert set(config_group.commands.keys()) == EXPECTED_CONFIG_SUBCOMMANDS
+
+
+def test_trash_subcommand_set_is_frozen() -> None:
+    trash_group = main.commands["trash"]
+    assert isinstance(trash_group, click.Group)
+    assert set(trash_group.commands.keys()) == EXPECTED_TRASH_SUBCOMMANDS
 
 
 @pytest.mark.parametrize("dotted_name", sorted(EXPECTED_OPTIONS))

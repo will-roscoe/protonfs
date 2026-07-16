@@ -29,6 +29,7 @@ class FakeDrive:
         remote_size_overrides: dict[str, int] | None = None,
         version: str | None = "v0.4.6",
         authed: bool = True,
+        parent_names: dict[str, str | None] | None = None,
     ) -> None:
         # recorded calls
         self.upload_calls: list[tuple] = []
@@ -37,6 +38,9 @@ class FakeDrive:
         self.trashed: list[str] = []
         self.deleted: list[str] = []
         self.restored: list[str] = []
+        self.emptied_trash_calls: int = 0
+        self._parent_names: dict[str, str | None] = parent_names or {}
+        self.parent_name_calls: list[str] = []
         self.walk_roots: list[str] = []
         self.identity_calls: list[str] = []
         # configured responses
@@ -150,6 +154,13 @@ class FakeDrive:
                 for p in self.trashed
             ]
         return []
+
+    def parent_name(self, parent_uid):
+        self.parent_name_calls.append(parent_uid)
+        return self._parent_names.get(parent_uid)
+
+    def empty_trash(self):
+        self.emptied_trash_calls += 1
 
 
 @pytest.fixture

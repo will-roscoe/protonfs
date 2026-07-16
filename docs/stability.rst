@@ -98,7 +98,24 @@ flag/argument name; these names, not just their presence, are frozen.
        declined confirmation; ``2`` usage error.
    * - ``restore``
      - Restore a trashed file/directory on Drive. Argument: ``PATH`` (required).
-     - ``0`` success; ``1`` Drive/lock error; ``2`` usage error.
+       If proton-drive can't disambiguate the requested item from a same-named trash
+       entry (#56), the error points at ``protonfs trash list``/``protonfs trash
+       empty`` to resolve it.
+     - ``0`` success; ``1`` Drive/lock error (including that ambiguity); ``2`` usage
+       error.
+   * - ``trash list``
+     - List every item in ``/trash``: name, original parent (best-effort), and how
+       many other trashed items share the same name -- the ambiguity ``restore``
+       can refuse to resolve on its own (#56).
+     - ``0`` success; ``1`` Drive error; ``2`` usage error.
+   * - ``trash empty``
+     - Permanently empty ``/trash`` for the whole account (irreversible, and NOT
+       scoped to this repo's ``remote_root``). Option: ``--yes``. Without it, a
+       user must type an exact confirmation phrase; anything else aborts.
+       Deliberately does not support deleting individual trashed items by UID --
+       proton-drive does not accept UIDs for ``/trash`` paths (#56).
+     - ``0`` success; ``1`` Drive error or declined/mismatched confirmation; ``2``
+       usage error.
    * - ``refresh``
      - Discover remote files and seed the local index (metadata-only). Argument:
        ``PATH`` (optional). Option: ``--prune``.

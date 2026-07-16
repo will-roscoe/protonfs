@@ -482,9 +482,12 @@ def test_restore_refuses_when_stale_same_named_entry_is_first_match(
     )
     monkeypatch.setattr(subprocess, "run", run)
 
-    with pytest.raises(DriveError, match="first match"):
+    with pytest.raises(DriveError, match="first match") as excinfo:
         client.restore(["/my-files/test/a.bin"])
     assert len(run.calls) == 3  # never issued the restore
+    # #70: the ambiguity error points the user at `protonfs trash list`/`empty`.
+    assert "protonfs trash list" in str(excinfo.value)
+    assert "protonfs trash empty" in str(excinfo.value)
 
 
 def test_restore_errors_when_not_in_trash(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -519,3 +522,35 @@ def test_restore_errors_when_wrong_node_restored(monkeypatch: pytest.MonkeyPatch
 
     with pytest.raises(DriveError, match="failed"):
         client.restore(["/my-files/test/a.bin"])
+
+
+def test_parent_name_returns_decrypted_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = DriveClient(binary="proton-drive")
+    monkeypatch.setattr("protonfs.drive.shutil.which", lambda _: "/usr/bin/proton-drive")
+    run = _stub_run(
+        '{"uid": "share~p1", "name": {"ok": true, "value": "run1"}}'
+    )
+    monkeypatch.setattr(subprocess, "run", run)
+
+    assert client.parent_name("share~p1") == "run1"
+
+
+def test_parent_name_returns_none_on_drive_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    # #70: best-effort -- a failed lookup must not blow up `trash list`.
+    client = DriveClient(binary="proton-drive")
+    monkeypatch.setattr("protonfs.drive.shutil.which", lambda _: "/usr/bin/proton-drive")
+    run = _stub_run("not found", returncode=1)
+    monkeypatch.setattr(subprocess, "run", run)
+
+    assert client.parent_name("share~unknown") is None
+
+
+def test_empty_trash_invokes_empty_trash_command(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = DriveClient(binary="proton-drive")
+    monkeypatch.setattr("protonfs.drive.shutil.which", lambda _: "/usr/bin/proton-drive")
+    run = _stub_run_seq([("{}", 0)])
+    monkeypatch.setattr(subprocess, "run", run)
+
+    client.empty_trash()
+
+    assert run.calls[0][1:4] == ["filesystem", "empty-trash", "--json"]

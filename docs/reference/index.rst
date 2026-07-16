@@ -214,6 +214,44 @@ Examples::
     protonfs restore old-dump.ev
     protonfs restore stale-dir/
 
+``trash list``
+---------------
+**Synopsis:** ``protonfs trash list``
+
+Lists every item currently in ``/trash``: its name, its original parent (resolved
+on a best-effort basis — shown as ``?`` when proton-drive can't resolve it), and
+how many *other* trashed items share the same name. A nonzero duplicate count is
+exactly the ambiguity ``restore`` can refuse to resolve on its own (#56): proton-
+drive resolves ``/trash`` paths by name, first match wins, so same-named entries
+can silently block a restore or shadow one another.
+
+Examples::
+
+    protonfs trash list
+
+``trash empty``
+-----------------
+**Synopsis:** ``protonfs trash empty [--yes]``
+
+Permanently empties ``/trash`` for the whole Proton Drive account by calling
+``proton-drive filesystem empty-trash``. This is **irreversible** and **not**
+scoped to this repo's ``remote_root`` — it deletes every trashed item on the
+account, including ones unrelated to this repo. Without ``--yes``, the command
+prints that warning and requires typing an exact confirmation phrase; anything
+else aborts without emptying trash.
+
+Deliberately out of scope: permanently deleting a single trashed item by UID.
+proton-drive does not accept node UIDs for ``/trash`` paths (see ``rm``'s
+duplicate-basename limitation above and #56's analysis), so there is no safe way
+to target one item there — use ``trash list`` to find and resolve duplicates via
+the Drive web UI, or ``trash empty`` to clear everything.
+
+Examples::
+
+    protonfs trash list                     # see what's there and any duplicates
+    protonfs trash empty                    # prompts for typed confirmation
+    protonfs trash empty --yes              # scripts / non-interactive use
+
 ``refresh``
 -----------
 **Synopsis:** ``protonfs refresh [PATH] [--prune]``
