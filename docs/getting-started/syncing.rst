@@ -78,6 +78,26 @@ copies to reclaim space):
    # if short, re-push (replace makes it idempotent):
    protonfs push <subpath> --resolve replace
 
+Removing files
+--------------
+
+.. code-block:: bash
+
+   protonfs rm <path>        # trash the remote copy (reversible)
+   protonfs rm -f <path>     # trash, then permanently delete
+
+``rm -f`` has one **permanent limitation**. proton-drive addresses a trashed
+node for permanent deletion by its path under ``/trash`` (``/trash/<basename>``),
+and offers no working way to target a specific trashed node by its stable UID.
+So when two or more trashed items share a basename, protonfs cannot safely tell
+which one is yours and **refuses to permanently delete** — it leaves the item
+trashed (still reversible) and tells you so.
+
+To resolve a duplicate-basename case, empty that specific item from trash via the
+Proton Drive app or web UI, or just leave it trashed (trash is reversible, so
+nothing is lost). This is an upstream constraint, not a protonfs choice; a live
+probe test flags it automatically if a future proton-drive lifts it.
+
 Keeping clients in sync
 -----------------------
 

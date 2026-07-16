@@ -1,3 +1,26 @@
+"""Remove a protonfs-tracked path from Proton Drive.
+
+``rm`` trashes the remote copy (reversible). ``rm -f`` additionally attempts a
+*permanent* delete of the trashed node.
+
+Permanent limitation — duplicate basenames
+------------------------------------------
+proton-drive's ``filesystem delete`` addresses a trashed node by its **path
+under /trash**, i.e. ``/trash/<basename>``. There is no working way to address a
+specific trashed node by its stable UID: as of 2026-07-16, both ``/trash/<uid>``
+and a bare ``<uid>`` are rejected (``Trashed node not found`` / path-not-found),
+even though ``filesystem delete --help`` advertises UID addressing for
+name-conflicting nodes elsewhere. ``test_live_uid_addressed_permanent_delete_
+still_unsupported`` probes this and fails loudly if a future proton-drive starts
+accepting it — at which point this guard can be lifted.
+
+Consequence: when two or more trashed items share a basename, protonfs cannot
+tell which one is the user's, so ``rm -f`` refuses to permanently delete and
+leaves the item **trashed (still reversible)**. The instructive fallback is to
+empty that item from trash via the Proton Drive app/web, or simply leave it
+trashed — trash is reversible, so nothing is lost.
+"""
+
 from __future__ import annotations
 
 from pathlib import PurePosixPath
@@ -29,9 +52,7 @@ def rm(ctx: RepoContext, rel_path: str, recursive: bool, force: bool, confirmed:
         # exactly one trashed item carries this basename; otherwise leave it trashed
         # (still reversible) and tell the user to resolve it manually.
         name = PurePosixPath(remote_path).name
-        matches = [
-            entry for entry in ctx.drive.list("/trash") if decrypted_name(entry) == name
-        ]
+        matches = [entry for entry in ctx.drive.list("/trash") if decrypted_name(entry) == name]
         if len(matches) == 1:
             ctx.drive.delete([f"/trash/{name}"])
         elif len(matches) > 1:
