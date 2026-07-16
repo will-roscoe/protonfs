@@ -5,6 +5,7 @@ from pathlib import Path
 
 from protonfs.ignore import IgnoreMatcher
 from protonfs.index import IndexEntry, IndexStore
+from protonfs.lfs import POINTER_SIGNATURE
 from protonfs.localscan import hash_file, hash_file_digests, scan
 
 
@@ -100,3 +101,45 @@ def test_scan_low_io_recomputes_when_size_differs(tmp_path: Path) -> None:
 
     assert result["dump_0001"].sha256 == hashlib.sha256(b"data").hexdigest()
     assert result["dump_0001"].sha1 == hashlib.sha1(b"data").hexdigest()
+
+
+def test_scan_marks_pointer_stub_as_lfs_pointer(tmp_path: Path) -> None:
+    f = tmp_path / "big.bin"
+    f.write_text(
+        f"{POINTER_SIGNATURE}\n"
+        "oid sha256:9e5f00000000000000000000000000000000000000000000000000000000\n"
+        "size 171008\n"
+    )
+    index = IndexStore(tmp_path)
+    ignore = IgnoreMatcher([])
+
+    result = scan(tmp_path, Path("."), ignore, index, low_io=False)
+
+    assert result["big.bin"].is_lfs_pointer is True
+
+
+def test_scan_normal_small_file_is_not_lfs_pointer(tmp_path: Path) -> None:
+    f = tmp_path / "small.txt"
+    f.write_text("just some ordinary short content")
+    index = IndexStore(tmp_path)
+    ignore = IgnoreMatcher([])
+
+    result = scan(tmp_path, Path("."), ignore, index, low_io=False)
+
+    assert result["small.txt"].is_lfs_pointer is False
+
+
+def test_scan_large_file_starting_with_signature_line_follows_size_heuristic(
+    tmp_path: Path,
+) -> None:
+    # A file that happens to start with the pointer signature line but is padded past
+    # the 200-byte heuristic used by find_pointer_stubs -- must NOT be treated as a
+    # pointer stub, matching the size-gated heuristic exactly.
+    f = tmp_path / "large.bin"
+    f.write_text(POINTER_SIGNATURE + "\n" + ("x" * 300))
+    index = IndexStore(tmp_path)
+    ignore = IgnoreMatcher([])
+
+    result = scan(tmp_path, Path("."), ignore, index, low_io=False)
+
+    assert result["large.bin"].is_lfs_pointer is False

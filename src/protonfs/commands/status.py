@@ -16,8 +16,10 @@ STATUS_DRIFT = 1  # non-conflict divergence exists (something to push / pull / p
 STATUS_CONFLICT = 2  # at least one genuine conflict a human or --resolve strategy must settle
 
 # States that represent a settled, no-action-needed condition: SYNCED (in step with the
-# remote) and METADATA_ONLY (a remote file this device has deliberately not materialised).
-_QUIESCENT = frozenset({SyncState.SYNCED, SyncState.METADATA_ONLY})
+# remote), METADATA_ONLY (a remote file this device has deliberately not materialised),
+# and LFS_POINTER (#32: an unmaterialised git-LFS pointer stub -- protonfs deliberately
+# does nothing with it, so it is not actionable drift either).
+_QUIESCENT = frozenset({SyncState.SYNCED, SyncState.METADATA_ONLY, SyncState.LFS_POINTER})
 # States that represent a genuine conflict: both sides diverged, or a local change with no
 # provable remote view to attribute a direction.
 _CONFLICT = frozenset({SyncState.CONFLICT, SyncState.BOTH_MODIFIED})

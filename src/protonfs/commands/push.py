@@ -10,6 +10,7 @@ from protonfs.diff import SyncState, classify
 from protonfs.drive import DriveError, TransferResult
 from protonfs.ignore import IgnoreMatcher
 from protonfs.index import IndexEntry
+from protonfs.lfs import is_pointer_stub
 from protonfs.localscan import scan
 
 logger = logging.getLogger(__name__)
@@ -20,6 +21,13 @@ logger = logging.getLogger(__name__)
 # --resolve). See `UNDERDELIVERED_KIND`.
 UNDERDELIVERED_KIND = "under-delivered"
 UNDERDELIVERED_ERROR = "claimed transferred but not verified on the remote (under-delivered)"
+
+# #32: defense-in-depth against classify() ever mis-attributing an un-smudged git-LFS
+# pointer stub as pushable (LOCAL_ONLY/CONFLICT/etc). Even if that happens, push refuses
+# to upload a file whose bytes parse as a pointer stub rather than risk clobbering the
+# real object on Drive with a 131-byte placeholder.
+LFS_POINTER_KIND = "lfs-pointer"
+LFS_POINTER_ERROR = "refusing to push a git-LFS pointer stub over remote content"
 
 
 def _ensure_remote_dir(ctx: RepoContext, remote_dir: str) -> None:
@@ -80,6 +88,21 @@ def push(
             f"{ctx.config.remote_root}/{parent}" if parent != "." else ctx.config.remote_root
         )
         _ensure_remote_dir(ctx, remote_parent)
+
+        # #32 hard guard: refuse to upload any file whose bytes parse as an LFS pointer
+        # stub, independent of how it got into `rels` -- classification should already
+        # exclude these (see diff.SyncState.LFS_POINTER), but this is the last line of
+        # defense against ever overwriting real remote content with a 131-byte placeholder.
+        pointer_rels = [rel for rel in rels if is_pointer_stub(ctx.root / rel)]
+        for rel in pointer_rels:
+            logger.warning("push refused: %s is a git-LFS pointer stub", rel)
+            total.failed_items += 1
+            total.failures.append(
+                {"name": Path(rel).name, "error": LFS_POINTER_ERROR, "kind": LFS_POINTER_KIND}
+            )
+        rels = [rel for rel in rels if rel not in pointer_rels]
+        if not rels:
+            continue
 
         # Files proton-drive did not report as failed/skipped -- candidates to VERIFY
         # against the remote before we trust them as delivered (#22).

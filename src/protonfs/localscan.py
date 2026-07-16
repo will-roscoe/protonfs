@@ -7,6 +7,11 @@ from pathlib import Path
 from protonfs.config import CONFIG_DIR_NAME
 from protonfs.ignore import IgnoreMatcher
 from protonfs.index import IndexStore
+from protonfs.lfs import is_pointer_stub
+
+# Files smaller than this are candidates for a git-LFS pointer stub check (matches the
+# heuristic `lfs.find_pointer_stubs` already uses: real pointer files are ~130 bytes).
+POINTER_STUB_MAX_SIZE = 200
 
 
 @dataclass
@@ -16,6 +21,7 @@ class ScanEntry:
     mtime: float
     sha256: str  # protonfs's own content checksum
     sha1: str  # matches proton's plaintext `claimedDigests.sha1`
+    is_lfs_pointer: bool = False  # #32: an unmaterialised git-LFS pointer stub, not content
 
 
 def hash_file(path: Path) -> str:
@@ -64,7 +70,16 @@ def scan(
             sha1 = cached.sha1
         else:
             sha256, sha1 = hash_file_digests(file_path)
+        # #32: a small file may be an un-smudged git-LFS pointer stub rather than real
+        # content. We still hash it as today -- classify() short-circuits on the flag so
+        # the stub's hash is never mistaken for the tracked file's content.
+        is_lfs_pointer = size < POINTER_STUB_MAX_SIZE and is_pointer_stub(file_path)
         entries[rel_path] = ScanEntry(
-            rel_path=rel_path, size=size, mtime=mtime, sha256=sha256, sha1=sha1
+            rel_path=rel_path,
+            size=size,
+            mtime=mtime,
+            sha256=sha256,
+            sha1=sha1,
+            is_lfs_pointer=is_lfs_pointer,
         )
     return entries

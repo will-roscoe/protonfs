@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from protonfs.commands.push import push
+from protonfs.commands.push import LFS_POINTER_KIND, push
 from protonfs.config import init_config
 from protonfs.context import load_context
+from protonfs.diff import DiffEntry, SyncState
 from protonfs.drive import TransferResult
+from protonfs.lfs import POINTER_SIGNATURE
 
 
 def test_push_uploads_local_only_files_and_updates_index(
@@ -271,3 +273,32 @@ def test_push_cli_conflict_failure_prints_resolve_hint(
 
     assert result.exit_code != 0
     assert "--resolve" in result.output
+
+
+def test_push_hard_guard_refuses_to_upload_lfs_pointer_stub(
+    tmp_path: Path, monkeypatch, make_fake_drive
+) -> None:
+    # #32 defense-in-depth: even if a pointer stub somehow reaches the push candidate
+    # list (classification bug, stale index, etc.), push must refuse to upload it rather
+    # than clobber the real remote content. Force this by monkeypatching classify() to
+    # report the pointer as LOCAL_ONLY, bypassing the normal LFS_POINTER short-circuit.
+    (tmp_path / "big.bin").write_text(
+        f"{POINTER_SIGNATURE}\noid sha256:{'0' * 64}\nsize 171008\n"
+    )
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    fake = make_fake_drive()
+    ctx.drive = fake
+
+    monkeypatch.setattr(
+        "protonfs.commands.push.classify",
+        lambda local, index, remote=None: [DiffEntry("big.bin", SyncState.LOCAL_ONLY)],
+    )
+
+    result = push(ctx, None, resolve=None, dry_run=False)
+
+    assert result.transferred_items == 0
+    assert result.failed_items == 1
+    assert result.failures[0]["kind"] == LFS_POINTER_KIND
+    assert fake.upload_calls == []
+    assert ctx.index.get("big.bin") is None
