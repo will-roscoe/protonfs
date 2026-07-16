@@ -83,6 +83,62 @@ Escape hatches: `PROTONFS_KEYRING_PASSWORD` supplies your own keyring password
 instead of the generated one, and `PROTONFS_NO_KEYRING_BOOTSTRAP=1` turns all of
 this off if you'd rather manage the environment yourself.
 
+## Scoping what gets synced
+
+`.protonfs/ignore` is a denylist in gitignore syntax, scoped to a repo and
+independent of its own `.gitignore` — patterns like `*.tmp` or `core.*` are
+excluded from every push/pull/refresh/status/ls.
+
+### Syncing only matching files
+
+Sometimes you want the opposite: sync *only* files of certain types (e.g. only
+simulation dumps, ignoring notes/scratch/logs). Add an allowlist at
+`.protonfs/include`, in the same gitignore syntax:
+
+```gitignore
+# .protonfs/include
+*.ev
+*.sink
+*_[0-9][0-9][0-9][0-9][0-9]
+```
+
+When `.protonfs/include` exists and has at least one active (non-blank,
+non-comment) line, a file is synced only if it matches one of its patterns —
+and still not matched by `.protonfs/ignore`, which always wins over include.
+If `include` is absent, or every line in it is blank/commented out, behaviour
+is unchanged: everything not matched by `ignore` is synced.
+
+Patterns are plain gitignore file patterns, matched only against file paths.
+You don't need `!*/` or `dir/**` tricks here — directories are always
+descended into regardless of include/ignore, so a plain `*.ev` reaches files
+at any depth.
+
+If you'd rather not add a second file, the same "only these files" behaviour
+can be expressed with `.protonfs/ignore` alone, but it needs a double-negation
+recipe and has two sharp edges:
+
+```gitignore
+# .protonfs/ignore -- sync only *.ev/*.sink and files ending in a 5-digit run number
+*
+!*/
+!*_[0-9][0-9][0-9][0-9][0-9]
+!*.ev
+!*.sink
+*mload*/**
+```
+
+- `!*/` is mandatory: once a parent directory is excluded, a later
+  re-include pattern (like `!*.ev`) cannot resurrect files under it — gitignore
+  semantics never descend into an already-excluded directory to re-evaluate
+  its contents.
+- to exclude a whole subtree again (here, anything under a `*mload*`
+  directory) you must write `dir/**`, not `dir/` — a trailing-slash directory
+  pattern does not match the files beneath it when tested against file paths
+  the way protonfs's matcher does.
+
+`.protonfs/include` avoids both pitfalls, which is why it exists as a
+separate first-class file rather than only being achievable via `ignore`.
+
 ## Releasing (maintainers)
 
 Merges to `main` auto-tag a release, but only after the full test matrix passes
