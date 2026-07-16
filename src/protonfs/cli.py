@@ -61,8 +61,14 @@ def setup(dry_run: bool) -> None:
 @main.command()
 @click.argument("path", required=False)
 def status(path: str | None) -> None:
-    """Summarize sync state (counts by local-only/remote-only/synced/conflict)."""
-    from protonfs.commands.status import compute_status
+    """Summarize sync state (counts by local-only/remote-only/synced/conflict).
+
+    Exit code, so an unattended caller can branch without parsing the counts:
+    0 = clean (everything synced or intentionally remote-only), 1 = drift present
+    (something to push/pull/prune), 2 = conflict present (needs a human or --resolve).
+    Conflict outranks drift when both are present.
+    """
+    from protonfs.commands.status import compute_status, status_exit_code
     from protonfs.context import load_context
     from protonfs.diff import SyncState
 
@@ -70,6 +76,9 @@ def status(path: str | None) -> None:
     counts = compute_status(ctx, path)
     for state in SyncState:
         click.echo(f"{state.value}: {counts.get(state.value, 0)}")
+    code = status_exit_code(counts)
+    if code != 0:
+        raise click.exceptions.Exit(code)
 
 
 @main.command()

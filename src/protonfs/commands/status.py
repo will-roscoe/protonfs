@@ -4,9 +4,23 @@ from collections import Counter
 from pathlib import Path
 
 from protonfs.context import RepoContext
-from protonfs.diff import classify
+from protonfs.diff import SyncState, classify
 from protonfs.ignore import IgnoreMatcher
 from protonfs.localscan import scan
+
+# Exit codes for `protonfs status`, so an unattended caller (a script, a CI step) can
+# branch on the outcome without parsing the printed counts. They are ordered by severity
+# and documented in the CLI help and docs -- treat them as a stable contract.
+STATUS_CLEAN = 0  # every file is synced or intentionally remote-only (nothing to reconcile)
+STATUS_DRIFT = 1  # non-conflict divergence exists (something to push / pull / prune)
+STATUS_CONFLICT = 2  # at least one genuine conflict a human or --resolve strategy must settle
+
+# States that represent a settled, no-action-needed condition: SYNCED (in step with the
+# remote) and METADATA_ONLY (a remote file this device has deliberately not materialised).
+_QUIESCENT = frozenset({SyncState.SYNCED, SyncState.METADATA_ONLY})
+# States that represent a genuine conflict: both sides diverged, or a local change with no
+# provable remote view to attribute a direction.
+_CONFLICT = frozenset({SyncState.CONFLICT, SyncState.BOTH_MODIFIED})
 
 
 def compute_status(ctx: RepoContext, subpath: str | None) -> Counter:
@@ -15,3 +29,18 @@ def compute_status(ctx: RepoContext, subpath: str | None) -> Counter:
     local = scan(ctx.root, scan_root, ignore, ctx.index, low_io=ctx.config.defaults.low_io)
     entries = classify(local, ctx.index)
     return Counter(entry.state.value for entry in entries)
+
+
+def status_exit_code(counts: Counter) -> int:
+    """Map a status summary to an exit code: conflict (2) outranks drift (1) outranks clean (0).
+
+    A conflict is the most severe outcome, so it wins even when ordinary drift is also
+    present. Drift is any non-quiescent, non-conflict state (local-only, remote-only,
+    local/remote-modified, local/remote-deleted, remote-changed).
+    """
+    if any(counts.get(state.value, 0) > 0 for state in _CONFLICT):
+        return STATUS_CONFLICT
+    quiescent = {state.value for state in _QUIESCENT}
+    if any(count > 0 for value, count in counts.items() if value not in quiescent):
+        return STATUS_DRIFT
+    return STATUS_CLEAN
