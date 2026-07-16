@@ -5,7 +5,7 @@ from pathlib import Path
 
 import click
 
-from protonfs.config import Config, load_config
+from protonfs.config import Config, load_layered_config
 from protonfs.drive import DriveClient
 from protonfs.index import IndexStore
 
@@ -20,7 +20,7 @@ class RepoContext:
 
 def load_context(start: Path | None = None) -> RepoContext:
     root = (start or Path.cwd()).resolve()
-    config = load_config(root)
+    config = load_layered_config(root)
     if config is None:
         raise click.ClickException(
             "protonfs is not set up in this directory. Run `protonfs setup` first."
