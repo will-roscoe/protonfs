@@ -41,6 +41,39 @@ def _drive_error_boundary(func):
     return wrapper
 
 
+def _normalize_paths(paths: tuple[str, ...]) -> list[str | None]:
+    """Collapse a variadic ``PATH...`` argument into the subpath list a command loops over.
+
+    #92: shell globs expand to several arguments (``protonfs pull 03pol02*`` arrives as
+    five paths), so every PATH-taking command accepts many. No paths (or ``.``/``/``)
+    means the whole repo (``[None]``); otherwise dedupe (order-preserving, trailing
+    slashes stripped) and drop paths nested inside another given path, so overlapping
+    pathspecs are never processed twice.
+    """
+    stripped: list[str] = []
+    for raw in paths:
+        p = raw.rstrip("/")
+        if p in ("", "."):
+            return [None]  # repo root subsumes every other pathspec
+        if p not in stripped:
+            stripped.append(p)
+    if not stripped:
+        return [None]
+    return [
+        p
+        for p in stripped
+        if not any(r != p and p.startswith(f"{r}/") for r in stripped)
+    ]
+
+
+def _accumulate_transfer(total, part) -> None:
+    """Fold one per-path TransferResult into the running total (multi-path loops, #92)."""
+    total.transferred_items += part.transferred_items
+    total.skipped_items += part.skipped_items
+    total.failed_items += part.failed_items
+    total.failures += part.failures
+
+
 @click.group()
 @click.version_option(__version__, prog_name="protonfs")
 def main() -> None:
@@ -91,21 +124,26 @@ def deinit(dry_run: bool, yes: bool) -> None:
 
 
 @main.command()
-@click.argument("path", required=False)
-def status(path: str | None) -> None:
+@click.argument("path", nargs=-1)
+def status(path: tuple[str, ...]) -> None:
     """Summarize sync state (counts by local-only/remote-only/synced/conflict).
 
+    Accepts any number of PATHs (e.g. from a shell glob); counts are combined.
     Exit code, so an unattended caller can branch without parsing the counts:
     0 = clean (everything synced or intentionally remote-only), 1 = drift present
     (something to push/pull/prune), 2 = conflict present (needs a human or --resolve).
     Conflict outranks drift when both are present.
     """
+    from collections import Counter
+
     from protonfs.commands.status import compute_status, status_exit_code
     from protonfs.context import load_context
     from protonfs.diff import SyncState
 
     ctx = load_context()
-    counts = compute_status(ctx, path)
+    counts: Counter = Counter()
+    for subpath in _normalize_paths(path):
+        counts.update(compute_status(ctx, subpath))
     for state in SyncState:
         click.echo(f"{state.value}: {counts.get(state.value, 0)}")
     code = status_exit_code(counts)
@@ -114,35 +152,43 @@ def status(path: str | None) -> None:
 
 
 @main.command()
-@click.argument("path", required=False)
+@click.argument("path", nargs=-1)
 @click.option("--remote", is_flag=True, help="Force a live Drive listing instead of the index.")
 @click.option("--trash", is_flag=True, help="List /trash instead.")
 @_drive_error_boundary
-def ls(path: str | None, remote: bool, trash: bool) -> None:
-    """List tracked files with their sync state."""
+def ls(path: tuple[str, ...], remote: bool, trash: bool) -> None:
+    """List tracked files with their sync state (any number of PATHs)."""
     from rich.console import Console
 
     from protonfs.commands.ls import render_ls
     from protonfs.context import load_context
 
     ctx = load_context()
-    render_ls(ctx, path, remote, trash, Console())
+    console = Console()
+    subpaths = _normalize_paths(path)
+    for subpath in subpaths:
+        if len(subpaths) > 1:
+            console.print(f"[bold]{subpath}:[/bold]")
+        render_ls(ctx, subpath, remote, trash, console)
 
 
 @main.command()
-@click.argument("path", required=False)
+@click.argument("path", nargs=-1)
 @click.option("--resolve", type=click.Choice(["merge", "keep-both", "replace", "skip"]))
 @click.option("--dry-run", is_flag=True)
 @_drive_error_boundary
-def push(path: str | None, resolve: str | None, dry_run: bool) -> None:
-    """Upload local-only/changed files to Drive."""
+def push(path: tuple[str, ...], resolve: str | None, dry_run: bool) -> None:
+    """Upload local-only/changed files to Drive (any number of PATHs)."""
     from protonfs.commands.push import push as push_files
     from protonfs.context import load_context
+    from protonfs.drive import TransferResult
     from protonfs.locking import repo_lock
 
     ctx = load_context()
+    result = TransferResult(0, 0, 0, [])
     with repo_lock(ctx.root):
-        result = push_files(ctx, path, resolve, dry_run)
+        for subpath in _normalize_paths(path):
+            _accumulate_transfer(result, push_files(ctx, subpath, resolve, dry_run))
     click.echo(
         f"transferred={result.transferred_items} skipped={result.skipped_items} "
         f"failed={result.failed_items}"
@@ -166,7 +212,7 @@ def push(path: str | None, resolve: str | None, dry_run: bool) -> None:
 
 
 @main.command()
-@click.argument("path", required=False)
+@click.argument("path", nargs=-1)
 @click.option(
     "--resolve",
     type=click.Choice(["remote", "local", "both"]),
@@ -184,22 +230,27 @@ def push(path: str | None, resolve: str | None, dry_run: bool) -> None:
     help="Discover remote files (seed the index) before pulling.",
 )
 @_drive_error_boundary
-def pull(path: str | None, resolve: str | None, dry_run: bool, refresh: bool) -> None:
-    """Download remote-only/changed files from Drive.
+def pull(path: tuple[str, ...], resolve: str | None, dry_run: bool, refresh: bool) -> None:
+    """Download remote-only/changed files from Drive (any number of PATHs).
 
     Diverged files (edited locally AND changed on the remote since the last sync) are
     left untouched unless you pass --resolve; they are reported and pull exits non-zero.
     """
     from protonfs.commands.pull import pull as pull_files
     from protonfs.context import load_context
+    from protonfs.drive import TransferResult
     from protonfs.locking import repo_lock
 
     ctx = load_context()
     if not refresh and not ctx.index.all():
         click.echo("index empty; run `protonfs refresh` first (or `pull --refresh`)")
         return
+    result = TransferResult(0, 0, 0, [])
     with repo_lock(ctx.root):
-        result = pull_files(ctx, path, resolve, dry_run, refresh=refresh)
+        for subpath in _normalize_paths(path):
+            _accumulate_transfer(
+                result, pull_files(ctx, subpath, resolve, dry_run, refresh=refresh)
+            )
     click.echo(
         f"transferred={result.transferred_items} skipped={result.skipped_items} "
         f"failed={result.failed_items}"
@@ -211,7 +262,7 @@ def pull(path: str | None, resolve: str | None, dry_run: bool, refresh: bool) ->
 
 
 @main.command()
-@click.argument("path", required=False)
+@click.argument("path", nargs=-1)
 @click.option(
     "--no-verify",
     is_flag=True,
@@ -220,30 +271,42 @@ def pull(path: str | None, resolve: str | None, dry_run: bool, refresh: bool) ->
 @click.option("--dry-run", is_flag=True, help="Preview what would be offloaded; delete nothing.")
 @click.option("--yes", is_flag=True, help="Skip confirmation prompt.")
 @_drive_error_boundary
-def offload(path: str | None, no_verify: bool, dry_run: bool, yes: bool) -> None:
+def offload(path: tuple[str, ...], no_verify: bool, dry_run: bool, yes: bool) -> None:
     """Delete local bytes of protonfs-tracked files confirmed present on Drive.
 
-    The inverse of `pull`: reclaims local disk space while leaving the Drive copy
-    intact. Reversible -- a later `pull` restores the file in full. By default every
-    file is re-verified against a live remote listing (not just the index) before its
-    local copy is deleted; pass --no-verify to skip that check.
+    Accepts any number of PATHs (e.g. from a shell glob). The inverse of `pull`:
+    reclaims local disk space while leaving the Drive copy intact. Reversible -- a
+    later `pull` restores the file in full. By default every file is re-verified
+    against a live remote listing (not just the index) before its local copy is
+    deleted; pass --no-verify to skip that check.
     """
+    from protonfs.commands.offload import OffloadResult
     from protonfs.commands.offload import offload as offload_files
     from protonfs.context import load_context
     from protonfs.locking import repo_lock
 
     ctx = load_context()
     verify = not no_verify
+    subpaths = _normalize_paths(path)
 
     if not yes and not dry_run:
+        shown = ", ".join(f"'{p}'" for p in subpaths if p) or "'.'"
         click.confirm(
-            f"Delete local copies of tracked files under '{path or '.'}' "
-            f"(Drive copies are kept)?",
+            f"Delete local copies of tracked files under {shown} (Drive copies are kept)?",
             abort=True,
         )
 
+    result = OffloadResult()
     with repo_lock(ctx.root):
-        result = offload_files(ctx, path, verify=verify, dry_run=dry_run)
+        for subpath in subpaths:
+            part = offload_files(ctx, subpath, verify=verify, dry_run=dry_run)
+            result.offloaded += part.offloaded
+            result.skipped_unverified += part.skipped_unverified
+            result.skipped_modified += part.skipped_modified
+            result.bytes_reclaimed += part.bytes_reclaimed
+            result.offloaded_paths += part.offloaded_paths
+            result.skipped_paths += part.skipped_paths
+            result.modified_paths += part.modified_paths
 
     verb = "would offload" if dry_run else "offloaded"
     click.echo(
@@ -269,49 +332,62 @@ def offload(path: str | None, no_verify: bool, dry_run: bool, yes: bool) -> None
 
 
 @main.command()
-@click.argument("path")
+@click.argument("path", nargs=-1, required=True)
 @click.option("-r", "--recursive", is_flag=True)
 @click.option("-f", "--force", is_flag=True, help="Permanently delete (trash, then delete).")
 @click.option("--yes", is_flag=True, help="Skip confirmation prompt.")
 @_drive_error_boundary
-def rm(path: str, recursive: bool, force: bool, yes: bool) -> None:
-    """Remove a file/directory from Drive (trash by default, -f for permanent)."""
+def rm(path: tuple[str, ...], recursive: bool, force: bool, yes: bool) -> None:
+    """Remove files/directories from Drive (trash by default, -f for permanent)."""
     from protonfs.commands.rm import rm as rm_path
     from protonfs.context import load_context
     from protonfs.locking import repo_lock
 
     ctx = load_context()
     with repo_lock(ctx.root):
-        rm_path(ctx, path, recursive, force, confirmed=yes)
+        # No None-mapping here: unlike the scan-scoped commands, rm has no
+        # "whole repo" default -- each given path is removed as-is.
+        for subpath in dict.fromkeys(path):
+            rm_path(ctx, subpath, recursive, force, confirmed=yes)
 
 
 @main.command()
-@click.argument("path")
+@click.argument("path", nargs=-1, required=True)
 @_drive_error_boundary
-def restore(path: str) -> None:
-    """Restore a trashed file/directory on Drive."""
+def restore(path: tuple[str, ...]) -> None:
+    """Restore trashed files/directories on Drive."""
     from protonfs.commands.restore import restore as restore_path
     from protonfs.context import load_context
     from protonfs.locking import repo_lock
 
     ctx = load_context()
     with repo_lock(ctx.root):
-        restore_path(ctx, path)
+        for subpath in dict.fromkeys(path):  # dedupe only; no whole-repo default for restore
+            restore_path(ctx, subpath)
 
 
 @main.command()
-@click.argument("path", required=False)
+@click.argument("path", nargs=-1)
 @click.option("--prune", is_flag=True, help="Drop index entries for files deleted on the remote.")
 @_drive_error_boundary
-def refresh(path: str | None, prune: bool) -> None:
-    """Discover remote files and seed the local index (metadata-only)."""
+def refresh(path: tuple[str, ...], prune: bool) -> None:
+    """Discover remote files and seed the local index (any number of PATHs)."""
+    from protonfs.commands.refresh import RefreshResult
     from protonfs.commands.refresh import refresh as refresh_index
     from protonfs.context import load_context
     from protonfs.locking import repo_lock
 
     ctx = load_context()
+    result = RefreshResult()
     with repo_lock(ctx.root):
-        result = refresh_index(ctx, path, prune)
+        for subpath in _normalize_paths(path):
+            part = refresh_index(ctx, subpath, prune)
+            result.seeded += part.seeded
+            result.remote_changed += part.remote_changed
+            result.remote_deleted += part.remote_deleted
+            result.pruned += part.pruned
+            result.changed_paths += part.changed_paths
+            result.deleted_paths += part.deleted_paths
     click.echo(f"Discovered {result.seeded} new remote file(s) (metadata-only).")
     if result.remote_changed:
         click.echo(f"  {result.remote_changed} file(s) changed on the remote (remote-changed):")
