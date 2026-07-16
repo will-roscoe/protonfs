@@ -8,21 +8,21 @@ from rich.table import Table
 
 from protonfs.context import RepoContext
 from protonfs.diff import classify, within_subpath
-from protonfs.drive import decrypted_name
+from protonfs.drive import RemoteEntry, decrypted_name
 from protonfs.ignore import IgnoreMatcher
 from protonfs.localscan import scan
 
 
-def remote_rel_paths(ctx: RepoContext, subpath: str | None = None) -> dict[str, int]:
+def remote_rel_paths(ctx: RepoContext, subpath: str | None = None) -> dict[str, RemoteEntry]:
     """Recursive files-only remote listing, scoped to `subpath` when given. rel_paths
     are re-prefixed with the subpath so they match the index's repo-root-relative keys
     (same convention as `refresh`)."""
     remote_root = ctx.config.remote_root
     if subpath:
         remote_root = f"{remote_root}/{subpath}"
-    result = {e.rel_path: e.size for e in ctx.drive.walk(remote_root) if not e.is_dir}
+    result = {e.rel_path: e for e in ctx.drive.walk(remote_root) if not e.is_dir}
     if subpath:
-        result = {f"{subpath}/{rel}": size for rel, size in result.items()}
+        result = {f"{subpath}/{rel}": entry for rel, entry in result.items()}
     return result
 
 

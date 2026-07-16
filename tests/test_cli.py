@@ -26,6 +26,7 @@ def _tracked_entry(remote_path: str) -> IndexEntry:
         size=1,
         mtime=1.0,
         sha256="h",
+        sha1="",
         remote_path=remote_path,
         origin_device="d1",
         local_state="present",

@@ -14,6 +14,7 @@ def _entry(**overrides) -> IndexEntry:
         size=100,
         mtime=123.0,
         sha256="abc",
+        sha1="def",
         remote_path="/my-files/x/f",
         origin_device="dev-1",
         local_state="present",
@@ -125,6 +126,30 @@ def test_loads_legacy_bare_dict_and_upgrades_on_save(tmp_path: Path) -> None:
     on_disk = json.loads((protonfs_dir / "index.json").read_text())
     assert on_disk["schema_version"] == INDEX_SCHEMA_VERSION
     assert "a/b" in on_disk["entries"]
+
+
+def test_v1_index_without_sha1_migrates_and_gains_empty_sha1(tmp_path: Path) -> None:
+    # A v1 index predates the sha1 field: its entry dicts have no "sha1" key. Loading
+    # must migrate them forward (IndexEntry does cls(**data), so a missing key would
+    # crash) by injecting sha1="".
+    protonfs_dir = tmp_path / ".protonfs"
+    protonfs_dir.mkdir()
+    entry_without_sha1 = _entry().to_dict()
+    del entry_without_sha1["sha1"]
+    v1_doc = {"schema_version": 1, "entries": {"a/b": entry_without_sha1}}
+    (protonfs_dir / "index.json").write_text(json.dumps(v1_doc))
+
+    store = IndexStore(tmp_path)
+    loaded = store.get("a/b")
+    assert loaded is not None
+    assert loaded.sha1 == ""
+
+    from protonfs.index import INDEX_SCHEMA_VERSION
+
+    store.save()  # persists at the current schema, with sha1 now explicit on disk
+    on_disk = json.loads((protonfs_dir / "index.json").read_text())
+    assert on_disk["schema_version"] == INDEX_SCHEMA_VERSION
+    assert on_disk["entries"]["a/b"]["sha1"] == ""
 
 
 def test_load_rejects_a_newer_schema_than_understood(tmp_path: Path) -> None:

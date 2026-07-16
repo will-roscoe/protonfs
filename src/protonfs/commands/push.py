@@ -49,8 +49,20 @@ def push(
     local = scan(ctx.root, scan_root, ignore, ctx.index, low_io=ctx.config.defaults.low_io)
     diff_entries = classify(local, ctx.index)
 
+    # Push uploads every local change. Without a remote view (classify is called with no
+    # remote here) a local!=index diff surfaces as CONFLICT; the direction-aware states are
+    # included so behaviour is preserved if a remote view is ever wired in. BOTH_MODIFIED is
+    # surfaced exactly as CONFLICT was -- no auto-resolve (that is #5/#7's job).
     to_push = [
-        e.rel_path for e in diff_entries if e.state in (SyncState.LOCAL_ONLY, SyncState.CONFLICT)
+        e.rel_path
+        for e in diff_entries
+        if e.state
+        in (
+            SyncState.LOCAL_ONLY,
+            SyncState.LOCAL_MODIFIED,
+            SyncState.CONFLICT,
+            SyncState.BOTH_MODIFIED,
+        )
     ]
     if dry_run or not to_push:
         return TransferResult(len(to_push), 0, 0, [])
@@ -118,6 +130,7 @@ def push(
                     size=entry.size,
                     mtime=entry.mtime,
                     sha256=entry.sha256,
+                    sha1=entry.sha1,
                     remote_path=f"{remote_parent}/{name}",
                     origin_device=ctx.config.device_id,
                     local_state="present",

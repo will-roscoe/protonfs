@@ -74,7 +74,13 @@ class TransferResult:
 class RemoteEntry:
     rel_path: str
     is_dir: bool
-    size: int
+    size: int  # encrypted totalStorageSize; runs slightly larger than the plaintext size
+    # Plaintext identity (files only). `claimed_size`/`sha1` come from proton's decrypted
+    # `claimedSize`/`claimedDigests.sha1`; either may be None if proton-drive did not
+    # report it. Prefer these over `size` for any local-vs-remote comparison -- a local
+    # byte size matches `claimed_size` exactly, with no encryption-overhead tolerance.
+    claimed_size: int | None = None
+    sha1: str | None = None
 
 
 @dataclass
@@ -382,10 +388,13 @@ class DriveClient:
                     results.append(RemoteEntry(rel_path=rel, is_dir=True, size=0))
                     queue.append((child_abs, f"{rel}/"))
                 else:
+                    digests = entry.get("claimedDigests") or {}
                     file_entry = RemoteEntry(
                         rel_path=rel,
                         is_dir=False,
                         size=entry.get("totalStorageSize", 0),
+                        claimed_size=entry.get("claimedSize"),
+                        sha1=digests.get("sha1"),
                     )
                     results.append(file_entry)
                     dir_files.append(file_entry)

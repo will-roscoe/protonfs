@@ -17,6 +17,7 @@ def test_restore_uses_indexed_remote_path(tmp_path: Path, make_fake_drive) -> No
             size=1,
             mtime=1.0,
             sha256="h",
+            sha1="",
             remote_path="/my-files/test/dump_0001",
             origin_device="d1",
             local_state="present",
