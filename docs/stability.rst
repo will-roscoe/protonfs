@@ -189,6 +189,14 @@ Environment variables
      - Base backoff in seconds between Drive listing retries (default ``2``).
    * - ``PROTONFS_LIST_BACKOFF_CAP``
      - Cap in seconds on the Drive listing retry backoff (default ``60``).
+   * - ``PROTONFS_TRANSFER_TIMEOUT``
+     - Timeout in seconds for a Drive upload/download call (default ``300``).
+   * - ``PROTONFS_TRANSFER_RETRIES``
+     - Max retries for a Drive upload/download call (default ``4``).
+   * - ``PROTONFS_TRANSFER_BACKOFF``
+     - Base backoff in seconds between Drive upload/download retries (default ``2``).
+   * - ``PROTONFS_TRANSFER_BACKOFF_CAP``
+     - Cap in seconds on the Drive upload/download retry backoff (default ``60``).
    * - ``PROTONFS_KEYRING_PASSWORD``
      - Supplies the password for the protonfs-owned keyring bootstrap, instead of
        generating one.
