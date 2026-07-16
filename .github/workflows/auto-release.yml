@@ -27,7 +27,16 @@ permissions:
   id-token: write   # PyPI trusted publishing in the called release workflow
 
 jobs:
+  # Release gate (issue #11): no version tag is created unless the full test
+  # matrix passes with the coverage floor on the exact merge commit being tagged.
+  # (skip-badges defaults true under workflow_call, so the badge job runs only in
+  # ci.yml's own push-triggered run for this commit, not twice.)
+  ci:
+    uses: ./.github/workflows/ci.yml
+    secrets: inherit
+
   compute:
+    needs: ci
     runs-on: ubuntu-latest
     outputs:
       released: ${{ steps.decide.outputs.released }}
