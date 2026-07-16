@@ -135,7 +135,16 @@ def push(path: str | None, resolve: str | None, dry_run: bool) -> None:
 
 @main.command()
 @click.argument("path", required=False)
-@click.option("--resolve", type=click.Choice(["merge", "keep-both", "replace", "skip"]))
+@click.option(
+    "--resolve",
+    type=click.Choice(["remote", "local", "both"]),
+    help=(
+        "How to reconcile a file that changed on BOTH sides since the last sync: "
+        "remote=overwrite local, local=keep local (stays queued for push), "
+        "both=fetch the remote copy under a .remote suffix for a manual merge. "
+        "Without this, pull leaves diverged files untouched and reports them."
+    ),
+)
 @click.option("--dry-run", is_flag=True)
 @click.option(
     "--refresh",
@@ -144,7 +153,11 @@ def push(path: str | None, resolve: str | None, dry_run: bool) -> None:
 )
 @_drive_error_boundary
 def pull(path: str | None, resolve: str | None, dry_run: bool, refresh: bool) -> None:
-    """Download remote-only/changed files from Drive."""
+    """Download remote-only/changed files from Drive.
+
+    Diverged files (edited locally AND changed on the remote since the last sync) are
+    left untouched unless you pass --resolve; they are reported and pull exits non-zero.
+    """
     from protonfs.commands.pull import pull as pull_files
     from protonfs.context import load_context
     from protonfs.locking import repo_lock
