@@ -61,6 +61,12 @@ jobs:
           --cov-fail-under=80
           --junitxml=junit.xml -o junit_family=legacy
 
+      # GATES the workflow: docstring coverage must stay at/above the fail-under
+      # floor in [tool.interrogate] (pyproject.toml). No `|| true` here on purpose --
+      # this is the real gate; the badge job's interrogate call stays non-fatal.
+      - name: Docstring coverage gate
+        run: interrogate -c pyproject.toml
+
       - name: Upload coverage to Codecov
         if: ${{ !cancelled() }}
         uses: codecov/codecov-action@v5
