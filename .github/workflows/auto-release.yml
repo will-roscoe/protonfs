@@ -87,6 +87,25 @@ jobs:
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Finalize CHANGELOG.md's Unreleased section into this version *before*
+          # tagging (issue #13), so the tagged commit carries the finalized
+          # entry. Fails soft: a no-op (empty Unreleased section) leaves the
+          # working tree untouched and nothing is committed.
+          python .github/scripts/finalize_changelog.py "$NEXT"
+          if git diff --quiet -- CHANGELOG.md; then
+            echo "CHANGELOG.md Unreleased section is empty — nothing to finalize."
+          else
+            git add CHANGELOG.md
+            git commit -m "docs(changelog): finalize ${TAG} [skip ci]"
+            # A badge workflow may have committed to main since this job checked
+            # out; rebase so the push is fast-forward instead of failing the release.
+            git pull --rebase origin main
+            git push origin HEAD:main
+          fi
+
+          # Tag the current HEAD, which now includes the finalize commit (if
+          # one was made) so the release/tag carries the finalized changelog.
           git tag -a "$TAG" -m "Release $TAG"
           git push origin "$TAG"
 
