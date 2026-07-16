@@ -68,6 +68,12 @@ def isolate(tmp_path, monkeypatch):
     monkeypatch.delenv(ss.DISABLE_ENV, raising=False)
     monkeypatch.delenv(ss.KEYRING_PASSWORD_ENV, raising=False)
     monkeypatch.setattr(ss.shutil, "which", lambda tool: f"/usr/bin/{tool}")
+    # This whole module tests the Linux Secret Service bootstrap through a fully
+    # mocked runner (FakeRunner) -- no real dbus/gnome-keyring process ever runs.
+    # Force is_linux() to True so that logic is exercised deterministically on any
+    # CI host OS (e.g. the macOS runners added in #72), not just on real Linux.
+    # test_ensure_is_a_noop_off_linux overrides this back to "Darwin" explicitly.
+    monkeypatch.setattr(ss._platform, "system", lambda: "Linux")
 
 
 def test_parse_sh_exports_handles_dbus_launch_syntax():
