@@ -22,11 +22,20 @@ A protonfs-managed directory keeps its state in ``.protonfs/``:
   mtimes, remote paths). **Local only** — gitignore it; it is rebuilt per device
   and would only cause churn and false conflicts if shared.
 
-A ready-made ``.protonfs/.gitignore`` that ignores ``index.json`` while keeping
-``config.json`` and ``ignore`` tracked makes this split correct by default. If
-the managed directory lives inside a git-LFS repo, also add a
-``.protonfs/.gitattributes`` exempting these small control files from LFS, so a
-clone without an LFS pull gets the real config rather than pointer stubs.
+``protonfs setup`` writes this split for you: a ``.protonfs/.gitignore`` that
+ignores ``index.json`` (and the transient ``refresh-state.json``) while keeping
+``config.json`` and ``ignore`` tracked, plus a ``.protonfs/.gitattributes`` that
+exempts these small control files from git-LFS — so a clone without an LFS pull
+gets the real config rather than pointer stubs. Both are written idempotently and
+preserve any lines you add yourself.
+
+Setting up a **subdirectory** of a larger git repo is safe: ``setup`` runs the
+repo-wide git-LFS migration only when the protonfs root is the git toplevel. In a
+subdirectory it skips migration (and leaves any git-LFS pointer files there
+untouched); pass ``--migrate-lfs`` to force it or ``--no-migrate-lfs`` to always
+skip. ``setup`` also creates the configured ``remote_root`` on Drive if it does
+not exist yet (it must live under ``/my-files``), so the first ``push`` works
+without hand-creating folders.
 
 First-time setup on a client
 ----------------------------

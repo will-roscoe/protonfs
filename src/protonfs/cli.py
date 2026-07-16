@@ -49,13 +49,22 @@ def main() -> None:
 
 @main.command()
 @click.option("--dry-run", is_flag=True, help="Preview the LFS migration without making changes.")
-def setup(dry_run: bool) -> None:
+@click.option(
+    "--migrate-lfs/--no-migrate-lfs",
+    default=None,
+    help=(
+        "Force or skip the repo-wide git-LFS migration. Default: migrate only when this "
+        "directory is the git toplevel, so setting up a subdirectory never migrates the "
+        "enclosing repo off LFS."
+    ),
+)
+def setup(dry_run: bool, migrate_lfs: bool | None) -> None:
     """Install/verify the proton-drive CLI, init .protonfs/, migrate off git-lfs if present."""
     from pathlib import Path
 
     from protonfs.commands.setup import run_setup
 
-    run_setup(Path.cwd(), dry_run=dry_run)
+    run_setup(Path.cwd(), dry_run=dry_run, migrate=migrate_lfs)
 
 
 @main.command()

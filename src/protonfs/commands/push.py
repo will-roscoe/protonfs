@@ -30,6 +30,45 @@ LFS_POINTER_KIND = "lfs-pointer"
 LFS_POINTER_ERROR = "refusing to push a git-LFS pointer stub over remote content"
 
 
+# Proton Drive's true root only holds special areas; user files must live under one of these
+# (in practice /my-files). `create-folder /` is rejected, so a remote_root that does not start
+# with a known area can never be created and every upload would fail deep in a batch (#17).
+KNOWN_TOP_LEVEL_AREAS = ("/my-files",)
+
+
+def ensure_remote_root(ctx: RepoContext) -> None:
+    """Ensure the configured `remote_root` itself exists on Drive, creating each missing
+    segment beneath its top-level area. `_ensure_remote_dir` only creates directories BELOW
+    remote_root and assumes remote_root already exists; this creates remote_root itself so a
+    first push against a brand-new Drive location works without hand-creating folders (#17).
+
+    Raises DriveError with a precise message when remote_root does not live under a known
+    area (e.g. `/myproject` instead of `/my-files/myproject`), rather than letting uploads
+    fail obscurely later.
+    """
+    remote_root = ctx.config.remote_root.rstrip("/")
+    area = next(
+        (a for a in KNOWN_TOP_LEVEL_AREAS if remote_root == a or remote_root.startswith(a + "/")),
+        None,
+    )
+    if area is None:
+        raise DriveError(
+            f"remote_root {remote_root!r} must live under {' or '.join(KNOWN_TOP_LEVEL_AREAS)} "
+            f"(e.g. /my-files/myproject). Proton Drive's root only holds special areas and "
+            f"cannot store files directly, so this path can never be created."
+        )
+    relative = remote_root[len(area) :].strip("/")
+    if not relative:
+        return  # the area itself always exists
+    current = area
+    for segment in relative.split("/"):
+        try:
+            ctx.drive.create_folder(current, segment)
+        except DriveError:
+            pass  # already exists -- a real failure surfaces on the upload/create below
+        current = f"{current}/{segment}"
+
+
 def _ensure_remote_dir(ctx: RepoContext, remote_dir: str) -> None:
     root = ctx.config.remote_root.rstrip("/")
     if not remote_dir.startswith(root):
@@ -74,6 +113,10 @@ def push(
     ]
     if dry_run or not to_push:
         return TransferResult(len(to_push), 0, 0, [])
+
+    # #17: make sure remote_root itself exists (and is a valid path) before uploading, so a
+    # first push to a brand-new Drive location works instead of failing on every file.
+    ensure_remote_root(ctx)
 
     # D2.1: default push applies NO conflict strategy so the CLI surfaces conflicts as
     # named per-file failures (never a silent skip that we'd falsely index). A strategy
