@@ -90,7 +90,10 @@ Examples::
 **Synopsis:** ``protonfs push [PATH]... [--resolve {merge,keep-both,replace,skip}] [--dry-run]``
 
 Uploads local-only and locally-modified files under ``PATH`` (or the whole repo)
-to Drive. Without ``--resolve``, a genuine remote conflict is reported as a named
+to Drive. When run interactively (stderr is a terminal), a running
+``push: N/M file(s)`` progress line is shown on stderr after each uploaded batch;
+scripts and redirected output see only the frozen summary on stdout.
+Without ``--resolve``, a genuine remote conflict is reported as a named
 per-file failure rather than silently resolved or skipped. Every batch is
 re-verified against a live remote listing after upload (matching each file's
 plaintext ``claimedSize``) before it is recorded in the index — proton-drive can
@@ -118,7 +121,10 @@ Examples::
 **Synopsis:** ``protonfs pull [PATH]... [--resolve {remote,local,both}] [--dry-run] [--refresh]``
 
 Downloads remote-only and (with ``--resolve``) remote-modified files under
-``PATH`` (or the whole repo). A file edited **locally** and changed on the
+``PATH`` (or the whole repo). When run interactively (stderr is a terminal), a
+running ``pull: N/M file(s)`` progress line is shown on stderr after each
+transferred batch; scripts and redirected output see only the frozen summary on
+stdout. A file edited **locally** and changed on the
 **remote** since the last sync (a divergence) is left untouched by a bare
 ``pull`` — it is reported and the command exits non-zero, so a local edit is
 never silently overwritten. Choose a side with ``--resolve``:

@@ -48,13 +48,17 @@ def _remote_view(ctx: RepoContext, subpath: str | None) -> dict[str, RemoteEntry
     return remote
 
 
-def _download_and_index(ctx: RepoContext, rels: list[str], now: str) -> TransferResult:
+def _download_and_index(
+    ctx: RepoContext, rels: list[str], now: str, on_progress=None, progress_total: int = 0
+) -> TransferResult:
     """Download `rels` (grouped by parent) with overwrite, updating the index to present.
 
     Shared by the clean bring-down (remote-only / metadata-only), the safe remote-moved
     bring-down (local unchanged), and --resolve=remote (remote wins over a local edit).
+    ``on_progress(done, progress_total)`` is invoked after each downloaded batch (#93).
     """
     total = TransferResult(0, 0, 0, [])
+    done = 0
     for parent, group in group_by_parent(rels).items():
         local_folder = ctx.root if parent == "." else ctx.root / parent
         local_folder.mkdir(parents=True, exist_ok=True)
@@ -71,6 +75,9 @@ def _download_and_index(ctx: RepoContext, rels: list[str], now: str) -> Transfer
             total.skipped_items += result.skipped_items
             total.failed_items += result.failed_items
             total.failures += result.failures
+            done += len(batch)
+            if on_progress is not None:
+                on_progress(done, progress_total or len(rels))
 
             failed_names = {f["name"] for f in result.failures}
             for rel in batch:
@@ -127,6 +134,7 @@ def pull(
     resolve: str | None,
     dry_run: bool,
     refresh: bool = False,
+    on_progress=None,
 ) -> TransferResult:
     """Download remote-only (and, with ``resolve``, diverged) files into the tree.
 
@@ -143,6 +151,8 @@ def pull(
         persisting anything.
     :param refresh: when true, seed the index from a remote walk first (reusing the
         local scan already computed here) so a fresh repo has entries to pull.
+    :param on_progress: optional ``(done, total)`` callback invoked after each
+        downloaded batch (#93), so a long pull can render progress; ``None`` disables.
     :returns: a :class:`~protonfs.drive.TransferResult` of what was fetched/skipped.
     :raises protonfs.drive.DriveError: on a Drive or lock failure.
 
@@ -206,7 +216,13 @@ def pull(
         return TransferResult(previewed, len(resolve_local), len(unresolved), failures)
 
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    total = _download_and_index(ctx, to_pull, now) if to_pull else TransferResult(0, 0, 0, [])
+    total = (
+        _download_and_index(
+            ctx, to_pull, now, on_progress=on_progress, progress_total=len(to_pull)
+        )
+        if to_pull
+        else TransferResult(0, 0, 0, [])
+    )
     total.transferred_items += _fetch_remote_copies(ctx, resolve_both)
     total.skipped_items += len(resolve_local)  # local kept; stays queued for the next push
     for rel in unresolved:
