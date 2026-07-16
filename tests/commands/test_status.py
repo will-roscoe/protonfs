@@ -28,6 +28,35 @@ def test_compute_status_counts_local_only_and_synced(tmp_path: Path) -> None:
     assert counts.get("synced", 0) == 0
 
 
+def test_compute_status_subpath_excludes_index_entries_outside_it(tmp_path: Path) -> None:
+    """#96 companion: `status SUBPATH` must not count (or exit non-zero for) index
+    entries outside SUBPATH -- classify() sees the whole index, so the counts need
+    the same within_subpath filter as ls/refresh/offload."""
+    from protonfs.index import IndexEntry
+
+    (tmp_path / "sub").mkdir()
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.index.set(
+        "other/dump_0001",
+        IndexEntry(
+            size=1,
+            mtime=1.0,
+            sha256="placeholder",
+            sha1="",
+            remote_path="/my-files/test/other/dump_0001",
+            origin_device="d1",
+            local_state="metadata-only",
+            last_synced="2026-07-08T00:00:00+00:00",
+        ),
+    )
+
+    counts = compute_status(ctx, "sub")
+
+    assert counts.get("metadata-only", 0) == 0  # out-of-scope entry not counted
+    assert status_exit_code(counts) == STATUS_CLEAN
+
+
 def test_exit_code_clean_when_empty() -> None:
     assert status_exit_code(Counter()) == STATUS_CLEAN
 

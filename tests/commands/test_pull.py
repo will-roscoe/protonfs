@@ -258,6 +258,64 @@ def test_pull_no_resolve_reports_conflict_and_does_not_touch(
     assert result.transferred_items == 0
 
 
+def _metadata_only_entry(remote_path: str) -> IndexEntry:
+    return IndexEntry(
+        size=1,
+        mtime=1.0,
+        sha256="placeholder",
+        sha1="",
+        remote_path=remote_path,
+        origin_device="other-device",
+        local_state="metadata-only",
+        last_synced="2026-07-08T00:00:00+00:00",
+    )
+
+
+def test_pull_subpath_never_touches_entries_outside_it(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    """#96: `pull SUBPATH` must be scoped to SUBPATH. classify() reasons over the
+    whole repo-wide index, so without a within_subpath filter every metadata-only
+    entry elsewhere in the repo (e.g. every other sim dir seeded by refresh) lands
+    in to_pull -- pulling unrelated directories and hammering the API."""
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.index.set("wanted/dump_0001", _metadata_only_entry("/my-files/test/wanted/dump_0001"))
+    ctx.index.set(
+        "unrelated/dump_0002", _metadata_only_entry("/my-files/test/unrelated/dump_0002")
+    )
+    ctx.drive = make_fake_drive()
+
+    result = pull(ctx, "wanted", resolve=None, dry_run=False)
+
+    assert result.transferred_items == 1
+    assert (tmp_path / "wanted" / "dump_0001").exists()
+    # The out-of-scope entry: no download, no local file, index untouched.
+    assert not (tmp_path / "unrelated" / "dump_0002").exists()
+    downloaded = [p for call in ctx.drive.download_calls for p in call[0]]
+    assert downloaded == ["/my-files/test/wanted/dump_0001"]
+    assert ctx.index.get("unrelated/dump_0002").local_state == "metadata-only"
+
+
+def test_pull_subpath_scopes_true_remote_only_entries_too(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    """#96 companion: an index entry recorded `present` but missing on disk classifies
+    REMOTE_ONLY (no remote view) -- out-of-scope ones must not be re-downloaded either."""
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.index.set("wanted/dump_0001", _metadata_only_entry("/my-files/test/wanted/dump_0001"))
+    gone = _metadata_only_entry("/my-files/test/elsewhere/dump_0003")
+    gone.local_state = "present"  # was materialized once; now absent on disk
+    ctx.index.set("elsewhere/dump_0003", gone)
+    ctx.drive = make_fake_drive()
+
+    result = pull(ctx, "wanted", resolve=None, dry_run=False)
+
+    assert result.transferred_items == 1
+    assert not (tmp_path / "elsewhere" / "dump_0003").exists()
+
+
 def test_pull_cli_empty_index_without_refresh_prints_hint(
     tmp_path: Path, monkeypatch
 ) -> None:
