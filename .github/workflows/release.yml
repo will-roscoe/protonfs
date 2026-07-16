@@ -89,4 +89,11 @@ jobs:
           # inputs.tag under workflow_call (github.ref_name would be "main" there);
           # github.ref_name on a direct tag-push trigger.
           RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
-        run: gh release create "$RELEASE_TAG" dist/* --generate-notes
+        # A SemVer pre-release tag (v1.1.0-alpha, -beta, -rc[.n]) is marked as a
+        # GitHub pre-release so it never becomes the repo's "latest" release.
+        run: |
+          PRERELEASE_FLAG=""
+          case "$RELEASE_TAG" in
+            *-*) PRERELEASE_FLAG="--prerelease" ;;
+          esac
+          gh release create "$RELEASE_TAG" dist/* --generate-notes $PRERELEASE_FLAG

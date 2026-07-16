@@ -28,6 +28,37 @@ file, dropping an environment variable -- is a breaking change and requires that
 major-version bump. Additive changes (a new command, a new optional flag, a new config
 key with a backward-compatible default) remain minor/patch as normal.
 
+Release-override directives (from 1.0.0)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+A ``+:<spec>`` token anywhere in a commit message overrides the Conventional Commit
+classification for that release entirely, where ``<spec>`` is ``major`` | ``minor`` |
+``patch`` | ``pre`` | ``prepre`` | ``rc``. The pre-release forms follow SemVer 2.0.0
+precedence with channels ``alpha < beta < rc``:
+
+* From a final release ``X.Y.Z``: ``+:pre`` -> ``X.(Y+1).0-alpha``, ``+:prepre`` ->
+  ``X.(Y+1).0-alpha.0``, ``+:rc`` -> ``X.(Y+1).0-rc`` -- a pre-release always belongs
+  to the *next* minor, so it sorts after the released base.
+* Within a pre-release: ``+:prepre`` increments the number (``-alpha`` ->
+  ``-alpha.1``); ``+:pre`` advances the channel (``alpha`` -> ``beta`` -> ``rc`` ->
+  the final release); ``+:rc`` jumps any earlier channel to ``-rc`` and increments
+  when already there (``-rc`` -> ``-rc.1``); ``+:patch``/``+:minor`` finalize.
+* Plain Conventional Commits landing during a pre-release only increment the
+  pre-release number -- leaving the channel always requires a directive.
+
+Directives are imperative: they are not subject to the pre-1.0 breaking-change
+demotion, and the highest-impact directive wins when several land in one release
+batch. Pre-release tags are marked as GitHub pre-releases and publish to PyPI as
+PEP 440 pre-releases (``1.1.0-alpha.1`` -> ``1.1.0a1``), which ``pip`` skips unless
+``--pre`` is passed.
+
+Release notes
+~~~~~~~~~~~~~~
+Each release's CHANGELOG entry is any hand-written ``[Unreleased]`` content followed
+by notes generated from the release's Conventional Commits: grouped by type
+(Features, Bug fixes, Performance, Reverts, Refactors, Documentation, Tests, Build,
+CI, Style), chronological within each group (earliest first). ``chore`` commits and
+``[skip ci]`` housekeeping are excluded from release notes.
+
 Exit-code contract
 -------------------
 Every ``protonfs`` command follows the same top-level convention:

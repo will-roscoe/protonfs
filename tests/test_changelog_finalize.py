@@ -136,3 +136,94 @@ class TestFinalizeChangelog:
         new_text, changed = finalize_changelog(text_no_links, "0.18.0", _DATE)
         assert changed is True
         assert "## [0.18.0] - 2026-08-01" in new_text
+
+
+class TestPrereleaseVersions:
+    """Pre-release versions (v1.1.0-alpha[.n], -beta, -rc) flow through finalize:
+    the section header takes the version verbatim, and the Unreleased compare link
+    is recognised even when the PREVIOUS tag was itself a pre-release."""
+
+    def test_finalizes_into_prerelease_section(self):
+        new_text, changed = finalize_changelog(_WITH_ENTRIES, "1.1.0-alpha.0", _DATE)
+        assert changed is True
+        assert "## [1.1.0-alpha.0] - 2026-08-01" in new_text
+        assert (
+            "[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v1.1.0-alpha.0...HEAD"
+            in new_text
+        )
+
+    def test_previous_tag_may_be_a_prerelease(self):
+        text = _WITH_ENTRIES.replace(
+            "[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v0.17.0...HEAD",
+            "[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v1.1.0-alpha...HEAD",
+        )
+        new_text, changed = finalize_changelog(text, "1.1.0-beta", _DATE)
+        assert changed is True
+        assert (
+            "[1.1.0-beta]: https://github.com/will-roscoe/protonfs/compare/v1.1.0-alpha...v1.1.0-beta"
+            in new_text
+        )
+
+
+render_commit_sections = mod.render_commit_sections
+
+
+class TestGeneratedReleaseNotes:
+    """Release notes generated from commit subjects: grouped by type, chronological
+    (earliest first) within each group, `chore` and `[skip ci]` excluded."""
+
+    def test_groups_by_type_in_section_order(self):
+        out = render_commit_sections(
+            [
+                "docs: explain thing",
+                "feat(cli): add command",
+                "fix(drive): stop crash",
+            ]
+        )
+        assert out.index("### Features") < out.index("### Bug fixes") < out.index(
+            "### Documentation"
+        )
+        assert "- **cli**: add command" in out
+        assert "- **drive**: stop crash" in out
+
+    def test_chronological_within_group_earliest_first(self):
+        out = render_commit_sections(["feat: first", "feat: second", "feat: third"])
+        assert out.index("- first") < out.index("- second") < out.index("- third")
+
+    def test_chore_and_skip_ci_and_nonconventional_excluded(self):
+        out = render_commit_sections(
+            [
+                "chore: tidy something",
+                "docs(changelog): finalize v1.0.0 [skip ci]",
+                "Merge pull request #5 from x/y",
+                "feat: kept",
+            ]
+        )
+        assert out == "### Features\n\n- kept"
+
+    def test_finalize_appends_generated_after_handwritten(self):
+        new_text, changed = finalize_changelog(
+            _WITH_ENTRIES, "0.18.0", _DATE, commit_subjects=["feat(cli): add command"]
+        )
+        assert changed is True
+        section = new_text.split("## [0.18.0] - 2026-08-01", 1)[1].split("## [", 1)[0]
+        assert "### Features" in section
+        assert "- **cli**: add command" in section
+
+    def test_generated_notes_alone_make_empty_unreleased_finalizable(self):
+        # The v0.18-v0.24 gap: nobody hand-wrote Unreleased entries, so releases
+        # shipped without notes. Generated notes now fill that hole.
+        empty = _WITH_ENTRIES.replace(_WITH_ENTRIES.split("## [0.17.0]", 1)[0],
+                                      "# Changelog\n\n## [Unreleased]\n\n")
+        new_text, changed = finalize_changelog(
+            empty, "0.18.0", _DATE, commit_subjects=["fix: real fix"]
+        )
+        assert changed is True
+        assert "### Bug fixes" in new_text
+
+    def test_no_handwritten_and_no_generated_stays_unchanged(self):
+        empty = "# Changelog\n\n## [Unreleased]\n\n## [0.1.0] - 2026-01-01\n\n- x\n"
+        new_text, changed = finalize_changelog(
+            empty, "0.2.0", _DATE, commit_subjects=["chore: only housekeeping"]
+        )
+        assert changed is False
