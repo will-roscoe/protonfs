@@ -13,6 +13,16 @@ on:
   pull_request:
   workflow_dispatch:
   workflow_call:
+    inputs:
+      skip-badges:
+        description: >-
+          Skip the badge-commit job. Defaults true for workflow_call: auto-release
+          calls this workflow as its pre-tag release gate (issue #11) while ci.yml's
+          own push trigger runs the badges job for the same commit — running it in
+          both would race two badge commits.
+        required: false
+        type: boolean
+        default: true
 
 jobs:
   # Test across the supported Python versions. No badge/commit side effects here —
@@ -37,14 +47,17 @@ jobs:
         run: ruff check src tests --output-format=github
         continue-on-error: true
 
+      # This step GATES the workflow (issue #11): test failures or coverage below
+      # the floor fail CI. Codecov uploads still run via `if: !cancelled()` below.
       - name: Test with coverage (+ junit)
         run: >
           pytest -q
           --cov=src/protonfs --cov-report=term-missing --cov-report=xml:coverage.xml
+          --cov-fail-under=80
           --junitxml=junit.xml -o junit_family=legacy
-        continue-on-error: true
 
       - name: Upload coverage to Codecov
+        if: ${{ !cancelled() }}
         uses: codecov/codecov-action@v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
@@ -63,7 +76,10 @@ jobs:
   # deterministic and the git push does not race across five parallel jobs.
   badges:
     needs: test
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # inputs.skip-badges is only populated under workflow_call (empty/falsy on a
+    # direct push), so this stays true for the push trigger and false when called
+    # from auto-release as the release gate.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && inputs.skip-badges != true
     runs-on: ubuntu-latest
     permissions:
       contents: write

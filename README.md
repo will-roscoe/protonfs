@@ -79,6 +79,18 @@ Escape hatches: `PROTONFS_KEYRING_PASSWORD` supplies your own keyring password
 instead of the generated one, and `PROTONFS_NO_KEYRING_BOOTSTRAP=1` turns all of
 this off if you'd rather manage the environment yourself.
 
+## Releasing (maintainers)
+
+Merges to `main` auto-tag a release, but only after the full test matrix passes
+with an 80% coverage floor on the exact commit being tagged (`auto-release.yml`
+calls the CI workflow before creating the tag). Before milestone or manual tags,
+also run the live suite against a **disposable** Drive directory — it exercises
+real uploads/downloads that CI never can:
+
+```bash
+PROTONFS_TEST_REMOTE=/my-files/test .github/scripts/release_gate.sh
+```
+
 ## License
 
 [PolyForm Noncommercial 1.0.0](LICENSE) — free for noncommercial use with
