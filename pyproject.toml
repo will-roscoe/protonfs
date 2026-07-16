@@ -46,6 +46,7 @@ docs = [
     "sphinx-autobuild",
     "sphinx-autodoc-typehints",
     "sphinx-copybutton",
+    "sphinx-tippy",  # client-side hover previews on cross-references (works on GitHub Pages)
     "furo",
 ]
 

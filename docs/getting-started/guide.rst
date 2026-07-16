@@ -17,41 +17,44 @@ Quick task index
    :widths: 55 45
 
    * - I want to…
-     - Run
+     - Run *(each links to its command reference)*
    * - Set up syncing in a directory for the first time
-     - ``protonfs setup``
+     - :ref:`protonfs setup <cmd-setup>`
    * - Check my keyring/CLI works on a headless server *before* logging in
-     - ``protonfs doctor`` (then ``--fix``)
+     - :ref:`protonfs doctor <cmd-doctor>` (then ``--fix``)
    * - Log in to Proton
-     - ``protonfs auth login``
+     - :ref:`protonfs auth login <cmd-auth>`
    * - Upload my local files to Drive
-     - ``protonfs push``
+     - :ref:`protonfs push <cmd-push>`
    * - Download files that are on Drive but not here
-     - ``protonfs pull``
+     - :ref:`protonfs pull <cmd-pull>`
    * - See what would sync without doing it
-     - ``protonfs push --dry-run`` / ``protonfs pull --dry-run``
+     - :ref:`protonfs push --dry-run <cmd-push>` /
+       :ref:`protonfs pull --dry-run <cmd-pull>`
    * - See the sync state of every tracked file
-     - ``protonfs status`` / ``protonfs ls``
+     - :ref:`protonfs status <cmd-status>` / :ref:`protonfs ls <cmd-ls>`
    * - Learn about files on Drive I have never pulled
-     - ``protonfs refresh``
+     - :ref:`protonfs refresh <cmd-refresh>`
    * - Free local disk space but keep the files on Drive
-     - ``protonfs offload``
+     - :ref:`protonfs offload <cmd-offload>`
    * - Remove a file from Drive (recoverably)
-     - ``protonfs rm PATH``
+     - :ref:`protonfs rm PATH <cmd-rm>`
    * - Get back something I removed
-     - ``protonfs restore PATH``
+     - :ref:`protonfs restore PATH <cmd-restore>`
    * - See or empty Drive's trash
-     - ``protonfs trash list`` / ``protonfs trash empty``
+     - :ref:`protonfs trash list <cmd-trash-list>` /
+       :ref:`protonfs trash empty <cmd-trash-empty>`
    * - Exclude or force-include files from syncing
      - edit ``.protonfs/ignore`` / ``.protonfs/include``
+       (see :ref:`Controlling what syncs <controlling-what-syncs>`)
    * - Update the proton-drive binary (safely)
-     - ``protonfs upgrade``
+     - :ref:`protonfs upgrade <cmd-upgrade>`
    * - Bring an old repo's ``.protonfs/`` state up to date
-     - ``protonfs upgrade`` (migrations run automatically)
+     - :ref:`protonfs upgrade <cmd-upgrade>` (migrations run automatically)
    * - Change a config value
-     - ``protonfs config set KEY VALUE``
+     - :ref:`protonfs config set KEY VALUE <cmd-config>`
    * - Tear protonfs out of a directory
-     - ``protonfs deinit``
+     - :ref:`protonfs deinit <cmd-deinit>`
 
 Walkthrough: your first sync
 ----------------------------
@@ -169,6 +172,8 @@ Walkthrough: keeping proton-drive and an old repo current
 .. seealso:: :doc:`../upgrading` for the full upgrade story and the support-matrix
    policy (why ``upgrade`` never installs a proton-drive newer than this release
    supports).
+
+.. _controlling-what-syncs:
 
 Controlling what syncs
 ----------------------

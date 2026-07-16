@@ -21,6 +21,10 @@ extensions = [
     "sphinx.ext.autodoc",
     "sphinx_autodoc_typehints",
     "sphinx_copybutton",
+    # Hover previews on cross-references. Rendered client-side at build time (unlike
+    # sphinx-hoverxref, which needs the Read the Docs Embed API), so tooltips work on
+    # our GitHub Pages deploy with no external service.
+    "sphinx_tippy",
 ]
 
 templates_path = ["_templates"]
@@ -38,4 +42,20 @@ html_static_path = ["_static"]
 # -- Intersphinx --------------------------------------------------------------
 intersphinx_mapping = {
     "python": ("https://docs.python.org/3", None),
+}
+
+# -- sphinx-tippy (hover previews) --------------------------------------------
+# Collect heading-anchor tooltips only from furo's main content wrapper, so hovering
+# a link in the nav sidebars doesn't pop a tooltip of the sidebar entry itself.
+# Cross-reference tooltips (:ref:/:doc:, e.g. the command links in the task guide)
+# are generated regardless of this selector.
+tippy_anchor_parent_selector = "div.content"
+# Skip the "¶" heading permalinks -- they'd otherwise get a tooltip of their own section.
+tippy_skip_anchor_classes = ("headerlink",)
+tippy_props = {
+    "placement": "auto-start",
+    "maxWidth": 500,
+    "interactive": True,
+    "theme": "light-border",
+    "delay": [200, 0],
 }
