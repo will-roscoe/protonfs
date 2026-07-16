@@ -12,6 +12,7 @@ from __future__ import annotations
 import os
 import shutil
 from dataclasses import dataclass
+from pathlib import Path
 
 import click
 
@@ -37,6 +38,10 @@ class Check:
     ok: bool
     detail: str
     hint: str | None = None
+    # #73: warn-level checks (older-but-supported version, pending migrations) render
+    # as [warn] and never fail the doctor exit code; only ok=False does that. `warn`
+    # is only meaningful alongside ok=True.
+    warn: bool = False
 
 
 _STATE_HINTS = {
@@ -58,8 +63,145 @@ _STATE_HINTS = {
 }
 
 
-def run_doctor(fix: bool = False) -> list[Check]:
+# --- #73: version/schema currency checks (pre-upgrade advisor) -------------------------
+
+
+def version_currency_check(drive: DriveClient) -> Check:
+    """proton-drive's installed version against this release's support matrix (#65):
+    ok at highest_supported(), warn when older-but-supported, fail when unsupported
+    or unparseable."""
+    from protonfs.install import highest_supported, is_supported
+
+    installed = drive.drive_version()
+    highest = highest_supported()
+    if installed is None:
+        return Check(
+            name="proton-drive version",
+            ok=False,
+            detail="unparseable `proton-drive version` output",
+            hint="Run `protonfs upgrade` to install a supported, verified build.",
+        )
+    if installed == highest:
+        return Check("proton-drive version", True, f"{installed} (highest supported)")
+    if is_supported(installed):
+        return Check(
+            name="proton-drive version",
+            ok=True,
+            warn=True,
+            detail=f"{installed} is supported, but {highest} is the highest supported",
+            hint="Run `protonfs upgrade` to move to the highest supported version.",
+        )
+    return Check(
+        name="proton-drive version",
+        ok=False,
+        detail=f"{installed} is not in this protonfs release's support matrix",
+        hint="Run `protonfs upgrade` to install a supported, verified build.",
+    )
+
+
+def upstream_currency_check(upstream_fetch=None) -> Check:
+    """Advisory on upstream's Stable release vs highest_supported() -- same message
+    contract as `protonfs upgrade` (#66). Fails soft offline: an unreachable manifest
+    is an [ok] 'unknown', never a failure."""
+    from protonfs.commands.upgrade import (
+        _semver_tuple,
+        upstream_ahead_message,
+        upstream_stable_version,
+    )
+    from protonfs.install import highest_supported
+
+    fetch = upstream_fetch or upstream_stable_version
+    highest = highest_supported()
+    upstream = fetch()
+    if upstream is None:
+        return Check(
+            "upstream proton-drive", True, "unknown (manifest unreachable; advisory skipped)"
+        )
+    if _semver_tuple(upstream) > _semver_tuple(highest):
+        return Check(
+            name="upstream proton-drive",
+            ok=True,
+            warn=True,
+            detail=f"stable {upstream} is ahead of the supported {highest}",
+            hint=upstream_ahead_message(upstream, highest),
+        )
+    return Check("upstream proton-drive", True, f"stable {upstream}; nothing newer than supported")
+
+
+def repo_currency_checks(root: Path) -> list[Check]:
+    """Inside a protonfs root: index schema version, pending repo-state migrations
+    (#67 registry), and config layering sanity. Empty when `root` is not a protonfs
+    root -- there is nothing to check."""
+    import json
+
+    from protonfs.config import config_path, local_config_path
+    from protonfs.index import INDEX_FILE_NAME, INDEX_SCHEMA_VERSION
+    from protonfs.migrations import pending_migrations
+
+    if not config_path(root).exists():
+        return []
     checks: list[Check] = []
+
+    index_file = root / ".protonfs" / INDEX_FILE_NAME
+    if not index_file.exists():
+        checks.append(Check("index schema", True, "no index yet (nothing pushed/pulled)"))
+    else:
+        raw = json.loads(index_file.read_text())
+        on_disk = raw.get("schema_version") if isinstance(raw.get("schema_version"), int) else 0
+        if on_disk == INDEX_SCHEMA_VERSION:
+            checks.append(Check("index schema", True, f"v{on_disk} (current)"))
+        else:
+            checks.append(
+                Check(
+                    name="index schema",
+                    ok=True,
+                    warn=True,
+                    detail=f"v{on_disk} on disk; current is v{INDEX_SCHEMA_VERSION}",
+                    hint="Run `protonfs upgrade` to persist the index at the current schema.",
+                )
+            )
+
+    pending = pending_migrations(root)
+    if pending:
+        ids = ", ".join(m.id for m in pending)
+        checks.append(
+            Check(
+                name="repo migrations",
+                ok=True,
+                warn=True,
+                detail=f"{len(pending)} pending: {ids}",
+                hint="Run `protonfs upgrade` (or `protonfs upgrade --check` to preview).",
+            )
+        )
+    else:
+        checks.append(Check("repo migrations", True, "none pending"))
+
+    shared = json.loads(config_path(root).read_text())
+    gitignore = root / ".protonfs" / ".gitignore"
+    local_name = local_config_path(root).name
+    layering_problems = []
+    if "device_id" in shared:
+        layering_problems.append("shared config.json still carries device_id")
+    if not gitignore.exists() or local_name not in gitignore.read_text():
+        layering_problems.append(f"{local_name} is not gitignored under .protonfs/")
+    if layering_problems:
+        checks.append(
+            Check(
+                name="config layering",
+                ok=True,
+                warn=True,
+                detail="; ".join(layering_problems),
+                hint="Run `protonfs upgrade` to migrate per-device state out of shared files.",
+            )
+        )
+    else:
+        checks.append(Check("config layering", True, "shared/local split is sane"))
+    return checks
+
+
+def run_doctor(fix: bool = False, root: Path | None = None) -> list[Check]:
+    checks: list[Check] = []
+    root = root or Path.cwd()
 
     drive = DriveClient()
     installed = drive.binary_available()
@@ -77,6 +219,13 @@ def run_doctor(fix: bool = False) -> list[Check]:
     checks.append(
         Check(name="proton-drive binary", ok=version is not None, detail=detail, hint=hint)
     )
+
+    # #73: currency checks -- the pre-upgrade advisor. Version checks only make sense
+    # with a runnable binary; the repo checks run regardless.
+    if version is not None:
+        checks.append(version_currency_check(drive))
+        checks.append(upstream_currency_check())
+    checks.extend(repo_currency_checks(root))
 
     if not is_linux():
         checks.append(
@@ -161,7 +310,7 @@ def run_doctor(fix: bool = False) -> list[Check]:
 def render(checks: list[Check], console_echo=click.echo) -> bool:
     all_ok = True
     for check in checks:
-        mark = "ok  " if check.ok else "FAIL"
+        mark = ("warn" if check.warn else "ok  ") if check.ok else "FAIL"
         console_echo(f"[{mark}] {check.name}: {check.detail}")
         if check.hint:
             console_echo(f"       -> {check.hint}")
