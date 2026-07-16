@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/will-roscoe/protonfs/security/advisories/new
+    about: Report security issues privately — never in a public issue (see SECURITY.md).
+  - name: Question or usage help
+    url: https://github.com/will-roscoe/protonfs/discussions
+    about: Ask questions and get help in Discussions rather than filing an issue.
+  - name: Documentation
+    url: https://will-roscoe.github.io/protonfs
+    about: The command reference, task guide, and upgrade/stability docs.
