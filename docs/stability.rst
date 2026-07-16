@@ -60,6 +60,14 @@ flag/argument name; these names, not just their presence, are frozen.
      - ``0`` done; ``1`` operational failure (missing binary, keyring, not
        authenticated, Drive error, failed LFS upload, declined confirmation); ``2``
        usage error.
+   * - ``deinit``
+     - Remove ``.protonfs/`` from this directory (config, local config, index,
+       refresh state, ignore/include, control ``.gitattributes``/``.gitignore``) after
+       a summary + confirmation. Never touches synced payload files, local or remote.
+       Reports (does not run) follow-up git steps when inside a git repo. Options:
+       ``--dry-run``, ``--yes``.
+     - ``0`` done (including dry-run); ``1`` not a protonfs root, lock held by another
+       process, or declined confirmation; ``2`` usage error.
    * - ``status``
      - Summarize sync state (counts by local-only/remote-only/synced/conflict).
        Argument: ``PATH`` (optional).

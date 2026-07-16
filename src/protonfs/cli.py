@@ -69,6 +69,28 @@ def setup(dry_run: bool, migrate_lfs: bool | None) -> None:
 
 
 @main.command()
+@click.option("--dry-run", is_flag=True, help="List what would be removed; delete nothing.")
+@click.option("--yes", is_flag=True, help="Skip confirmation prompt.")
+@_drive_error_boundary
+def deinit(dry_run: bool, yes: bool) -> None:
+    """Remove .protonfs/ from this directory: clean teardown of a protonfs root.
+
+    Only protonfs's own bookkeeping under .protonfs/ (config, index, ignore/include,
+    control .gitattributes/.gitignore) is removed -- synced payload files, local or
+    remote, are never touched.
+    """
+    from pathlib import Path
+
+    from protonfs.commands.deinit import ensure_deinit_target, run_deinit
+    from protonfs.locking import repo_lock
+
+    root = Path.cwd()
+    ensure_deinit_target(root)
+    with repo_lock(root):
+        run_deinit(root, dry_run=dry_run, yes=yes)
+
+
+@main.command()
 @click.argument("path", required=False)
 def status(path: str | None) -> None:
     """Summarize sync state (counts by local-only/remote-only/synced/conflict).
