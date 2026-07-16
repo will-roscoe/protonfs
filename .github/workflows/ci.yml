@@ -67,6 +67,11 @@ jobs:
       - name: Docstring coverage gate
         run: interrogate -c pyproject.toml
 
+      # GATES the workflow: README's overview block must match its single source of
+      # truth (docs/_shared/overview.rst). Regenerate with `--write` if this fails.
+      - name: README ↔ docs sync
+        run: python .github/scripts/sync_readme.py --check
+
       - name: Upload coverage to Codecov
         if: ${{ !cancelled() }}
         uses: codecov/codecov-action@v5

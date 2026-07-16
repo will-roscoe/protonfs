@@ -24,7 +24,10 @@ extensions = [
 ]
 
 templates_path = ["_templates"]
-exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
+# `_shared/` holds fragments pulled into other pages via `.. include::`; they are not
+# standalone documents, so keep them out of the toctree/build (avoids "not in any
+# toctree" warnings).
+exclude_patterns = ["_build", "Thumbs.db", ".DS_Store", "_shared/**"]
 source_suffix = ".rst"
 master_doc = "index"
 
