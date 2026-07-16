@@ -65,3 +65,18 @@ select = ["E", "F", "I", "UP"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.interrogate]
+# Docstring-coverage gate (issue: raise docs coverage for 1.0). Tests are excluded
+# entirely -- they document themselves through descriptive names + inline comments.
+fail-under = 80
+exclude = ["tests", "docs", ".github", "build"]
+# Empty package __init__.py files and closure/nested helpers carry no public
+# contract worth a docstring; __init__ methods are documented at the class level.
+ignore-init-module = true
+ignore-init-method = true
+ignore-nested-functions = true
+ignore-magic = true
+ignore-overloaded-functions = true
+ignore-property-decorators = true
+verbose = 1

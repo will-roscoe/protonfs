@@ -1,9 +1,8 @@
 Durability and Drift-Resolution Guarantees
 ============================================
 
-.. contents:: Contents
-   :local:
-   :depth: 2
+.. Page contents are rendered by furo's right-hand sidebar; an explicit
+.. `.. contents::` directive collides with it (furo TOC JS error), so it is omitted.
 
 This page writes down, in plain prose, what ``protonfs`` actually guarantees about
 not losing your data and about how it decides what needs syncing. Every claim
