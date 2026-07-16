@@ -29,6 +29,7 @@ from protonfs.context import RepoContext
 from protonfs.diff import within_subpath
 from protonfs.ignore import IgnoreMatcher
 from protonfs.index import IndexEntry
+from protonfs.localscan import hash_file_digests
 
 logger = logging.getLogger(__name__)
 
@@ -37,9 +38,11 @@ logger = logging.getLogger(__name__)
 class OffloadResult:
     offloaded: int = 0
     skipped_unverified: int = 0
+    skipped_modified: int = 0
     bytes_reclaimed: int = 0
     offloaded_paths: list[str] = field(default_factory=list)
     skipped_paths: list[str] = field(default_factory=list)
+    modified_paths: list[str] = field(default_factory=list)
 
 
 def offload(
@@ -83,8 +86,21 @@ def offload(
 
         for rel in rels:
             local_path = ctx.root / rel
+            entry = ctx.index.get(rel)
             local_size = local_path.stat().st_size
             name = Path(rel).name
+
+            # Unconditional data-loss guard (holds even under --no-verify): never delete a
+            # file whose local bytes differ from what was last synced. A file edited locally
+            # since its last sync has unsynced content that is NOT on Drive, so offloading it
+            # would destroy the only copy of that edit -- a same-size remote object would even
+            # pass the size verify below. Compare the live local sha256 to the index's record.
+            local_sha256, _ = hash_file_digests(local_path)
+            if local_sha256 != entry.sha256:
+                logger.warning("offload skip: %s has unsynced local edits", rel)
+                result.skipped_modified += 1
+                result.modified_paths.append(rel)
+                continue
 
             if verify:
                 ident = identities.get(name)
@@ -109,7 +125,6 @@ def offload(
             if dry_run:
                 continue
 
-            entry = ctx.index.get(rel)
             local_path.unlink()
             ctx.index.set(
                 rel,

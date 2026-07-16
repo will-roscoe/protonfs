@@ -203,7 +203,7 @@ def offload(path: str | None, no_verify: bool, dry_run: bool, yes: bool) -> None
     verb = "would offload" if dry_run else "offloaded"
     click.echo(
         f"{verb}={result.offloaded} bytes_reclaimed={result.bytes_reclaimed} "
-        f"skipped_unverified={result.skipped_unverified}"
+        f"skipped_unverified={result.skipped_unverified} skipped_modified={result.skipped_modified}"
     )
     for p in result.offloaded_paths:
         click.echo(f"  {'WOULD OFFLOAD' if dry_run else 'offloaded'} {p}")
@@ -213,6 +213,13 @@ def offload(path: str | None, no_verify: bool, dry_run: bool, yes: bool) -> None
             "remote and were left untouched locally:"
         )
         for p in result.skipped_paths:
+            click.echo(f"      {p}")
+    if result.skipped_modified:
+        click.echo(
+            f"  -> {result.skipped_modified} file(s) have unsynced local edits and were "
+            "left untouched; `push` them first, then offload:"
+        )
+        for p in result.modified_paths:
             click.echo(f"      {p}")
 
 

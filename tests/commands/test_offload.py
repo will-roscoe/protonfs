@@ -7,7 +7,7 @@ from protonfs.config import init_config
 from protonfs.context import load_context
 from protonfs.diff import SyncState, classify
 from protonfs.index import IndexEntry
-from protonfs.localscan import scan
+from protonfs.localscan import hash_file_digests, scan
 
 
 def _index_entry(remote_path: str, *, local_state: str = "present", size: int = 4) -> IndexEntry:
@@ -23,13 +23,29 @@ def _index_entry(remote_path: str, *, local_state: str = "present", size: int = 
     )
 
 
+def _synced_entry(local_path: Path, remote_path: str) -> IndexEntry:
+    """A `present` index entry whose sha256/size match the file on disk -- i.e. a file that
+    is genuinely in sync (unmodified since the last sync), which is what offload requires."""
+    sha256, sha1 = hash_file_digests(local_path)
+    return IndexEntry(
+        size=local_path.stat().st_size,
+        mtime=1.0,
+        sha256=sha256,
+        sha1=sha1,
+        remote_path=remote_path,
+        origin_device="d1",
+        local_state="present",
+        last_synced="2026-07-08T00:00:00+00:00",
+    )
+
+
 def test_offload_deletes_verified_file_and_marks_metadata_only(
     tmp_path: Path, make_fake_drive
 ) -> None:
     init_config(tmp_path, "/my-files/test")
     (tmp_path / "dump_0001").write_bytes(b"data")
     ctx = load_context(tmp_path)
-    ctx.index.set("dump_0001", _index_entry("/my-files/test/dump_0001", size=4))
+    ctx.index.set("dump_0001", _synced_entry(tmp_path / "dump_0001", "/my-files/test/dump_0001"))
     fake = make_fake_drive()
     ctx.drive = fake
     # Populate the remote listing so remote_identities() reports this file as present
@@ -62,9 +78,7 @@ def test_offload_leaves_untracked_file_alone(tmp_path: Path, make_fake_drive) ->
 def test_offload_leaves_already_metadata_only_entry_alone(tmp_path: Path, make_fake_drive) -> None:
     init_config(tmp_path, "/my-files/test")
     ctx = load_context(tmp_path)
-    ctx.index.set(
-        "gone", _index_entry("/my-files/test/gone", local_state="metadata-only")
-    )
+    ctx.index.set("gone", _index_entry("/my-files/test/gone", local_state="metadata-only"))
     ctx.drive = make_fake_drive()
 
     result = offload(ctx, None)
@@ -73,11 +87,52 @@ def test_offload_leaves_already_metadata_only_entry_alone(tmp_path: Path, make_f
     assert result.skipped_unverified == 0
 
 
+def test_offload_skips_locally_modified_file(tmp_path: Path, make_fake_drive) -> None:
+    # Data-loss guard: a file edited locally since the last sync (local bytes != index
+    # sha256) must NOT be deleted, even though the remote reports a same-size object --
+    # its unsynced content is not on Drive.
+    init_config(tmp_path, "/my-files/test")
+    (tmp_path / "dump_0001").write_bytes(b"data")
+    ctx = load_context(tmp_path)
+    ctx.index.set("dump_0001", _synced_entry(tmp_path / "dump_0001", "/my-files/test/dump_0001"))
+    fake = make_fake_drive()
+    ctx.drive = fake
+    fake.upload([tmp_path / "dump_0001"], "/my-files/test")
+    # Now edit the file locally to different content of the SAME size (4 bytes) -- the remote
+    # object still reports size 4, so a size-only verify would wrongly pass.
+    (tmp_path / "dump_0001").write_bytes(b"EDIT")
+
+    result = offload(ctx, None)
+
+    assert result.offloaded == 0
+    assert result.skipped_modified == 1
+    assert result.modified_paths == ["dump_0001"]
+    assert (tmp_path / "dump_0001").read_bytes() == b"EDIT"  # untouched
+    assert ctx.index.get("dump_0001").local_state == "present"
+
+
+def test_offload_modified_guard_holds_under_no_verify(tmp_path: Path, make_fake_drive) -> None:
+    # The unsynced-edit guard is unconditional -- it protects even when remote verification
+    # is explicitly disabled.
+    init_config(tmp_path, "/my-files/test")
+    (tmp_path / "dump_0001").write_bytes(b"data")
+    ctx = load_context(tmp_path)
+    ctx.index.set("dump_0001", _synced_entry(tmp_path / "dump_0001", "/my-files/test/dump_0001"))
+    ctx.drive = make_fake_drive()
+    (tmp_path / "dump_0001").write_bytes(b"EDIT")
+
+    result = offload(ctx, None, verify=False)
+
+    assert result.offloaded == 0
+    assert result.skipped_modified == 1
+    assert (tmp_path / "dump_0001").exists()
+
+
 def test_offload_skips_file_absent_from_remote(tmp_path: Path, make_fake_drive) -> None:
     init_config(tmp_path, "/my-files/test")
     (tmp_path / "dump_0001").write_bytes(b"data")
     ctx = load_context(tmp_path)
-    ctx.index.set("dump_0001", _index_entry("/my-files/test/dump_0001", size=4))
+    ctx.index.set("dump_0001", _synced_entry(tmp_path / "dump_0001", "/my-files/test/dump_0001"))
     ctx.drive = make_fake_drive()  # nothing "uploaded" -- remote_identities returns {}
 
     result = offload(ctx, None)
@@ -93,7 +148,7 @@ def test_offload_skips_file_with_mismatched_remote_size(tmp_path: Path, make_fak
     init_config(tmp_path, "/my-files/test")
     (tmp_path / "dump_0001").write_bytes(b"data")
     ctx = load_context(tmp_path)
-    ctx.index.set("dump_0001", _index_entry("/my-files/test/dump_0001", size=4))
+    ctx.index.set("dump_0001", _synced_entry(tmp_path / "dump_0001", "/my-files/test/dump_0001"))
     fake = make_fake_drive(remote_size_overrides={"dump_0001": 1})
     ctx.drive = fake
     fake.upload([tmp_path / "dump_0001"], "/my-files/test")
@@ -109,7 +164,7 @@ def test_offload_dry_run_deletes_nothing(tmp_path: Path, make_fake_drive) -> Non
     init_config(tmp_path, "/my-files/test")
     (tmp_path / "dump_0001").write_bytes(b"data")
     ctx = load_context(tmp_path)
-    ctx.index.set("dump_0001", _index_entry("/my-files/test/dump_0001", size=4))
+    ctx.index.set("dump_0001", _synced_entry(tmp_path / "dump_0001", "/my-files/test/dump_0001"))
     fake = make_fake_drive()
     ctx.drive = fake
     fake.upload([tmp_path / "dump_0001"], "/my-files/test")
@@ -130,8 +185,11 @@ def test_offload_subpath_scoping_leaves_outside_files_untouched(
     (tmp_path / "subdir" / "in_scope").write_bytes(b"data")
     (tmp_path / "outside").write_bytes(b"data")
     ctx = load_context(tmp_path)
-    ctx.index.set("subdir/in_scope", _index_entry("/my-files/test/subdir/in_scope", size=4))
-    ctx.index.set("outside", _index_entry("/my-files/test/outside", size=4))
+    ctx.index.set(
+        "subdir/in_scope",
+        _synced_entry(tmp_path / "subdir" / "in_scope", "/my-files/test/subdir/in_scope"),
+    )
+    ctx.index.set("outside", _synced_entry(tmp_path / "outside", "/my-files/test/outside"))
     fake = make_fake_drive()
     ctx.drive = fake
     fake.upload([tmp_path / "subdir" / "in_scope"], "/my-files/test/subdir")
@@ -150,7 +208,7 @@ def test_offload_reversible_via_classify_metadata_only(tmp_path: Path, make_fake
     init_config(tmp_path, "/my-files/test")
     (tmp_path / "dump_0001").write_bytes(b"data")
     ctx = load_context(tmp_path)
-    ctx.index.set("dump_0001", _index_entry("/my-files/test/dump_0001", size=4))
+    ctx.index.set("dump_0001", _synced_entry(tmp_path / "dump_0001", "/my-files/test/dump_0001"))
     fake = make_fake_drive()
     ctx.drive = fake
     fake.upload([tmp_path / "dump_0001"], "/my-files/test")
