@@ -142,9 +142,12 @@ flag/argument name; these names, not just their presence, are frozen.
        ``--check``: an upgrade/migration is available; ``2`` usage error (including
        ``--drive-only`` with ``--repo-only``).
    * - ``doctor``
-     - Check this host can run proton-drive (binary, session bus, OS keyring).
-       Option: ``--fix``.
-     - ``0`` every check passed; ``1`` at least one check failed; ``2`` usage error.
+     - Check this host can run proton-drive (binary, session bus, OS keyring) and
+       version/state currency (support matrix, upstream advisory, index schema,
+       pending migrations, config layering). Warn-level findings suggest
+       ``protonfs upgrade`` without failing the exit code. Option: ``--fix``.
+     - ``0`` every check passed (warnings allowed); ``1`` at least one check failed;
+       ``2`` usage error.
    * - ``shell-init``
      - Print shell exports so ``proton-drive`` run by hand sees the same keyring.
      - ``0`` always (nothing to fail on; prints zero or more ``export`` lines).
