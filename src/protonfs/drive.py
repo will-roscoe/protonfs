@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -16,6 +17,12 @@ logger = logging.getLogger(__name__)
 
 BINARY_ENV_VAR = "PROTONFS_DRIVE_BIN"
 DEFAULT_BINARY = "proton-drive"
+
+# Matches the semver embedded in `proton-drive version` output, e.g.
+# "Proton Drive CLI cli-drive@0.5.0+73e40d90" -> "0.5.0". The build metadata after
+# `+` (if any) is deliberately not captured (issue #65: the support matrix compares
+# on the semver only).
+_VERSION_RE = re.compile(r"cli-drive@(\d+\.\d+\.\d+)")
 
 # #33: the Proton API throttles hard from rate-limited hosts (HPC login nodes), where a
 # `filesystem list` degrades from <1s to 15-30s and then hangs for minutes. Cap each list
@@ -269,6 +276,17 @@ class DriveClient:
         if result.returncode != 0:
             return None
         return result.stdout.strip()
+
+    def drive_version(self) -> str | None:
+        """The installed proton-drive's semver, e.g. "0.5.0", or None if the binary
+        is missing, unrunnable, or its `version` output doesn't contain a parseable
+        `cli-drive@X.Y.Z` token (issue #65: for comparison against the support
+        matrix in `protonfs.install`)."""
+        raw = self.version()
+        if raw is None:
+            return None
+        match = _VERSION_RE.search(raw)
+        return match.group(1) if match else None
 
     def is_authenticated(self) -> bool:
         """Whether a usable session exists. A *keyring* fault deliberately propagates:

@@ -37,6 +37,31 @@ def test_version_returns_stripped_stdout(monkeypatch: pytest.MonkeyPatch, tmp_pa
     assert client.version() == "Proton Drive CLI cli-drive@0.4.6"
 
 
+def test_drive_version_parses_semver_from_raw_output(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    fake_bin = tmp_path / "proton-drive"
+    fake_bin.write_text("#!/bin/sh\necho 'Proton Drive CLI cli-drive@0.5.0+73e40d90'\n")
+    fake_bin.chmod(0o755)
+    client = DriveClient(binary=str(fake_bin))
+    assert client.drive_version() == "0.5.0"
+
+
+def test_drive_version_returns_none_when_binary_missing() -> None:
+    client = DriveClient(binary="/nonexistent/proton-drive")
+    assert client.drive_version() is None
+
+
+def test_drive_version_returns_none_on_unparseable_output(
+    tmp_path: Path,
+) -> None:
+    fake_bin = tmp_path / "proton-drive"
+    fake_bin.write_text("#!/bin/sh\necho 'not a version string'\n")
+    fake_bin.chmod(0o755)
+    client = DriveClient(binary=str(fake_bin))
+    assert client.drive_version() is None
+
+
 def test_list_returns_parsed_json_array(monkeypatch: pytest.MonkeyPatch) -> None:
     # D5.2: use the real `filesystem list` name shape {"ok": true, "value": ...}
     # (v0.1 used a simplified {"value": ...}).

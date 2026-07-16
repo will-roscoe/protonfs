@@ -74,6 +74,30 @@ PINNED_SHA512 = {
     ),
 }
 
+# Explicit proton-drive support matrix (issue #65): the set of proton-drive versions
+# this protonfs release supports, as a checkable contract for the upgrade command
+# (M5.2) and doctor (M6.5). `highest_supported()` is the version protonfs upgrades to
+# -- always its own DEFAULT_VERSION, never anything newer. A proton-drive release past
+# `highest_supported()` requires a newer protonfs release, which re-pins via
+# .github/scripts/repin_proton_drive.py and adds the new version here. Older entries
+# stay so PROTONFS_DRIVE_VERSION downgrades remain a supported, checkable choice.
+SUPPORTED_DRIVE_VERSIONS = ("0.5.0", "0.4.6")
+
+
+def highest_supported() -> str:
+    """The highest proton-drive version this protonfs release supports.
+
+    Always equal to DEFAULT_VERSION: protonfs never upgrades proton-drive past the
+    version it ships pins and behavioral compatibility for.
+    """
+    return DEFAULT_VERSION
+
+
+def is_supported(version: str) -> bool:
+    """Whether `version` is in this protonfs release's proton-drive support matrix."""
+    return version in SUPPORTED_DRIVE_VERSIONS
+
+
 # glibc below this is too old for the Bun-compiled linux-x64 prebuilt. Bun supports
 # glibc >= 2.17 (per the roadmap's target-machine survey: exo2 on CentOS 7 / glibc
 # 2.17 is a confirmed headless-installable target), so we only warn below that.

@@ -9,6 +9,8 @@ import pytest
 
 from protonfs.install import (
     DEFAULT_VERSION,
+    PINNED_SHA512,
+    SUPPORTED_DRIVE_VERSIONS,
     InstallError,
     Platform,
     binary_url,
@@ -16,10 +18,14 @@ from protonfs.install import (
     diagnose,
     download_and_verify,
     has_avx2,
+    highest_supported,
     install_drive,
+    is_supported,
     pinned_sha512,
     resolve_install_dir,
 )
+
+_ALL_SLUGS = ("linux-x64", "linux-arm64", "darwin-x64", "darwin-arm64")
 
 
 class _FakeResp:
@@ -238,3 +244,35 @@ def test_resolve_install_dir_falls_back_to_managed_when_off_path() -> None:
     path_dir, on_path = resolve_install_dir(path_env="/usr/bin:/bin")
     assert on_path is False
     assert path_dir == Path.home() / ".local" / "share" / "protonfs" / "bin"
+
+
+# --- support matrix (issue #65) --------------------------------------------
+
+def test_highest_supported_equals_default_version() -> None:
+    assert highest_supported() == DEFAULT_VERSION
+
+
+def test_default_version_is_in_support_matrix() -> None:
+    assert DEFAULT_VERSION in SUPPORTED_DRIVE_VERSIONS
+
+
+def test_is_supported_true_for_matrix_versions() -> None:
+    for version in SUPPORTED_DRIVE_VERSIONS:
+        assert is_supported(version) is True
+
+
+def test_is_supported_false_for_unknown_version() -> None:
+    assert is_supported("9.9.9") is False
+
+
+@pytest.mark.parametrize("slug", _ALL_SLUGS)
+def test_highest_supported_pinned_for_every_platform(slug: str) -> None:
+    # highest_supported() must ship a verifiable pin for every supported platform.
+    sha = pinned_sha512(highest_supported(), slug)
+    assert sha is not None and len(sha) == 128
+
+
+def test_every_supported_version_has_at_least_one_pin() -> None:
+    # Matrix consistency: no supported version is entirely unpinnable.
+    for version in SUPPORTED_DRIVE_VERSIONS:
+        assert any((version, slug) in PINNED_SHA512 for slug in _ALL_SLUGS)
