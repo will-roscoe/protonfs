@@ -451,8 +451,62 @@ class DriveClient:
         return result if isinstance(result, list) else []
 
     def restore(self, remote_paths: list[str]) -> list[dict]:
-        result = self._run_json(["filesystem", "restore", *remote_paths])
-        return result if isinstance(result, list) else []
+        """Restore trashed nodes given their ORIGINAL remote paths.
+
+        proton-drive 0.5.0 removed original-path restore: `filesystem restore` only
+        accepts `/trash/<name>` paths, resolved by decrypted name with first-match-
+        wins, and node UIDs are NOT accepted under /trash (#56). The original-path
+        form is tried first (it is what 0.4.6 accepts); on rejection each path is
+        translated to its trash entry, refusing to act when a stale same-named
+        entry would be matched instead of the requested one.
+        """
+        try:
+            result = self._run_json(["filesystem", "restore", *remote_paths])
+            return result if isinstance(result, list) else []
+        except DriveError as exc:
+            if "not supported" not in str(exc):
+                raise
+        return [self._restore_from_trash(path) for path in remote_paths]
+
+    def _node_uid(self, remote_path: str) -> str | None:
+        """The node UID of `remote_path`, via `filesystem info`."""
+        result = self._run_json(["filesystem", "info", remote_path])
+        return result.get("uid") if isinstance(result, dict) else None
+
+    def _restore_from_trash(self, original_path: str) -> dict:
+        """Restore one node by translating its original path to a `/trash/<name>`
+        path, guarding against proton-drive's first-match-wins name resolution."""
+        stripped = original_path.rstrip("/")
+        parent, _, name = stripped.rpartition("/")
+        same_named = [e for e in self.list("/trash") if decrypted_name(e) == name]
+        if not same_named:
+            raise DriveError(
+                f"cannot restore {original_path}: no trashed item is named {name!r}"
+            )
+        parent_uid = self._node_uid(parent or "/")
+        candidate = same_named[0]
+        if candidate.get("parentUid") != parent_uid:
+            # The first same-named trash entry (which is what proton-drive would
+            # act on) did not come from this path's parent — restoring would hit
+            # the wrong node, and UIDs cannot disambiguate under /trash (#56).
+            raise DriveError(
+                f"cannot restore {original_path}: {len(same_named)} trashed items "
+                f"are named {name!r} and proton-drive >= 0.5.0 restores trash "
+                f"entries by name, first match wins; the first match is not the "
+                f"one trashed from {parent or '/'}. Restore it via the Drive web "
+                f"UI, or permanently delete the older same-named trash entries "
+                f"first."
+            )
+        escaped = name.replace("/", "\\/")
+        result = self._run_json(["filesystem", "restore", f"/trash/{escaped}"])
+        items = result if isinstance(result, list) else []
+        restored = items[0] if items else {}
+        if restored.get("uid") != candidate.get("uid") or not restored.get("ok"):
+            raise DriveError(
+                f"restore of {original_path} failed: "
+                f"{json.dumps(restored) if restored else 'no result from proton-drive'}"
+            )
+        return restored
 
     def delete(self, remote_paths: list[str]) -> list[dict]:
         result = self._run_json(["filesystem", "delete", *remote_paths])

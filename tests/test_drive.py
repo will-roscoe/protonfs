@@ -397,3 +397,125 @@ def test_walk_invokes_on_directory_per_directory_with_file_entries(
 
     # One callback per directory, each carrying only that directory's file entries.
     assert seen == [["top.txt"], ["sub/inner.txt"]]
+
+
+# --- restore against proton-drive >= 0.5.0 trash semantics (#56) ------------
+
+def _stub_run_seq(responses: list[tuple[str, int]]):
+    """Sequential stub: each call consumes the next (stdout, returncode) pair and
+    records the argv it was invoked with."""
+    calls: list[list[str]] = []
+
+    def _run(args, capture_output, text, **kwargs):
+        calls.append(list(args))
+        stdout, returncode = responses[len(calls) - 1]
+        return subprocess.CompletedProcess(args, returncode, stdout=stdout, stderr="")
+
+    _run.calls = calls
+    return _run
+
+
+def _trash_entry(name: str, uid: str, parent_uid: str) -> str:
+    return (
+        f'{{"uid": "{uid}", "parentUid": "{parent_uid}", '
+        f'"name": {{"ok": true, "value": "{name}"}}}}'
+    )
+
+
+def test_restore_original_path_form_used_when_accepted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 0.4.6 accepts the original path directly: no fallback, single invocation.
+    client = DriveClient(binary="proton-drive")
+    monkeypatch.setattr("protonfs.drive.shutil.which", lambda _: "/usr/bin/proton-drive")
+    run = _stub_run_seq([('[{"uid": "u1", "ok": true}]', 0)])
+    monkeypatch.setattr(subprocess, "run", run)
+
+    result = client.restore(["/my-files/test/a.bin"])
+
+    assert result == [{"uid": "u1", "ok": True}]
+    assert len(run.calls) == 1
+    assert run.calls[0][1:4] == ["filesystem", "restore", "/my-files/test/a.bin"]
+
+
+def test_restore_falls_back_to_trash_name_on_0_5_0(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 0.5.0 rejects the original path -> translate to /trash/<name>, verify uid.
+    client = DriveClient(binary="proton-drive")
+    monkeypatch.setattr("protonfs.drive.shutil.which", lambda _: "/usr/bin/proton-drive")
+    run = _stub_run_seq(
+        [
+            ('Path "/my-files/test/a.bin" is not supported', 1),  # original form
+            (f"[{_trash_entry('a.bin', 'share~n1', 'share~parent1')}]", 0),  # list /trash
+            ('{"uid": "share~parent1"}', 0),  # info on parent
+            ('[{"uid": "share~n1", "ok": true}]', 0),  # restore /trash/a.bin
+        ]
+    )
+    monkeypatch.setattr(subprocess, "run", run)
+
+    result = client.restore(["/my-files/test/a.bin"])
+
+    assert result == [{"uid": "share~n1", "ok": True}]
+    assert run.calls[1][1:4] == ["filesystem", "list", "/trash"]
+    assert run.calls[2][1:4] == ["filesystem", "info", "/my-files/test"]
+    assert run.calls[3][1:4] == ["filesystem", "restore", "/trash/a.bin"]
+
+
+def test_restore_refuses_when_stale_same_named_entry_is_first_match(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A stale same-named trash entry from another parent precedes ours: proton-drive
+    # would act on the WRONG node (first-match-wins), so restore must refuse.
+    client = DriveClient(binary="proton-drive")
+    monkeypatch.setattr("protonfs.drive.shutil.which", lambda _: "/usr/bin/proton-drive")
+    trash = (
+        f"[{_trash_entry('a.bin', 'share~stale', 'share~otherparent')}, "
+        f"{_trash_entry('a.bin', 'share~mine', 'share~parent1')}]"
+    )
+    run = _stub_run_seq(
+        [
+            ('Path "/my-files/test/a.bin" is not supported', 1),
+            (trash, 0),
+            ('{"uid": "share~parent1"}', 0),
+        ]
+    )
+    monkeypatch.setattr(subprocess, "run", run)
+
+    with pytest.raises(DriveError, match="first match"):
+        client.restore(["/my-files/test/a.bin"])
+    assert len(run.calls) == 3  # never issued the restore
+
+
+def test_restore_errors_when_not_in_trash(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = DriveClient(binary="proton-drive")
+    monkeypatch.setattr("protonfs.drive.shutil.which", lambda _: "/usr/bin/proton-drive")
+    run = _stub_run_seq(
+        [
+            ('Path "/my-files/test/a.bin" is not supported', 1),
+            ("[]", 0),  # empty trash
+        ]
+    )
+    monkeypatch.setattr(subprocess, "run", run)
+
+    with pytest.raises(DriveError, match="no trashed item"):
+        client.restore(["/my-files/test/a.bin"])
+
+
+def test_restore_errors_when_wrong_node_restored(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Defense in depth: if proton-drive restores a different uid than the one we
+    # selected (or reports ok=false), surface it instead of claiming success.
+    client = DriveClient(binary="proton-drive")
+    monkeypatch.setattr("protonfs.drive.shutil.which", lambda _: "/usr/bin/proton-drive")
+    run = _stub_run_seq(
+        [
+            ('Path "/my-files/test/a.bin" is not supported', 1),
+            (f"[{_trash_entry('a.bin', 'share~n1', 'share~parent1')}]", 0),
+            ('{"uid": "share~parent1"}', 0),
+            ('[{"uid": "share~n1", "ok": false, "error": {"code": 2511}}]', 0),
+        ]
+    )
+    monkeypatch.setattr(subprocess, "run", run)
+
+    with pytest.raises(DriveError, match="failed"):
+        client.restore(["/my-files/test/a.bin"])
