@@ -209,3 +209,12 @@ class TestDirectives:
     def test_directive_requires_word_boundary(self):
         # `+:premature` is not a directive... but its `pre` prefix must not match either.
         assert compute_next_version("1.0.0", ["chore: x +:premature"]) is None
+
+    def test_quoted_or_midline_directives_do_not_actuate(self):
+        # The v1.0.0 incident: a commit body DOCUMENTING the syntax must not release.
+        msg = "feat(release): directives\n\na '+:major|minor|patch' token overrides"
+        assert compute_next_version("1.0.0", [msg]) == "1.1.0"  # classified as feat only
+        assert compute_next_version("1.0.0", ["chore: x\n\nsee +:pre for details"]) is None
+
+    def test_directive_alone_on_line_with_whitespace_ok(self):
+        assert compute_next_version("1.0.0", ["chore: x\n\n  +:patch  "]) == "1.0.1"

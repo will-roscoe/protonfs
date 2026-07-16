@@ -17,9 +17,11 @@ Pre-1.0 policy: while the major version is ``0`` a breaking change bumps the
 **minor** component, not the major one, so active 0.x development does not jump to
 1.0.0 by accident. SemVer starts being fully enforced from 1.0 onward (milestone M4).
 
-Explicit override directives (from 1.0.0): a ``+:<spec>`` token anywhere in a commit
-message overrides the Conventional Commit classification entirely, where ``<spec>``
-is ``major`` | ``minor`` | ``patch`` | ``pre`` | ``prepre`` | ``rc``. The pre-release
+Explicit override directives (from 1.0.0): a ``+:<spec>`` token standing alone on its
+own line of the commit message (footer-style) overrides the Conventional Commit
+classification entirely, where ``<spec>`` is ``major`` | ``minor`` | ``patch`` |
+``pre`` | ``prepre`` | ``rc``. Prose mentions and quoted examples never actuate a
+release -- only a dedicated line does. The pre-release
 ladder follows SemVer 2.0.0 precedence with channels ``alpha < beta < rc``:
 
 * from a final release ``X.Y.Z``: ``pre`` -> ``X.(Y+1).0-alpha``, ``prepre`` ->
@@ -67,8 +69,11 @@ _BREAKING_FOOTER_RE = re.compile(r"^BREAKING[ -]CHANGE:", re.MULTILINE)
 _MINOR_TYPES = {"feat"}
 _PATCH_TYPES = {"fix", "perf", "revert"}
 
-# `+:<spec>` override directives -- anywhere in the message, word-bounded.
-_DIRECTIVE_RE = re.compile(r"\+:(major|minor|patch|rc|prepre|pre)\b")
+# `+:<spec>` override directives. The directive must stand ALONE on its own line
+# (footer-style): v1.0.0 was released by this very parser matching a `+:major`
+# QUOTED inside a commit body that was documenting the syntax. Prose mentions,
+# quoted examples, and mid-line tokens must never actuate a release.
+_DIRECTIVE_RE = re.compile(r"^\s*\+:(major|minor|patch|rc|prepre|pre)\s*$", re.MULTILINE)
 # Highest-impact directive wins across a batch (imperative, so ordered by the
 # magnitude of the resulting version, not by commit order).
 _DIRECTIVE_RANK = ["prepre", "pre", "rc", "patch", "minor", "major"]

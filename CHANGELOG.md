@@ -10,6 +10,65 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 
 ## [1.0.0] - 2026-07-16
 
+protonfs 1.0.0 — the initial stable release. The command-line surface frozen in
+[`docs/stability.rst`](docs/stability.rst) — every command, option name, exit
+code, config location, and environment variable documented there — is now a
+stable contract for the whole `1.x` series. This entry also collects the
+v0.18.0–v0.25.0 changes (released earlier the same day) that led up to it.
+
+### Added
+
+- `protonfs upgrade [--check] [--drive-only|--repo-only]`: upgrades the
+  proton-drive binary to this release's highest supported version
+  (SHA-512-verified before an atomic swap, session checked afterwards) and runs
+  pending repo-state migrations. When upstream ships something newer than this
+  release supports, `upgrade` says so and installs nothing — upgrading protonfs
+  itself is the path to a newer proton-drive. `--check` previews everything and
+  exits `0`/`1` for scripts (#66; v0.23.0).
+- Explicit proton-drive support matrix per protonfs release:
+  `SUPPORTED_DRIVE_VERSIONS` / `highest_supported()` / `is_supported()`, plus
+  `DriveClient.drive_version()`, documented as a table in the stability page
+  (#65; v0.18.0).
+- Versioned repo-state migrations since 0.2.0, runnable via `protonfs upgrade`:
+  index schema re-save, `device_id` relocation to `config.local.json`, and
+  control-file backfill, each idempotent and probing real on-disk state. A
+  `layout_version` marker in `config.local.json` records the migrated level
+  (#67; v0.19.0).
+- `protonfs trash list` / `protonfs trash empty`: inspect Drive's trash
+  (including same-named duplicate counts — the ambiguity that can block
+  `restore`) and empty it behind an explicit typed confirmation (#70; v0.22.0).
+- `protonfs deinit [--dry-run] [--yes]`: clean teardown of a protonfs root —
+  removes `.protonfs/` bookkeeping only, never synced payload files, and
+  reports (never runs) the follow-up git steps (#71; v0.21.0).
+- Throttle backoff for upload/download at parity with `list`: transient Proton
+  API throttling mid-push/pull is retried with bounded exponential backoff
+  instead of failing the run; new `PROTONFS_TRANSFER_TIMEOUT/RETRIES/BACKOFF/
+  BACKOFF_CAP` env knobs (#69; v0.20.0).
+- `protonfs doctor` now includes a pre-upgrade advisor: installed proton-drive
+  version vs the support matrix, an upstream-ahead advisory, index-schema
+  currency, pending migrations, and config-layering sanity, as non-fatal
+  `[warn]` findings (#73; v0.24.0).
+- macOS CI: `macos-latest` (arm64) and `macos-15-intel` runners now execute the
+  full suite, backing the pinned darwin binaries with real coverage, with
+  per-arch README badges (#72).
+- Docs: `docs/upgrading.rst` — the full upgrade story (pip, binary, migrations,
+  session caveat) (#68).
+- `+:<spec>` release-override directives, the SemVer 2.0.0 pre-release ladder
+  (`alpha` → `beta` → `rc`), and auto-generated, type-grouped release notes
+  (#85; see below).
+
+### Upgrade notes
+
+- **Coming from any 0.x**: run `protonfs upgrade --check` inside each protonfs
+  repo to preview pending repo-state migrations, then `protonfs upgrade` to
+  apply them. Old repos keep working unmigrated — every consumer still migrates
+  what it reads on the fly — but migrating makes the on-disk state current in
+  one step. See the [Upgrading](https://will-roscoe.github.io/protonfs/upgrading.html)
+  docs page.
+- **Versioning from here**: 1.0.0 makes the stability contract binding — a
+  breaking change to anything in `docs/stability.rst` now bumps the major
+  version (the pre-1.0 demotion of breaking→minor no longer applies).
+
 ### Features
 
 - **release**: +:<spec> version directives, prerelease ladder, generated release notes (#85)
