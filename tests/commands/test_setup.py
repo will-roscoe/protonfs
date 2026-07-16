@@ -8,20 +8,27 @@ from pathlib import Path
 import click
 import pytest
 
+from protonfs.commands import setup as setup_mod
 from protonfs.commands.setup import (
     _append_gitignore,
+    _ensure_lines,
+    _untrack_lfs_patterns,
     clean_pointer_stubs,
     ensure_authenticated,
     ensure_cli_present,
     ensure_config,
+    ensure_secrets,
     is_git_toplevel,
+    maybe_uninstall_lfs_filters,
     migrate_lfs,
+    run_setup,
     write_git_control_files,
 )
 from protonfs.config import load_config
 from protonfs.context import RepoContext
 from protonfs.drive import TransferResult
 from protonfs.index import IndexStore
+from protonfs.secretservice import SecretServiceError, SecretsResult
 
 
 def _git_init(path: Path) -> None:
@@ -338,3 +345,308 @@ def test_clean_pointer_stubs_removes_stub_files(tmp_path: Path) -> None:
     assert removed == 1
     assert not stub.exists()
     assert real.exists()
+
+
+# --- ensure_secrets -------------------------------------------------------------------
+
+
+def test_ensure_secrets_echoes_actions_and_warnings(
+    monkeypatch: pytest.MonkeyPatch, make_fake_drive
+) -> None:
+    lines: list[str] = []
+    monkeypatch.setattr(setup_mod.click, "echo", lambda msg="": lines.append(msg))
+    monkeypatch.setattr(
+        setup_mod,
+        "ensure_secret_service",
+        lambda: SecretsResult(
+            env={}, ready=True, actions=["started keyring"], warnings=["isolated keyring"]
+        ),
+    )
+
+    ensure_secrets(make_fake_drive())
+
+    assert any("keyring: started keyring" in line for line in lines)
+    assert any("! isolated keyring" in line for line in lines)
+
+
+def test_ensure_secrets_wraps_failure_in_click_exception(
+    monkeypatch: pytest.MonkeyPatch, make_fake_drive
+) -> None:
+    def _boom():
+        raise SecretServiceError("no usable keyring")
+
+    monkeypatch.setattr(setup_mod, "ensure_secret_service", _boom)
+
+    with pytest.raises(click.ClickException) as excinfo:
+        ensure_secrets(make_fake_drive())
+    message = str(excinfo.value)
+    assert "no usable keyring" in message
+    assert "protonfs doctor" in message
+
+
+# --- _ensure_lines / _untrack_lfs_patterns / _append_gitignore edge branches ----------
+
+
+def test_ensure_lines_appends_newline_before_missing_when_file_lacks_trailing_newline(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "f"
+    target.write_text("keep-me")  # no trailing newline
+
+    wrote = _ensure_lines(target, "keep-me\nadd-me\n")
+
+    assert wrote is True
+    # The missing line is appended on its own line, not glued onto "keep-me".
+    assert target.read_text().splitlines() == ["keep-me", "add-me"]
+
+
+def test_ensure_lines_returns_false_when_all_lines_present(tmp_path: Path) -> None:
+    target = tmp_path / "f"
+    _ensure_lines(target, "a\nb\n")  # first write
+    assert _ensure_lines(target, "a\nb\n") is False  # nothing missing on the second pass
+
+
+def test_untrack_lfs_patterns_returns_empty_when_no_gitattributes(tmp_path: Path) -> None:
+    assert _untrack_lfs_patterns(tmp_path) == []
+
+
+def test_untrack_lfs_patterns_keeps_non_lfs_lines(tmp_path: Path) -> None:
+    (tmp_path / ".gitattributes").write_text(
+        "*.txt text\n" "sim/*/* filter=lfs diff=lfs merge=lfs -text\n" "*.md text\n"
+    )
+
+    removed = _untrack_lfs_patterns(tmp_path)
+
+    assert removed == ["sim/*/*"]
+    kept = (tmp_path / ".gitattributes").read_text()
+    assert "*.txt text" in kept and "*.md text" in kept
+    assert "filter=lfs" not in kept
+
+
+def test_append_gitignore_noop_when_all_patterns_present(tmp_path: Path) -> None:
+    gitignore = tmp_path / ".gitignore"
+    gitignore.write_text("sim/\n")
+
+    _append_gitignore(tmp_path, ["sim/"])  # already present -> nothing to add
+
+    assert gitignore.read_text() == "sim/\n"
+
+
+def test_append_gitignore_inserts_newline_when_file_lacks_trailing_newline(
+    tmp_path: Path,
+) -> None:
+    gitignore = tmp_path / ".gitignore"
+    gitignore.write_text("existing")  # no trailing newline
+
+    _append_gitignore(tmp_path, ["sim/"])
+
+    assert gitignore.read_text().splitlines() == ["existing", "sim/"]
+
+
+# --- migrate_lfs failed-upload guard --------------------------------------------------
+
+
+def test_migrate_lfs_aborts_when_upload_reports_failures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, make_fake_drive
+) -> None:
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    (tmp_path / ".gitattributes").write_text("sim/*/* filter=lfs diff=lfs merge=lfs -text\n")
+    from protonfs.config import init_config
+
+    config = init_config(tmp_path, "/my-files/test")
+    ctx = RepoContext(
+        root=tmp_path, config=config, index=IndexStore(tmp_path), drive=make_fake_drive()
+    )
+
+    # One file failed to upload -> migration must abort BEFORE touching git tracking.
+    monkeypatch.setattr(
+        "protonfs.commands.setup.push_files",
+        lambda *a, **k: TransferResult(2, 0, 1, [{"name": "x", "error": "boom"}]),
+    )
+    mutated: list[list[str]] = []
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda cmd, *a, **k: mutated.append(cmd) or subprocess.CompletedProcess(cmd, 0),
+    )
+
+    with pytest.raises(click.ClickException) as excinfo:
+        migrate_lfs(ctx, dry_run=False)
+
+    assert "failed to upload" in str(excinfo.value)
+    # .gitattributes still carries the LFS rule -- nothing was untracked.
+    assert "filter=lfs" in (tmp_path / ".gitattributes").read_text()
+
+
+# --- maybe_uninstall_lfs_filters ------------------------------------------------------
+
+
+def test_maybe_uninstall_lfs_filters_noop_when_lfs_rules_remain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / ".gitattributes").write_text("sim/*/* filter=lfs -text\n")
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda cmd, *a, **k: calls.append(cmd) or subprocess.CompletedProcess(cmd, 0),
+    )
+
+    maybe_uninstall_lfs_filters(tmp_path)
+
+    assert calls == []  # LFS rules still present -> git untouched
+
+
+def test_maybe_uninstall_lfs_filters_noop_when_git_lfs_not_installed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / ".gitattributes").write_text("*.txt text\n")  # no LFS rules
+
+    def fake_run(cmd, *a, **k):
+        # `git lfs env` returns nonzero when git-lfs is not installed at all.
+        return subprocess.CompletedProcess(cmd, 1)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    maybe_uninstall_lfs_filters(tmp_path)  # must not raise / must not call uninstall
+
+
+def test_maybe_uninstall_lfs_filters_runs_uninstall_when_no_rules_remain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / ".gitattributes").write_text("*.txt text\n")  # no LFS rules
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, *a, **k):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0)  # `git lfs env` succeeds -> installed
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    maybe_uninstall_lfs_filters(tmp_path)
+
+    assert any(cmd[-1] == "uninstall" for cmd in calls)
+
+
+# --- run_setup end-to-end wiring ------------------------------------------------------
+#
+# The guards (ensure_cli_present/ensure_secrets/ensure_authenticated/ensure_config) are
+# tested individually above; here we fake them and drive run_setup's tail: remote-root
+# creation, the migrate/skip branching (#19), and the pointer-stub/uninstall cleanup.
+
+
+def _stub_setup_guards(monkeypatch: pytest.MonkeyPatch, config) -> None:
+    monkeypatch.setattr(setup_mod, "ensure_cli_present", lambda drive: "v0.5.0")
+    monkeypatch.setattr(setup_mod, "ensure_secrets", lambda drive: None)
+    monkeypatch.setattr(setup_mod, "ensure_authenticated", lambda drive: None)
+    monkeypatch.setattr(setup_mod, "ensure_config", lambda root: config)
+    monkeypatch.setattr(setup_mod, "init_ignore", lambda root: None)
+    monkeypatch.setattr(setup_mod, "init_include", lambda root: None)
+    monkeypatch.setattr(setup_mod, "write_git_control_files", lambda root: None)
+    monkeypatch.setattr(setup_mod, "DriveClient", lambda: None)
+
+
+def test_run_setup_skips_migration_with_no_migrate_lfs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from protonfs.config import Config
+
+    config = Config(remote_root="/my-files/test", device_id="d1")
+    _stub_setup_guards(monkeypatch, config)
+    ensured: list[object] = []
+    monkeypatch.setattr(setup_mod, "ensure_remote_root", lambda ctx: ensured.append(ctx))
+    # migrate must NOT be consulted when explicitly disabled.
+    monkeypatch.setattr(
+        setup_mod, "migrate_lfs", lambda *a, **k: pytest.fail("migration must not run")
+    )
+    lines: list[str] = []
+    monkeypatch.setattr(setup_mod.click, "echo", lambda msg="": lines.append(msg))
+
+    run_setup(tmp_path, dry_run=False, migrate=False)
+
+    assert ensured  # remote root was ensured (not a dry run)
+    assert any("--no-migrate-lfs" in line for line in lines)
+    assert any("setup complete" in line for line in lines)
+
+
+def test_run_setup_skips_migration_when_not_git_toplevel(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from protonfs.config import Config
+
+    config = Config(remote_root="/my-files/test", device_id="d1")
+    _stub_setup_guards(monkeypatch, config)
+    monkeypatch.setattr(setup_mod, "ensure_remote_root", lambda ctx: None)
+    monkeypatch.setattr(setup_mod, "is_git_toplevel", lambda root: False)
+    monkeypatch.setattr(
+        setup_mod, "migrate_lfs", lambda *a, **k: pytest.fail("migration must not run")
+    )
+    lines: list[str] = []
+    monkeypatch.setattr(setup_mod.click, "echo", lambda msg="": lines.append(msg))
+
+    run_setup(tmp_path, dry_run=False, migrate=None)
+
+    assert any("not the git toplevel" in line for line in lines)
+
+
+def test_run_setup_runs_migration_and_cleanup_when_forced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from protonfs.config import Config
+
+    config = Config(remote_root="/my-files/test", device_id="d1")
+    _stub_setup_guards(monkeypatch, config)
+    monkeypatch.setattr(setup_mod, "ensure_remote_root", lambda ctx: None)
+    monkeypatch.setattr(setup_mod, "migrate_lfs", lambda ctx, dry_run: True)
+    monkeypatch.setattr(setup_mod, "clean_pointer_stubs", lambda root: 2)
+    uninstalled: list[Path] = []
+    monkeypatch.setattr(setup_mod, "maybe_uninstall_lfs_filters", uninstalled.append)
+    lines: list[str] = []
+    monkeypatch.setattr(setup_mod.click, "echo", lambda msg="": lines.append(msg))
+
+    run_setup(tmp_path, dry_run=False, migrate=True)
+
+    assert uninstalled == [tmp_path]
+    assert any("Removed 2 leftover" in line for line in lines)
+
+
+def test_run_setup_reports_no_stubs_when_migration_finds_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from protonfs.config import Config
+
+    config = Config(remote_root="/my-files/test", device_id="d1")
+    _stub_setup_guards(monkeypatch, config)
+    monkeypatch.setattr(setup_mod, "ensure_remote_root", lambda ctx: None)
+    monkeypatch.setattr(setup_mod, "migrate_lfs", lambda ctx, dry_run: True)
+    monkeypatch.setattr(setup_mod, "clean_pointer_stubs", lambda root: 0)  # migration, but no stubs
+    monkeypatch.setattr(setup_mod, "maybe_uninstall_lfs_filters", lambda root: None)
+    lines: list[str] = []
+    monkeypatch.setattr(setup_mod.click, "echo", lambda msg="": lines.append(msg))
+
+    run_setup(tmp_path, dry_run=False, migrate=True)
+
+    assert any("No leftover git-lfs pointer stubs found" in line for line in lines)
+
+
+def test_run_setup_dry_run_skips_remote_root_and_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from protonfs.config import Config
+
+    config = Config(remote_root="/my-files/test", device_id="d1")
+    _stub_setup_guards(monkeypatch, config)
+    monkeypatch.setattr(
+        setup_mod, "ensure_remote_root", lambda ctx: pytest.fail("dry run must not touch Drive")
+    )
+    monkeypatch.setattr(setup_mod, "is_git_toplevel", lambda root: True)
+    monkeypatch.setattr(setup_mod, "migrate_lfs", lambda ctx, dry_run: True)
+    monkeypatch.setattr(
+        setup_mod, "clean_pointer_stubs", lambda root: pytest.fail("dry run must not clean stubs")
+    )
+    lines: list[str] = []
+    monkeypatch.setattr(setup_mod.click, "echo", lambda msg="": lines.append(msg))
+
+    run_setup(tmp_path, dry_run=True, migrate=None)
+
+    assert any("setup complete" in line for line in lines)
