@@ -8,6 +8,19 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-07-16
+
+### Features
+
+- **cli**: accept multiple pathspecs on PATH-taking commands (#92)
+- **transfer**: show batch progress on interactive push/pull (#93)
+- **ls**: --dirs aggregation with sizes, --state filter, --format on ls/status (#97, #94)
+
+### Tests
+
+- **live**: add end-to-end command workflow suite (dev-machine only)
+- **pull**: single-file pathspec downloads only that file (#96 follow-up)
+
 ## [1.0.3] - 2026-07-16
 
 ### Bug fixes
@@ -325,7 +338,8 @@ the preceding development history and its first tagged release:
   line-matching, git-mutation error wrapping, `pathspec` deprecation, subpath
   prune data-loss fix.
 
-[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v1.0.3...HEAD
+[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/will-roscoe/protonfs/compare/v1.0.3...v1.1.0
 [1.0.3]: https://github.com/will-roscoe/protonfs/compare/v1.0.2...v1.0.3
 [1.0.2]: https://github.com/will-roscoe/protonfs/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/will-roscoe/protonfs/compare/v1.0.0...v1.0.1
