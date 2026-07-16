@@ -113,13 +113,17 @@ def test_live_uid_addressed_permanent_delete_still_unsupported(tmp_path: Path, l
 
 def test_live_trash_then_restore_roundtrip(tmp_path: Path, live_dir) -> None:
     client, remote_dir = live_dir
-    src = tmp_path / "to_trash.bin"
+    # Unique per-run name: proton-drive >= 0.5.0 resolves /trash paths by name,
+    # first match wins (#56), so a stale same-named entry from an earlier failed
+    # run would shadow this one and make restore impossible.
+    name = f"to_trash-{uuid.uuid4().hex[:12]}.bin"
+    src = tmp_path / name
     src.write_bytes(b"trash-me")
     client.upload([src], remote_dir)
-    remote_file = f"{remote_dir}/to_trash.bin"
+    remote_file = f"{remote_dir}/{name}"
 
     client.trash([remote_file])
-    assert "to_trash.bin" not in [e.rel_path for e in client.walk(remote_dir) if not e.is_dir]
+    assert name not in [e.rel_path for e in client.walk(remote_dir) if not e.is_dir]
 
     client.restore([remote_file])
-    assert "to_trash.bin" in [e.rel_path for e in client.walk(remote_dir) if not e.is_dir]
+    assert name in [e.rel_path for e in client.walk(remote_dir) if not e.is_dir]
