@@ -67,6 +67,11 @@ class SecretsResult:
 
 
 def is_linux(system: str | None = None) -> bool:
+    """Return whether this host is Linux (where the Secret Service bootstrap applies).
+
+    :param system: override for :func:`platform.system` (for tests).
+    :returns: ``True`` on Linux; on macOS/other the platform keychain is used instead.
+    """
     return (system or _platform.system()).lower() == "linux"
 
 
@@ -95,10 +100,12 @@ def runtime_dir() -> Path:
 
 
 def bus_cache_file() -> Path:
+    """Return the path caching the address of the protonfs-launched D-Bus session bus."""
     return runtime_dir() / "bus"
 
 
 def keyring_password_file() -> Path:
+    """Return the path of the ``0600`` file holding the protonfs keyring password."""
     return secrets_home() / "keyring-password"
 
 
@@ -125,6 +132,13 @@ def keyring_password() -> str:
 
 
 def _run(cmd: list[str], env: dict[str, str], stdin: str | None = None):
+    """Run a subprocess with a bounded timeout, capturing output (the injectable runner).
+
+    :param cmd: the argv to execute.
+    :param env: the environment to run under.
+    :param stdin: optional text to feed on standard input.
+    :returns: the completed :class:`subprocess.CompletedProcess`.
+    """
     return subprocess.run(
         cmd,
         env=env,
@@ -136,6 +150,7 @@ def _run(cmd: list[str], env: dict[str, str], stdin: str | None = None):
 
 
 def _gdbus_available() -> bool:
+    """Return whether the ``gdbus`` tool is on ``PATH`` (needed to probe the Secret Service)."""
     return shutil.which("gdbus") is not None
 
 
