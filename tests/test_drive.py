@@ -183,6 +183,27 @@ def test_walk_flattens_nested_tree(monkeypatch):
     assert all(not e.rel_path.startswith("/") for e in entries)
 
 
+def test_walk_surfaces_plaintext_claimed_identity(monkeypatch):
+    client = DriveClient(binary="proton-drive")
+    tree = {
+        "/root": [
+            {
+                "name": {"ok": True, "value": "f.txt"},
+                "type": "file",
+                "totalStorageSize": 13,  # encrypted size, runs larger than plaintext
+                "claimedSize": 10,  # plaintext size
+                "claimedDigests": {"sha1": "abc123"},
+            },
+        ],
+    }
+    monkeypatch.setattr(client, "list", lambda path, timeout=None: tree[path])
+
+    entry = client.walk("/root")[0]
+    assert entry.size == 13  # encrypted size preserved for backwards-compat
+    assert entry.claimed_size == 10
+    assert entry.sha1 == "abc123"
+
+
 def test_walk_skips_undecryptable_names(monkeypatch):
     client = DriveClient(binary="proton-drive")
     monkeypatch.setattr(

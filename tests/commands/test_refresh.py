@@ -48,7 +48,14 @@ def test_refresh_flags_remote_deleted_without_prune(tmp_path: Path, make_fake_dr
     ctx.index.set(
         "gone",
         IndexEntry(
-            1, 1.0, "", "/my-files/test/gone", "d1", "metadata-only", "2026-07-09T00:00:00+00:00"
+            1,
+            1.0,
+            "",
+            "",
+            "/my-files/test/gone",
+            "d1",
+            "metadata-only",
+            "2026-07-09T00:00:00+00:00",
         ),
     )
     ctx.drive = make_fake_drive(walk_entries=[])  # remote empty -> 'gone' is remote-deleted
@@ -66,7 +73,14 @@ def test_refresh_prune_removes_remote_deleted(tmp_path: Path, make_fake_drive) -
     ctx.index.set(
         "gone",
         IndexEntry(
-            1, 1.0, "", "/my-files/test/gone", "d1", "metadata-only", "2026-07-09T00:00:00+00:00"
+            1,
+            1.0,
+            "",
+            "",
+            "/my-files/test/gone",
+            "d1",
+            "metadata-only",
+            "2026-07-09T00:00:00+00:00",
         ),
     )
     ctx.drive = make_fake_drive(walk_entries=[])
@@ -107,6 +121,7 @@ def test_refresh_subpath_prune_leaves_out_of_scope_index_entries(
             5,
             1.0,
             "",
+            "",
             "/my-files/test/otherdir/unrelated.bin",
             "d1",
             "metadata-only",
@@ -132,7 +147,7 @@ def test_refresh_flags_remote_changed(tmp_path: Path, make_fake_drive) -> None:
     ctx.index.set(
         "f",
         IndexEntry(
-            10, 1.0, "", "/my-files/test/f", "d1", "metadata-only", "2026-07-09T00:00:00+00:00"
+            10, 1.0, "", "", "/my-files/test/f", "d1", "metadata-only", "2026-07-09T00:00:00+00:00"
         ),
     )
     ctx.drive = make_fake_drive(walk_entries=[RemoteEntry("f", is_dir=False, size=999)])

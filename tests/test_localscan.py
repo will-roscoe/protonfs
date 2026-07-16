@@ -5,13 +5,21 @@ from pathlib import Path
 
 from protonfs.ignore import IgnoreMatcher
 from protonfs.index import IndexEntry, IndexStore
-from protonfs.localscan import hash_file, scan
+from protonfs.localscan import hash_file, hash_file_digests, scan
 
 
 def test_hash_file_matches_hashlib_reference(tmp_path: Path) -> None:
     f = tmp_path / "a.bin"
     f.write_bytes(b"hello world")
     assert hash_file(f) == hashlib.sha256(b"hello world").hexdigest()
+
+
+def test_hash_file_digests_returns_both_sha256_and_sha1(tmp_path: Path) -> None:
+    f = tmp_path / "a.bin"
+    f.write_bytes(b"hello world")
+    sha256, sha1 = hash_file_digests(f)
+    assert sha256 == hashlib.sha256(b"hello world").hexdigest()
+    assert sha1 == hashlib.sha1(b"hello world").hexdigest()
 
 
 def test_scan_finds_files_and_computes_hash(tmp_path: Path) -> None:
@@ -24,6 +32,7 @@ def test_scan_finds_files_and_computes_hash(tmp_path: Path) -> None:
 
     assert "run1/dump_0001" in result
     assert result["run1/dump_0001"].sha256 == hashlib.sha256(b"data").hexdigest()
+    assert result["run1/dump_0001"].sha1 == hashlib.sha1(b"data").hexdigest()
     assert result["run1/dump_0001"].size == 4
 
 
@@ -53,6 +62,7 @@ def test_scan_low_io_trusts_cached_hash_when_size_and_mtime_match(tmp_path: Path
             size=stat.st_size,
             mtime=stat.st_mtime,
             sha256="wrong-hash-proves-cache-was-used",
+            sha1="wrong-sha1-proves-cache-was-used",
             remote_path="/x",
             origin_device="d1",
             local_state="present",
@@ -64,6 +74,7 @@ def test_scan_low_io_trusts_cached_hash_when_size_and_mtime_match(tmp_path: Path
     result = scan(tmp_path, Path("."), ignore, index, low_io=True)
 
     assert result["dump_0001"].sha256 == "wrong-hash-proves-cache-was-used"
+    assert result["dump_0001"].sha1 == "wrong-sha1-proves-cache-was-used"
 
 
 def test_scan_low_io_recomputes_when_size_differs(tmp_path: Path) -> None:
@@ -76,6 +87,7 @@ def test_scan_low_io_recomputes_when_size_differs(tmp_path: Path) -> None:
             size=999999,  # deliberately wrong, forces a cache miss
             mtime=f.stat().st_mtime,
             sha256="stale",
+            sha1="stale-sha1",
             remote_path="/x",
             origin_device="d1",
             local_state="present",
@@ -87,3 +99,4 @@ def test_scan_low_io_recomputes_when_size_differs(tmp_path: Path) -> None:
     result = scan(tmp_path, Path("."), ignore, index, low_io=True)
 
     assert result["dump_0001"].sha256 == hashlib.sha256(b"data").hexdigest()
+    assert result["dump_0001"].sha1 == hashlib.sha1(b"data").hexdigest()

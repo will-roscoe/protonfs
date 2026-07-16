@@ -4,7 +4,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
-from protonfs.index import IndexStore
+from protonfs.drive import RemoteEntry
+from protonfs.index import IndexEntry, IndexStore
 from protonfs.localscan import ScanEntry
 
 
@@ -14,6 +15,10 @@ class SyncState(str, Enum):
     REMOTE_ONLY = "remote-only"
     METADATA_ONLY = "metadata-only"
     CONFLICT = "conflict"
+    LOCAL_MODIFIED = "local-modified"
+    REMOTE_MODIFIED = "remote-modified"
+    BOTH_MODIFIED = "both-modified"
+    LOCAL_DELETED = "local-deleted"
     REMOTE_CHANGED = "remote-changed"
     REMOTE_DELETED = "remote-deleted"
 
@@ -37,10 +42,28 @@ def within_subpath(rel_path: str, subpath: str | None) -> bool:
     return rel_path == subpath or rel_path.startswith(f"{subpath}/")
 
 
+def _remote_diverged(remote_entry: RemoteEntry, index_entry: IndexEntry) -> bool:
+    """Whether the remote copy differs from what the index last recorded for it.
+
+    Prefer the plaintext sha1 when BOTH sides know it (proton's `claimedDigests.sha1`
+    vs the index's stored sha1); an unknown/empty sha1 on either side is trust-on-first-
+    use, so we must NOT force a conflict on it -- fall back to size instead. For size we
+    compare the plaintext `claimed_size` (falling back to the encrypted `size` only when
+    proton did not report a claimed size), never the encrypted size against a plaintext
+    index size when we can avoid it.
+    """
+    if remote_entry.sha1 and index_entry.sha1:
+        return remote_entry.sha1 != index_entry.sha1
+    remote_size = (
+        remote_entry.claimed_size if remote_entry.claimed_size is not None else remote_entry.size
+    )
+    return remote_size != index_entry.size
+
+
 def classify(
     local: dict[str, ScanEntry],
     index: IndexStore,
-    remote: dict[str, int] | None = None,
+    remote: dict[str, RemoteEntry] | None = None,
 ) -> list[DiffEntry]:
     known_paths = set(local) | set(index.all())
     if remote is not None:
@@ -50,34 +73,62 @@ def classify(
     for rel_path in sorted(known_paths):
         local_entry = local.get(rel_path)
         index_entry = index.get(rel_path)
+        remote_entry = remote.get(rel_path) if remote is not None else None
 
         if local_entry is not None and index_entry is None:
             state = SyncState.LOCAL_ONLY
         elif local_entry is not None and index_entry is not None:
-            state = (
-                SyncState.SYNCED
-                if local_entry.sha256 == index_entry.sha256
-                else SyncState.CONFLICT
-            )
+            state = _classify_present(local_entry, index_entry, remote_entry)
         elif local_entry is None and index_entry is not None:
-            if remote is not None:
-                if rel_path not in remote:
-                    state = SyncState.REMOTE_DELETED
-                elif remote[rel_path] != index_entry.size:
-                    state = SyncState.REMOTE_CHANGED
-                else:
-                    state = (
-                        SyncState.METADATA_ONLY
-                        if index_entry.local_state == "metadata-only"
-                        else SyncState.REMOTE_ONLY
-                    )
-            else:
-                state = (
-                    SyncState.METADATA_ONLY
-                    if index_entry.local_state == "metadata-only"
-                    else SyncState.REMOTE_ONLY
-                )
+            state = _classify_absent(index_entry, remote, remote_entry, rel_path)
         else:
             state = SyncState.REMOTE_ONLY
         results.append(DiffEntry(rel_path, state))
     return results
+
+
+def _classify_present(
+    local_entry: ScanEntry,
+    index_entry: IndexEntry,
+    remote_entry: RemoteEntry | None,
+) -> SyncState:
+    """A file present both locally and in the index. Direction is decided by comparing
+    the local content against the index, and (when a remote view is available) the remote
+    content against the index."""
+    local_changed = local_entry.sha256 != index_entry.sha256
+    remote_changed = remote_entry is not None and _remote_diverged(remote_entry, index_entry)
+
+    if not local_changed:
+        # local matches the index; only the remote could have moved.
+        return SyncState.REMOTE_MODIFIED if remote_changed else SyncState.SYNCED
+    # local diverged from the index.
+    if remote_entry is None:
+        # No provable remote view (no walk, or the remote no longer lists it): we cannot
+        # attribute a direction, so fall back conservatively to a conflict-class state.
+        return SyncState.CONFLICT
+    return SyncState.BOTH_MODIFIED if remote_changed else SyncState.LOCAL_MODIFIED
+
+
+def _classify_absent(
+    index_entry: IndexEntry,
+    remote: dict[str, RemoteEntry] | None,
+    remote_entry: RemoteEntry | None,
+    rel_path: str,
+) -> SyncState:
+    """An index entry with no local file. Without a remote view we keep v0.1 behaviour;
+    with one we can tell a local deletion, a remote deletion, and a remote change apart."""
+    if remote is None:
+        return (
+            SyncState.METADATA_ONLY
+            if index_entry.local_state == "metadata-only"
+            else SyncState.REMOTE_ONLY
+        )
+    if remote_entry is None:
+        return SyncState.REMOTE_DELETED
+    if index_entry.local_state == "present":
+        # It was synced down as a real local file and is now gone locally, yet still on
+        # the remote: a local deletion, distinct from a metadata-only remote file.
+        return SyncState.LOCAL_DELETED
+    if _remote_diverged(remote_entry, index_entry):
+        return SyncState.REMOTE_CHANGED
+    return SyncState.METADATA_ONLY

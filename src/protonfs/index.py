@@ -13,7 +13,8 @@ INDEX_FILE_NAME = "index.json"
 # forward migration below so existing repos upgrade transparently on their next save.
 #   v0 = legacy pre-versioning format: the document IS the bare {rel_path: entry} map.
 #   v1 = {"schema_version": 1, "entries": {rel_path: entry}}.
-INDEX_SCHEMA_VERSION = 1
+#   v2 = each entry gains a `sha1` field (proton's plaintext content digest; "" = unknown).
+INDEX_SCHEMA_VERSION = 2
 
 
 class IndexSchemaError(RuntimeError):
@@ -33,10 +34,20 @@ def _split_document(raw: dict) -> tuple[int, dict]:
     return 0, raw
 
 
+def _add_sha1(entries: dict) -> dict:
+    """v1 -> v2: inject an empty `sha1` into every entry. `IndexEntry.from_dict` does
+    `cls(**data)`, so an entry dict missing the new required key would raise a TypeError;
+    seeding "" (unknown / trust-on-first-use) keeps every pre-v2 entry loadable."""
+    for data in entries.values():
+        data.setdefault("sha1", "")
+    return entries
+
+
 # Forward migrations, keyed by the version they upgrade FROM (n -> n+1). v0 -> v1 only added
-# the wrapper, so the entries themselves are unchanged; future entry-shape changes go here.
+# the wrapper, so the entries themselves are unchanged; v1 -> v2 adds the `sha1` field.
 _MIGRATIONS: dict[int, Callable[[dict], dict]] = {
     0: lambda entries: entries,
+    1: _add_sha1,
 }
 
 
@@ -51,7 +62,8 @@ def _migrate(version: int, entries: dict) -> dict:
 class IndexEntry:
     size: int
     mtime: float
-    sha256: str
+    sha256: str  # protonfs's own content checksum
+    sha1: str  # proton's plaintext content digest ("" = unknown / trust-on-first-use)
     remote_path: str
     origin_device: str
     local_state: str  # "present" | "metadata-only"

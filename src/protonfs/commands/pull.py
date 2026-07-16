@@ -10,7 +10,7 @@ from protonfs.diff import SyncState, classify
 from protonfs.drive import TransferResult
 from protonfs.ignore import IgnoreMatcher
 from protonfs.index import IndexEntry
-from protonfs.localscan import hash_file, scan
+from protonfs.localscan import hash_file_digests, scan
 
 
 def pull(
@@ -69,12 +69,14 @@ def pull(
                 stat = downloaded_path.stat()
                 prior = ctx.index.get(rel)
                 default_remote = f"{ctx.config.remote_root}/{rel}"
+                sha256, sha1 = hash_file_digests(downloaded_path)
                 ctx.index.set(
                     rel,
                     IndexEntry(
                         size=stat.st_size,
                         mtime=stat.st_mtime,
-                        sha256=hash_file(downloaded_path),
+                        sha256=sha256,
+                        sha1=sha1,
                         remote_path=prior.remote_path if prior else default_remote,
                         origin_device=prior.origin_device if prior else "unknown",
                         local_state="present",

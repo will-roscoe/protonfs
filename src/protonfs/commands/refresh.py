@@ -58,6 +58,7 @@ def refresh(
                         size=file_entry.size,
                         mtime=0.0,
                         sha256="",
+                        sha1="",
                         remote_path=f"{ctx.config.remote_root}/{full_rel}",
                         origin_device="unknown",
                         local_state="metadata-only",
@@ -70,11 +71,11 @@ def refresh(
             ctx.index.save()
 
     entries = ctx.drive.walk(remote_root, on_directory=_seed_directory)
-    remote = {e.rel_path: e.size for e in entries if not e.is_dir}
+    remote = {e.rel_path: e for e in entries if not e.is_dir}
     # rel_paths from the walk are relative to remote_root; if a subpath was given,
     # re-prefix so keys match the index's repo-root-relative rel_paths.
     if subpath:
-        remote = {f"{subpath}/{rel}": size for rel, size in remote.items()}
+        remote = {f"{subpath}/{rel}": entry for rel, entry in remote.items()}
 
     # Change/deletion detection needs the COMPLETE remote listing (a file is only "deleted"
     # if absent from the whole walk), so it runs after the walk finishes -- unlike seeding,
@@ -86,7 +87,10 @@ def refresh(
         # it were never checked, so their absence from `remote` is not a deletion.
         if not within_subpath(entry.rel_path, subpath):
             continue
-        if entry.state == SyncState.REMOTE_CHANGED:
+        # REMOTE_CHANGED is a metadata-only entry whose remote size moved; REMOTE_MODIFIED
+        # is a locally-present file whose remote copy diverged. Both are "the remote changed
+        # under us" for refresh's reporting purposes.
+        if entry.state in (SyncState.REMOTE_CHANGED, SyncState.REMOTE_MODIFIED):
             result.remote_changed += 1
             result.changed_paths.append(entry.rel_path)
         elif entry.state == SyncState.REMOTE_DELETED:
