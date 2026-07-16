@@ -13,6 +13,8 @@
 [![](https://raw.githubusercontent.com/will-roscoe/protonfs/main/.github/badges/proton-drive.svg)](https://proton.me/download/drive/cli/version.json)
 [![](https://raw.githubusercontent.com/will-roscoe/protonfs/main/.github/badges/build-linux-x64.svg)](https://github.com/will-roscoe/protonfs/actions/workflows/ci.yml)
 [![](https://raw.githubusercontent.com/will-roscoe/protonfs/main/.github/badges/build-linux-arm64.svg)](https://github.com/will-roscoe/protonfs/actions/workflows/ci.yml)
+[![](https://raw.githubusercontent.com/will-roscoe/protonfs/main/.github/badges/build-darwin-x64.svg)](https://github.com/will-roscoe/protonfs/actions/workflows/ci.yml)
+[![](https://raw.githubusercontent.com/will-roscoe/protonfs/main/.github/badges/build-darwin-arm64.svg)](https://github.com/will-roscoe/protonfs/actions/workflows/ci.yml)
 
 
 Sync a local directory tree with [Proton Drive](https://proton.me/drive), via
