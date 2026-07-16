@@ -30,19 +30,75 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 _UNRELEASED_HEADER = "## [Unreleased]"
 _HEADER_RE = re.compile(r"^## \[", re.MULTILINE)
 _UNRELEASED_LINK_RE = re.compile(
-    r"^\[Unreleased\]: (?P<base>https://\S+?)/compare/(?P<prev_tag>v\d+\.\d+\.\d+)\.\.\.HEAD$",
+    r"^\[Unreleased\]: (?P<base>https://\S+?)/compare/"
+    r"(?P<prev_tag>v\d+\.\d+\.\d+(?:-(?:alpha|beta|rc)(?:\.\d+)?)?)\.\.\.HEAD$",
     re.MULTILINE,
 )
 
 
-def finalize_changelog(text: str, version: str, release_date: date) -> tuple[str, bool]:
+# Release-notes generation from Conventional Commit subjects: section order in the
+# finalized entry. `chore` is deliberately absent (housekeeping stays out of release
+# notes), as is anything carrying `[skip ci]` (badge/changelog bot commits).
+_SECTION_ORDER: list[tuple[str, str]] = [
+    ("feat", "Features"),
+    ("fix", "Bug fixes"),
+    ("perf", "Performance"),
+    ("revert", "Reverts"),
+    ("refactor", "Refactors"),
+    ("docs", "Documentation"),
+    ("test", "Tests"),
+    ("build", "Build"),
+    ("ci", "CI"),
+    ("style", "Style"),
+]
+_SUBJECT_RE = re.compile(r"^(?P<type>[a-zA-Z]+)(?:\((?P<scope>[^)]*)\))?!?:\s*(?P<desc>.+)$")
+
+
+def render_commit_sections(subjects: list[str]) -> str:
+    """Group Conventional Commit subjects (oldest first) into `### <Section>` blocks.
+
+    Within each section commits stay chronological, earliest at the top. Subjects
+    that are non-conventional, `chore`-typed, of an unknown type, or tagged
+    `[skip ci]` are dropped. Returns "" when nothing survives.
+    """
+    titles = dict(_SECTION_ORDER)
+    groups: dict[str, list[str]] = {}
+    for subject in subjects:
+        subject = subject.strip()
+        if not subject or "[skip ci]" in subject:
+            continue
+        match = _SUBJECT_RE.match(subject)
+        if not match:
+            continue
+        ctype = match.group("type").lower()
+        if ctype not in titles:
+            continue
+        scope, desc = match.group("scope"), match.group("desc")
+        line = f"- **{scope}**: {desc}" if scope else f"- {desc}"
+        groups.setdefault(ctype, []).append(line)
+    blocks = [
+        f"### {title}\n\n" + "\n".join(groups[ctype])
+        for ctype, title in _SECTION_ORDER
+        if ctype in groups
+    ]
+    return "\n\n".join(blocks)
+
+
+def finalize_changelog(
+    text: str,
+    version: str,
+    release_date: date,
+    commit_subjects: list[str] | None = None,
+) -> tuple[str, bool]:
     """Return ``(new_text, changed)``.
 
     Renames the ``## [Unreleased]`` section to ``## [<version>] - <release_date>``
-    and inserts a fresh empty ``## [Unreleased]`` above it, only when the
-    existing Unreleased section has non-whitespace content. Also rewires the
-    reference-style links at the bottom of the file when present. Leaves
-    `text` untouched (``changed=False``) when there's nothing to finalize.
+    and inserts a fresh empty ``## [Unreleased]`` above it. The finalized entry is
+    any hand-written Unreleased content followed by release notes generated from
+    `commit_subjects` (oldest first; see `render_commit_sections`). Also rewires
+    the reference-style links at the bottom of the file when present. Leaves
+    `text` untouched (``changed=False``) when there is neither hand-written nor
+    generated content.
     """
     start = text.find(_UNRELEASED_HEADER)
     if start == -1:
@@ -52,6 +108,10 @@ def finalize_changelog(text: str, version: str, release_date: date) -> tuple[str
     next_header = _HEADER_RE.search(text, body_start)
     body_end = next_header.start() if next_header else len(text)
     body = text[body_start:body_end]
+
+    generated = render_commit_sections(commit_subjects or [])
+    if generated:
+        body = f"{body.rstrip()}\n\n{generated}\n\n" if body.strip() else f"\n\n{generated}\n\n"
 
     if not body.strip():
         return text, False
@@ -84,8 +144,17 @@ def _main(argv: list[str]) -> int:
     version = argv[0].strip().lstrip("v")
     changelog_path = Path(argv[1]) if len(argv) > 1 else _REPO_ROOT / "CHANGELOG.md"
 
+    # Commit subjects arrive as a NUL-separated stream on stdin (mirroring
+    # compute_next_version.py's input contract): `git log -z --reverse --format=%s`.
+    # A terminal (manual invocation without a pipe) means "no generated notes".
+    subjects: list[str] = []
+    if not sys.stdin.isatty():
+        subjects = [s for s in sys.stdin.read().split("\0") if s.strip()]
+
     text = changelog_path.read_text(encoding="utf-8")
-    new_text, changed = finalize_changelog(text, version, datetime.now(timezone.utc).date())
+    new_text, changed = finalize_changelog(
+        text, version, datetime.now(timezone.utc).date(), commit_subjects=subjects
+    )
 
     if not changed:
         print("Unreleased section is empty -- nothing to finalize.")

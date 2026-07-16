@@ -57,7 +57,10 @@ jobs:
           set -euo pipefail
           git fetch --tags --force --quiet
 
-          LATEST=$(git tag --list 'v[0-9]*' --sort=-version:refname | head -n1)
+          # versionsort.suffix=- makes pre-release tags (v1.1.0-alpha) sort BEFORE
+          # their final release (v1.1.0), matching SemVer 2.0.0 precedence; without
+          # it git puts suffixed tags after the release and we'd pick a stale LATEST.
+          LATEST=$(git -c versionsort.suffix=- tag --list 'v[0-9]*' --sort=-version:refname | head -n1)
           echo "latest tag: ${LATEST:-<none>}"
 
           if [ -n "$LATEST" ]; then
@@ -92,7 +95,10 @@ jobs:
           # tagging (issue #13), so the tagged commit carries the finalized
           # entry. Fails soft: a no-op (empty Unreleased section) leaves the
           # working tree untouched and nothing is committed.
-          python .github/scripts/finalize_changelog.py "$NEXT"
+          # Subjects oldest-first: the generated release notes read chronologically,
+          # grouped by type (chore and [skip ci] housekeeping excluded).
+          git log -z --reverse --format=%s "$RANGE" \
+            | python .github/scripts/finalize_changelog.py "$NEXT"
           if git diff --quiet -- CHANGELOG.md; then
             echo "CHANGELOG.md Unreleased section is empty — nothing to finalize."
           else

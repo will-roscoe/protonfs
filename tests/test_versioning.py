@@ -112,3 +112,100 @@ class TestComputeNextVersion:
     def test_invalid_current_raises(self):
         with pytest.raises(ValueError):
             compute_next_version("not-a-version", ["feat: x"])
+
+
+class TestHeaderFirstLineOnly:
+    """The Conventional Commit type header is the FIRST line only: squash-merge
+    bodies carry whole PR descriptions, where a quoted `feat:`/`refactor!:` at the
+    start of a body line must not (mis)classify the commit."""
+
+    def test_body_line_type_does_not_classify(self):
+        msg = "docs: update guide\n\nfeat: quoted from the PR body, not a header"
+        assert classify_bump([msg]) is None
+
+    def test_body_line_bang_is_not_breaking(self):
+        msg = "chore: tidy\n\nrefactor!: quoted example of a breaking header"
+        assert classify_bump([msg]) is None
+
+    def test_breaking_footer_still_detected_mid_message(self):
+        msg = "feat: new thing\n\nlong body\n\nBREAKING CHANGE: contract changed"
+        assert classify_bump([msg]) == "major"
+
+
+class TestDirectives:
+    """`+:<spec>` override directives and the SemVer 2.0.0 pre-release ladder."""
+
+    # -- overrides beat classification ------------------------------------------
+
+    def test_directive_overrides_conventional_classification(self):
+        assert compute_next_version("1.2.3", ["feat: x\n\n+:patch"]) == "1.2.4"
+        assert compute_next_version("1.2.3", ["chore: x\n\n+:major"]) == "2.0.0"
+
+    def test_directive_not_subject_to_pre_1_0_demotion(self):
+        assert compute_next_version("0.24.0", ["chore: x\n\n+:major"]) == "1.0.0"
+
+    def test_highest_impact_directive_wins_across_batch(self):
+        msgs = ["fix: a\n\n+:prepre", "chore: b\n\n+:minor"]
+        assert compute_next_version("1.0.0", msgs) == "1.1.0"
+
+    # -- entering a pre-release from a final version -----------------------------
+
+    def test_pre_from_final_rebases_onto_next_minor(self):
+        assert compute_next_version("1.0.0", ["chore: x\n\n+:pre"]) == "1.1.0-alpha"
+
+    def test_prepre_from_final_starts_numbered_alpha(self):
+        assert compute_next_version("1.0.0", ["chore: x\n\n+:prepre"]) == "1.1.0-alpha.0"
+
+    def test_rc_from_final_jumps_to_rc(self):
+        assert compute_next_version("1.0.0", ["chore: x\n\n+:rc"]) == "1.1.0-rc"
+
+    # -- the ladder within a pre-release -----------------------------------------
+
+    def test_prepre_increments_bare_channel(self):
+        assert compute_next_version("1.1.0-alpha", ["chore: x\n\n+:prepre"]) == "1.1.0-alpha.1"
+
+    def test_prepre_increments_numbered_channel(self):
+        assert compute_next_version("1.1.0-alpha.1", ["chore: x\n\n+:prepre"]) == "1.1.0-alpha.2"
+
+    def test_pre_advances_channel(self):
+        assert compute_next_version("1.1.0-alpha", ["chore: x\n\n+:pre"]) == "1.1.0-beta"
+        assert compute_next_version("1.1.0-beta.2", ["chore: x\n\n+:pre"]) == "1.1.0-rc"
+
+    def test_pre_past_rc_finalizes(self):
+        assert compute_next_version("1.1.0-rc", ["chore: x\n\n+:pre"]) == "1.1.0"
+        assert compute_next_version("1.1.0-rc.1", ["chore: x\n\n+:pre"]) == "1.1.0"
+
+    def test_rc_jumps_earlier_channels_and_increments_itself(self):
+        assert compute_next_version("1.1.0-alpha.3", ["chore: x\n\n+:rc"]) == "1.1.0-rc"
+        assert compute_next_version("1.1.0-rc", ["chore: x\n\n+:rc"]) == "1.1.0-rc.1"
+        assert compute_next_version("1.1.0-rc.1", ["chore: x\n\n+:rc"]) == "1.1.0-rc.2"
+
+    def test_minor_and_patch_finalize_a_prerelease(self):
+        assert compute_next_version("1.1.0-beta", ["chore: x\n\n+:minor"]) == "1.1.0"
+        assert compute_next_version("1.1.0-alpha.2", ["chore: x\n\n+:patch"]) == "1.1.0"
+
+    def test_major_from_prerelease(self):
+        # Base already an X.0.0 -> finalize it; otherwise bump to the next major.
+        assert compute_next_version("2.0.0-rc", ["chore: x\n\n+:major"]) == "2.0.0"
+        assert compute_next_version("1.1.0-rc", ["chore: x\n\n+:major"]) == "2.0.0"
+
+    # -- plain commits during a pre-release ---------------------------------------
+
+    def test_conventional_commits_advance_prerelease_number_only(self):
+        assert compute_next_version("1.1.0-alpha", ["feat: x"]) == "1.1.0-alpha.1"
+        assert compute_next_version("1.1.0-rc.1", ["fix: x"]) == "1.1.0-rc.2"
+
+    def test_breaking_during_prerelease_does_not_move_base(self):
+        assert compute_next_version("1.1.0-beta", ["feat!: x"]) == "1.1.0-beta.1"
+
+    def test_non_release_commits_still_no_release_during_prerelease(self):
+        assert compute_next_version("1.1.0-alpha", ["docs: x", "chore: y"]) is None
+
+    # -- parsing ------------------------------------------------------------------
+
+    def test_prerelease_current_version_parses_with_v_prefix(self):
+        assert compute_next_version("v1.1.0-alpha.1", ["chore: x\n\n+:pre"]) == "1.1.0-beta"
+
+    def test_directive_requires_word_boundary(self):
+        # `+:premature` is not a directive... but its `pre` prefix must not match either.
+        assert compute_next_version("1.0.0", ["chore: x +:premature"]) is None
