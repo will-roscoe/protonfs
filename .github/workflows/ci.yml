@@ -24,6 +24,11 @@ on:
         type: boolean
         default: true
 
+# Least privilege by default: test jobs only read the repo. The badges job, which
+# commits refreshed SVGs back to main, carries its own job-level contents: write.
+permissions:
+  contents: read
+
 jobs:
   # Test across the supported Python versions. No badge/commit side effects here —
   # this job runs 5x in the matrix and must stay side-effect-free.
