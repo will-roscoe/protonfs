@@ -300,6 +300,27 @@ Examples::
     protonfs install-drive --version 0.5.0
     protonfs install-drive --skip-keyring
 
+``upgrade``
+------------
+**Synopsis:** ``protonfs upgrade [--check] [--drive-only | --repo-only]``
+
+Upgrades the installed ``proton-drive`` binary to the highest version this
+protonfs release supports (SHA-512-verified before an atomic swap; a newer
+upstream release is reported but never installed), verifies the session survived
+the swap, and -- inside a protonfs root -- runs any pending repo-state
+migrations. See :doc:`../upgrading` for the full upgrade story.
+
+- ``--check`` — preview everything, change nothing; exits ``0`` when fully
+  current, ``1`` when an upgrade or migration is available.
+- ``--drive-only`` — only the binary; skip migrations.
+- ``--repo-only`` — only the migrations; skip the binary.
+
+Examples::
+
+    protonfs upgrade --check     # what would happen?
+    protonfs upgrade             # binary + migrations
+    protonfs upgrade --repo-only # just bring .protonfs/ current
+
 ``doctor``
 ----------
 **Synopsis:** ``protonfs doctor [--fix]``
