@@ -48,7 +48,7 @@ Examples::
 
 ``status``
 ----------
-**Synopsis:** ``protonfs status [PATH]``
+**Synopsis:** ``protonfs status [PATH]...``
 
 Scans the local tree (optionally scoped to ``PATH``), compares it against the
 local index, and prints a count per sync state (``synced``, ``local-only``,
@@ -69,7 +69,7 @@ Examples::
 
 ``ls``
 ------
-**Synopsis:** ``protonfs ls [PATH] [--remote] [--trash]``
+**Synopsis:** ``protonfs ls [PATH]... [--remote] [--trash]``
 
 Lists tracked files with their sync state, as a table of ``path`` / ``state``.
 
@@ -87,7 +87,7 @@ Examples::
 
 ``push``
 --------
-**Synopsis:** ``protonfs push [PATH] [--resolve {merge,keep-both,replace,skip}] [--dry-run]``
+**Synopsis:** ``protonfs push [PATH]... [--resolve {merge,keep-both,replace,skip}] [--dry-run]``
 
 Uploads local-only and locally-modified files under ``PATH`` (or the whole repo)
 to Drive. Without ``--resolve``, a genuine remote conflict is reported as a named
@@ -115,7 +115,7 @@ Examples::
 
 ``pull``
 --------
-**Synopsis:** ``protonfs pull [PATH] [--resolve {remote,local,both}] [--dry-run] [--refresh]``
+**Synopsis:** ``protonfs pull [PATH]... [--resolve {remote,local,both}] [--dry-run] [--refresh]``
 
 Downloads remote-only and (with ``--resolve``) remote-modified files under
 ``PATH`` (or the whole repo). A file edited **locally** and changed on the
@@ -145,7 +145,7 @@ Examples::
 
 ``offload``
 -----------
-**Synopsis:** ``protonfs offload [PATH] [--no-verify] [--dry-run] [--yes]``
+**Synopsis:** ``protonfs offload [PATH]... [--no-verify] [--dry-run] [--yes]``
 
 Deletes the *local* bytes of protonfs-tracked files already confirmed present on
 Drive, reclaiming disk space while leaving the index entry as
@@ -175,7 +175,7 @@ Examples::
 
 ``rm``
 ------
-**Synopsis:** ``protonfs rm PATH [-r/--recursive] [-f/--force] [--yes]``
+**Synopsis:** ``protonfs rm PATH... [-r/--recursive] [-f/--force] [--yes]``
 
 Trashes ``PATH`` on Drive (reversible via ``restore``). Requires ``-r``/
 ``--recursive`` for a directory. The command removes the matching index entries
@@ -198,7 +198,7 @@ Examples::
 
 ``restore``
 -----------
-**Synopsis:** ``protonfs restore PATH``
+**Synopsis:** ``protonfs restore PATH...``
 
 Restores a previously trashed file/directory on Drive by its original path.
 On proton-drive versions that reject original-path restore (0.5.0+), protonfs
@@ -253,7 +253,7 @@ Examples::
 
 ``refresh``
 -----------
-**Synopsis:** ``protonfs refresh [PATH] [--prune]``
+**Synopsis:** ``protonfs refresh [PATH]... [--prune]``
 
 Walks Drive under the configured ``remote_root`` (or ``PATH`` within it) and seeds
 the local index with metadata-only entries for anything found there that this

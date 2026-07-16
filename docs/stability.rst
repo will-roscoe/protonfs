@@ -102,42 +102,42 @@ flag/argument name; these names, not just their presence, are frozen.
        process, or declined confirmation; ``2`` usage error.
    * - ``status``
      - Summarize sync state (counts by local-only/remote-only/synced/conflict).
-       Argument: ``PATH`` (optional).
+       Argument: ``PATH...`` (optional, repeatable; e.g. from a shell glob).
      - ``0`` clean (synced or intentionally remote-only); ``1`` drift present
        (something to push/pull/prune); ``2`` conflict present (needs a human or
        ``--resolve``). Conflict outranks drift when both are present. (Usage errors
        also use ``2``, but status's own ``2`` is a data outcome, not a usage error.)
    * - ``ls``
-     - List tracked files with their sync state. Argument: ``PATH`` (optional).
+     - List tracked files with their sync state. Argument: ``PATH...`` (optional, repeatable; e.g. from a shell glob).
        Options: ``--remote``, ``--trash``.
      - ``0`` success; ``1`` Drive/auth error; ``2`` usage error.
    * - ``push``
-     - Upload local-only/changed files to Drive. Argument: ``PATH`` (optional).
+     - Upload local-only/changed files to Drive. Argument: ``PATH...`` (optional, repeatable; e.g. from a shell glob).
        Options: ``--resolve [merge|keep-both|replace|skip]``, ``--dry-run``.
      - ``0`` all transferred/skipped; ``1`` one or more files failed to transfer, or a
        Drive/lock error; ``2`` usage error.
    * - ``pull``
-     - Download remote-only/changed files from Drive. Argument: ``PATH`` (optional).
+     - Download remote-only/changed files from Drive. Argument: ``PATH...`` (optional, repeatable; e.g. from a shell glob).
        Options: ``--resolve [remote|local|both]``, ``--dry-run``, ``--refresh``.
      - ``0`` all transferred/skipped (including the "index empty, run refresh first"
        early-exit message); ``1`` one or more files failed to transfer, or a
        Drive/lock error; ``2`` usage error.
    * - ``offload``
      - Delete local bytes of protonfs-tracked files confirmed present on Drive.
-       Argument: ``PATH`` (optional). Options: ``--no-verify``, ``--dry-run``,
+       Argument: ``PATH...`` (optional, repeatable; e.g. from a shell glob). Options: ``--no-verify``, ``--dry-run``,
        ``--yes``.
      - ``0`` success (files that could not be verified or have unsynced edits are
        reported and left untouched -- this is not treated as failure); ``1`` Drive/lock
        error or declined confirmation; ``2`` usage error.
    * - ``rm``
      - Remove a file/directory from Drive (trash by default, ``-f`` for permanent).
-       Argument: ``PATH`` (required). Options: ``-r``/``--recursive``,
+       Argument: ``PATH...`` (one or more required). Options: ``-r``/``--recursive``,
        ``-f``/``--force``, ``--yes``.
      - ``0`` success (including the "duplicate basenames in trash" case, which is
        reported, not failed); ``1`` not a directory without ``-r``, Drive/lock error, or
        declined confirmation; ``2`` usage error.
    * - ``restore``
-     - Restore a trashed file/directory on Drive. Argument: ``PATH`` (required).
+     - Restore a trashed file/directory on Drive. Argument: ``PATH...`` (one or more required).
        If proton-drive can't disambiguate the requested item from a same-named trash
        entry (#56), the error points at ``protonfs trash list``/``protonfs trash
        empty`` to resolve it.

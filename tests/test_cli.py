@@ -109,3 +109,94 @@ def test_cli_restore_runs_under_lock(tmp_path: Path, monkeypatch, make_fake_driv
     result = CliRunner().invoke(main, ["restore", "f"])
 
     assert result.exit_code == 0, result.output
+
+
+# --- #92: multiple pathspecs (shell globs expand to several arguments) ----------------
+
+
+def test_normalize_paths_empty_means_whole_repo() -> None:
+    from protonfs.cli import _normalize_paths
+
+    assert _normalize_paths(()) == [None]
+
+
+def test_normalize_paths_dot_or_root_subsumes_everything() -> None:
+    from protonfs.cli import _normalize_paths
+
+    assert _normalize_paths((".", "a")) == [None]
+    assert _normalize_paths(("a", "/")) == [None]
+
+
+def test_normalize_paths_dedupes_and_drops_nested() -> None:
+    from protonfs.cli import _normalize_paths
+
+    # duplicates collapse; a path nested inside another given path is dropped
+    # (it would be processed twice); order of the surviving roots is preserved.
+    assert _normalize_paths(("a/", "a", "a/b", "c")) == ["a", "c"]
+    # nesting is detected regardless of argument order
+    assert _normalize_paths(("a/b", "a")) == ["a"]
+    # sibling with a common name prefix is NOT nested
+    assert _normalize_paths(("a", "ab")) == ["a", "ab"]
+
+
+def test_cli_pull_accepts_multiple_paths_from_a_glob(
+    tmp_path: Path, monkeypatch, make_fake_drive
+) -> None:
+    """#92 repro: `protonfs pull 03pol02*` arrives as several arguments; previously a
+    Click usage error ("Got unexpected extra arguments"), now each path is pulled."""
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    for rel in ("03pol021/dump", "03pol022/dump", "elsewhere/dump"):
+        ctx.index.set(rel, _tracked_entry(f"/my-files/test/{rel}"))
+    # entries are `present` in the index but absent on disk -> classify REMOTE_ONLY
+    ctx.index.save()
+    ctx.drive = make_fake_drive()
+    monkeypatch.setattr("protonfs.context.load_context", lambda *a, **k: ctx)
+
+    result = CliRunner().invoke(main, ["pull", "03pol021", "03pol022"])
+
+    assert result.exit_code == 0, result.output
+    assert "transferred=2" in result.output
+    downloaded = [p for call in ctx.drive.download_calls for p in call[0]]
+    assert sorted(downloaded) == [
+        "/my-files/test/03pol021/dump",
+        "/my-files/test/03pol022/dump",
+    ]
+
+
+def test_cli_status_combines_counts_across_paths(
+    tmp_path: Path, monkeypatch, make_fake_drive
+) -> None:
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    (tmp_path / "a" / "f1").write_bytes(b"x")
+    (tmp_path / "b" / "f2").write_bytes(b"y")
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.drive = make_fake_drive()
+    monkeypatch.setattr("protonfs.context.load_context", lambda *a, **k: ctx)
+
+    result = CliRunner().invoke(main, ["status", "a", "b"])
+
+    assert result.exit_code == 1, result.output  # drift: two local-only files
+    assert "local-only: 2" in result.output
+
+
+def test_cli_rm_accepts_multiple_paths(tmp_path: Path, monkeypatch, make_fake_drive) -> None:
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    for rel in ("f1", "f2"):
+        ctx.index.set(rel, _tracked_entry(f"/my-files/test/{rel}"))
+    ctx.index.save()
+    ctx.drive = make_fake_drive()
+    monkeypatch.setattr("protonfs.context.load_context", lambda *a, **k: ctx)
+
+    result = CliRunner().invoke(main, ["rm", "f1", "f2", "--yes"])
+
+    assert result.exit_code == 0, result.output
+    assert ctx.drive.trashed == ["/my-files/test/f1", "/my-files/test/f2"]
+
+
+def test_cli_rm_still_requires_at_least_one_path() -> None:
+    result = CliRunner().invoke(main, ["rm"])
+    assert result.exit_code == 2  # usage error, unchanged from the 1.0 contract
