@@ -196,6 +196,43 @@ Environment variables
      - Set (to any truthy value) to disable protonfs's Secret Service/keyring
        bootstrap entirely; the caller is responsible for providing one.
 
+Proton Drive support matrix
+------------------------------
+``protonfs`` states, as a checkable contract, which ``proton-drive`` CLI versions
+each of its own releases supports. ``src/protonfs/install.py`` exposes this as
+``SUPPORTED_DRIVE_VERSIONS`` (an explicit set of supported versions),
+``highest_supported()`` (the version ``install-drive``/the upgrade command installs
+-- always equal to ``DEFAULT_VERSION``), and ``is_supported(version)``. The
+installed CLI's own version is available via ``DriveClient.drive_version()``, which
+parses ``proton-drive version`` output (e.g. ``Proton Drive CLI
+cli-drive@0.5.0+73e40d90``) down to the comparable semver ``"0.5.0"``.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 30 50
+
+   * - protonfs release
+     - Supported proton-drive versions
+     - Notes
+   * - 1.0.x
+     - ``0.5.0`` (highest supported), ``0.4.6``
+     - ``0.5.0`` is the version ``install-drive``/upgrade installs by default.
+       ``0.4.6`` remains installable via ``PROTONFS_DRIVE_VERSION`` for hosts that
+       have not yet moved off it (both have pinned, verified checksums for every
+       supported platform).
+
+Upgrade policy
+~~~~~~~~~~~~~~~~
+A given protonfs release only ever upgrades ``proton-drive`` up to its own
+``highest_supported()`` -- it will never install a ``proton-drive`` version newer
+than that, even if one exists upstream. Picking up a newer upstream
+``proton-drive`` release requires upgrading protonfs itself: a maintainer runs
+``python .github/scripts/repin_proton_drive.py`` to independently verify and pin the
+new version's checksums for every supported platform, adds it to
+``SUPPORTED_DRIVE_VERSIONS``, and cuts a new protonfs release with that as its
+``highest_supported()``. This keeps the installed ``proton-drive`` version always
+within the range a given protonfs release was built and tested against.
+
 See also
 ---------
 * :doc:`getting-started/index` for installation and first-run setup.
