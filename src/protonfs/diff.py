@@ -21,6 +21,7 @@ class SyncState(str, Enum):
     LOCAL_DELETED = "local-deleted"
     REMOTE_CHANGED = "remote-changed"
     REMOTE_DELETED = "remote-deleted"
+    LFS_POINTER = "lfs-pointer"
 
 
 @dataclass
@@ -74,6 +75,15 @@ def classify(
         local_entry = local.get(rel_path)
         index_entry = index.get(rel_path)
         remote_entry = remote.get(rel_path) if remote is not None else None
+
+        # #32: an un-smudged git-LFS pointer stub's sha256 is the stub's own hash, not
+        # the tracked file's -- comparing it against the index/remote would either mass-
+        # false-conflict (8024 seen in the wild) or, worse, classify it LOCAL_ONLY and let
+        # push clobber the real remote object with a 131-byte stub. Short-circuit before
+        # any hash comparison so an unmaterialised file is never conflict/pushable.
+        if local_entry is not None and local_entry.is_lfs_pointer:
+            results.append(DiffEntry(rel_path, SyncState.LFS_POINTER))
+            continue
 
         if local_entry is not None and index_entry is None:
             state = SyncState.LOCAL_ONLY

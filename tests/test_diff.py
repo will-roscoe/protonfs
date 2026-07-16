@@ -26,8 +26,12 @@ def _index_entry(
     )
 
 
-def _scan_entry(sha256: str, *, size: int = 1, sha1: str = "") -> ScanEntry:
-    return ScanEntry(rel_path="a", size=size, mtime=1.0, sha256=sha256, sha1=sha1)
+def _scan_entry(
+    sha256: str, *, size: int = 1, sha1: str = "", is_lfs_pointer: bool = False
+) -> ScanEntry:
+    return ScanEntry(
+        rel_path="a", size=size, mtime=1.0, sha256=sha256, sha1=sha1, is_lfs_pointer=is_lfs_pointer
+    )
 
 
 def _remote(
@@ -171,6 +175,26 @@ def test_remote_only_from_live_listing_not_yet_in_index(tmp_path) -> None:
     index = IndexStore(tmp_path)
     result = classify({}, index, remote={"a": _remote(claimed_size=10)})
     assert result[0].state == SyncState.REMOTE_ONLY
+
+
+def test_lfs_pointer_classifies_as_lfs_pointer_not_conflict(tmp_path) -> None:
+    # #32: an unmaterialised git-LFS pointer stub whose sha256 (of the 131-byte stub)
+    # differs from the index's real-content sha256 must NOT classify as CONFLICT -- that
+    # mismatch is expected and was producing 8024 false conflicts in the wild.
+    index = IndexStore(tmp_path)
+    index.set("a", _index_entry("real-content-hash"))
+    local = {"a": _scan_entry("stub-hash", is_lfs_pointer=True)}
+    result = classify(local, index)
+    assert result[0].state == SyncState.LFS_POINTER
+
+
+def test_lfs_pointer_with_no_index_entry_is_lfs_pointer_not_local_only(tmp_path) -> None:
+    # A freshly-cloned pointer stub with no index entry yet must not be treated as
+    # LOCAL_ONLY (which would make it a push candidate and risk clobbering the remote).
+    index = IndexStore(tmp_path)
+    local = {"a": _scan_entry("stub-hash", is_lfs_pointer=True)}
+    result = classify(local, index)
+    assert result[0].state == SyncState.LFS_POINTER
 
 
 def test_local_only_file_never_touched_when_absent_from_remote_listing(tmp_path) -> None:
