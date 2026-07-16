@@ -10,6 +10,10 @@
 [![](https://raw.githubusercontent.com/will-roscoe/protonfs/main/.github/badges/coverage.svg)](https://codecov.io/gh/will-roscoe/protonfs)
 ![](https://raw.githubusercontent.com/will-roscoe/protonfs/main/.github/badges/interrogate-badge.svg)
 
+[![](https://raw.githubusercontent.com/will-roscoe/protonfs/main/.github/badges/proton-drive.svg)](https://proton.me/download/drive/cli/version.json)
+[![](https://raw.githubusercontent.com/will-roscoe/protonfs/main/.github/badges/build-linux-x64.svg)](https://github.com/will-roscoe/protonfs/actions/workflows/ci.yml)
+[![](https://raw.githubusercontent.com/will-roscoe/protonfs/main/.github/badges/build-linux-arm64.svg)](https://github.com/will-roscoe/protonfs/actions/workflows/ci.yml)
+
 
 Sync a local directory tree with [Proton Drive](https://proton.me/drive), via
 the official [Proton Drive CLI](https://github.com/ProtonDriveApps/sdk/tree/main/cli),

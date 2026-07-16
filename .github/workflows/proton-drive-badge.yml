@@ -1,0 +1,64 @@
+name: proton-drive pin badge
+
+# Regenerates .github/badges/proton-drive.svg: the pinned proton-drive version,
+# green "<pin> (latest)" when it matches upstream's current Stable release, orange
+# "<pin> (upstream <latest>)" when upstream has moved on. Upstream can release at
+# any time with no repo activity, so a daily cron keeps the badge honest; the push
+# trigger refreshes it immediately when the pin itself changes.
+
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  push:
+    branches: [main]
+    paths:
+      - "src/protonfs/install.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# Same group as ci.yml's badges job so concurrent badge commits never race.
+concurrency:
+  group: badges-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  badge:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate pin badge
+        run: |
+          set -euo pipefail
+          PIN=$(python3 -c "
+          import re
+          src = open('src/protonfs/install.py').read()
+          print(re.search(r'DEFAULT_VERSION = \"([^\"]+)\"', src).group(1))")
+          LATEST=$(curl -fsS --max-time 30 https://proton.me/download/drive/cli/version.json \
+            | python3 -c "
+          import json, sys
+          releases = json.load(sys.stdin)['Releases']
+          print(next(r['Version'] for r in releases if r.get('CategoryName') == 'Stable'))")
+          echo "pin=$PIN upstream=$LATEST"
+          if [ "$PIN" = "$LATEST" ]; then
+            MSG="$PIN (latest)"; COLOR=brightgreen
+          else
+            MSG="$PIN (upstream $LATEST)"; COLOR=orange
+          fi
+          # shields.io static-badge escaping: '-' -> '--', then URL-encode the rest
+          ENC=$(printf '%s' "$MSG" | sed 's/-/--/g; s/ /%20/g; s/(/%28/g; s/)/%29/g')
+          mkdir -p .github/badges
+          curl -fsS -o .github/badges/proton-drive.svg \
+            "https://img.shields.io/badge/proton--drive-${ENC}-${COLOR}"
+
+      - name: Commit badge if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .github/badges/proton-drive.svg
+          git diff --cached --quiet || {
+            git commit -m "chore: update proton-drive pin badge [skip ci]"
+            git push
+          }

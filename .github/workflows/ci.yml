@@ -71,15 +71,37 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           flags: py${{ matrix.python-version }}
 
+  # linux-arm64 run (one canonical Python): protonfs supports the linux-arm64
+  # proton-drive prebuilt, so the suite is exercised on a real arm64 runner too.
+  # linux-x64 coverage comes from the version matrix above.
+  test-arm:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install package with dev dependencies
+        run: pip install -e .[dev]
+
+      - name: Test
+        run: pytest -q
+
   # Regenerate and commit the committed SVG badges ONCE, from a single canonical
   # Python version, only on a push to main. Split out of the matrix so the badge is
   # deterministic and the git push does not race across five parallel jobs.
+  # `!cancelled()` (not the default all-succeeded) so a red run still refreshes the
+  # per-arch status badges to "failing" instead of leaving them stale-green.
   badges:
-    needs: test
+    needs: [test, test-arm]
     # inputs.skip-badges is only populated under workflow_call (empty/falsy on a
     # direct push), so this stays true for the push trigger and false when called
     # from auto-release as the release gate.
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && inputs.skip-badges != true
+    if: >-
+      !cancelled() && github.event_name == 'push' &&
+      github.ref == 'refs/heads/main' && inputs.skip-badges != true
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -129,12 +151,22 @@ jobs:
           ENC=$(printf '%s' "$PYVERS" | sed 's/ /%20/g; s/|/%7C/g')
           curl -fsS -o .github/badges/pyversion.svg \
             "https://img.shields.io/badge/python-${ENC}-blue?logo=python&logoColor=white"
+          # per-architecture build status, from the actual job results of this run
+          arch_badge() {
+            local file=$1 label=$2 result=$3
+            if [ "$result" = "success" ]; then S=passing; C=brightgreen; else S=failing; C=red; fi
+            curl -fsS -o ".github/badges/${file}.svg" \
+              "https://img.shields.io/badge/${label}-${S}-${C}?logo=linux&logoColor=white"
+          }
+          arch_badge build-linux-x64 "linux--x64" "${{ needs.test.result }}"
+          arch_badge build-linux-arm64 "linux--arm64" "${{ needs.test-arm.result }}"
 
       - name: Commit updated badges
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add .github/badges/coverage.svg .github/badges/interrogate-badge.svg \
-                  .github/badges/pytest.svg .github/badges/ruff.svg .github/badges/pyversion.svg
+                  .github/badges/pytest.svg .github/badges/ruff.svg .github/badges/pyversion.svg \
+                  .github/badges/build-linux-x64.svg .github/badges/build-linux-arm64.svg
           git diff --cached --quiet || git commit -m "chore: update CI badges [skip ci]"
           git push
