@@ -34,6 +34,17 @@ LIST_MAX_RETRIES = int(os.environ.get("PROTONFS_LIST_RETRIES", "4"))
 LIST_BACKOFF_BASE_SECONDS = float(os.environ.get("PROTONFS_LIST_BACKOFF", "2"))
 LIST_BACKOFF_CAP_SECONDS = float(os.environ.get("PROTONFS_LIST_BACKOFF_CAP", "60"))
 
+# #69: the same throttling that degrades `list` (#33) also hits `filesystem upload`/
+# `download` mid-transfer -- one throttled batch otherwise fails the whole push/pull run.
+# Push/pull are resumable (#3) so a re-run recovers, but the run itself should ride out
+# transient throttling the same way `list_with_backoff` does. Timeout defaults higher than
+# list's: a transfer batch legitimately takes longer than a directory listing. Overridable
+# via env, named to mirror the PROTONFS_LIST_* knobs.
+TRANSFER_TIMEOUT_SECONDS = float(os.environ.get("PROTONFS_TRANSFER_TIMEOUT", "300"))
+TRANSFER_MAX_RETRIES = int(os.environ.get("PROTONFS_TRANSFER_RETRIES", "4"))
+TRANSFER_BACKOFF_BASE_SECONDS = float(os.environ.get("PROTONFS_TRANSFER_BACKOFF", "2"))
+TRANSFER_BACKOFF_CAP_SECONDS = float(os.environ.get("PROTONFS_TRANSFER_BACKOFF_CAP", "60"))
+
 
 class DriveError(RuntimeError):
     pass
@@ -177,6 +188,51 @@ def _is_throttle_error(message: str) -> bool:
     return any(signal in lowered for signal in _THROTTLE_ERROR_SIGNALS)
 
 
+def _retry_with_backoff(
+    attempt_fn: Callable[[], object],
+    *,
+    describe: str,
+    retries: int,
+    base_delay: float,
+    cap: float,
+    sleep: Callable[[float], None],
+) -> object:
+    """Shared throttle-retry loop behind `list_with_backoff` (#33) and the transfer
+    backoff (#69): call `attempt_fn`, retrying with exponential backoff (capped at `cap`)
+    on a timeout or a throttle-classified `DriveError` (via `_is_throttle_error`), up to
+    `retries` times. A genuine non-throttle `DriveError` propagates immediately, unretried.
+    Past the retry budget, raises `DriveThrottleError` describing what was being retried.
+    """
+    attempt = 0
+    while True:
+        try:
+            return attempt_fn()
+        except subprocess.TimeoutExpired as exc:
+            reason: str = f"{describe} timed out"
+            last_error: Exception = exc
+        except DriveError as exc:
+            if not _is_throttle_error(str(exc)):
+                raise
+            reason = str(exc)
+            last_error = exc
+        attempt += 1
+        if attempt > retries:
+            raise DriveThrottleError(
+                f"remote is throttling {describe} ({reason}); "
+                f"gave up after {retries} retries. Back off and retry later."
+            ) from last_error
+        delay = min(base_delay * (2 ** (attempt - 1)), cap)
+        logger.warning(
+            "remote throttling on %s (%s); backing off %.1fs (retry %d/%d)",
+            describe,
+            reason,
+            delay,
+            attempt,
+            retries,
+        )
+        sleep(delay)
+
+
 def _classify(message: str) -> DriveError:
     if _is_secrets_error(message):
         return DriveSecretsError(
@@ -230,9 +286,7 @@ class DriveClient:
             self._env = drive_env()
         return self._env
 
-    def _invoke(
-        self, args: list[str], timeout: float | None = None
-    ) -> subprocess.CompletedProcess:
+    def _invoke(self, args: list[str], timeout: float | None = None) -> subprocess.CompletedProcess:
         if not self._binary_available():
             raise DriveError(f"proton-drive binary not found: {self._binary}")
         return subprocess.run(
@@ -255,8 +309,8 @@ class DriveClient:
             raise _classify(message)
         return parsed
 
-    def _run_transfer(self, args: list[str]) -> TransferResult:
-        result = self._invoke(args)
+    def _run_transfer(self, args: list[str], timeout: float | None = None) -> TransferResult:
+        result = self._invoke(args, timeout=timeout)
         stdout = result.stdout.strip()
         try:
             parsed = json.loads(stdout) if stdout else None
@@ -266,6 +320,35 @@ class DriveClient:
             message = result.stderr.strip() or stdout
             raise _classify(message)
         return TransferResult.from_json(parsed)
+
+    def _run_transfer_with_backoff(
+        self,
+        args: list[str],
+        *,
+        timeout: float = TRANSFER_TIMEOUT_SECONDS,
+        retries: int = TRANSFER_MAX_RETRIES,
+        base_delay: float = TRANSFER_BACKOFF_BASE_SECONDS,
+        cap: float = TRANSFER_BACKOFF_CAP_SECONDS,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> TransferResult:
+        """`_run_transfer`, but resilient to Proton API throttling (#69), parity with
+        `list_with_backoff` (#33).
+
+        Each attempt is bounded by `timeout`; a timeout or a transient throttle error is
+        retried with exponential backoff up to `retries` times, after which it raises
+        `DriveThrottleError`. A genuine non-throttle failure (auth, quota, missing path)
+        is raised immediately, not retried. Retries happen at batch granularity -- the
+        whole `filesystem upload`/`download` invocation is re-run, not a sub-batch; runs
+        are resumable across invocations (#3) so re-running the batch is safe.
+        """
+        return _retry_with_backoff(  # type: ignore[return-value]
+            lambda: self._run_transfer(args, timeout=timeout),
+            describe=f"`{' '.join(args)}`",
+            retries=retries,
+            base_delay=base_delay,
+            cap=cap,
+            sleep=sleep,
+        )
 
     def version(self) -> str | None:
         if not self._binary_available():
@@ -321,34 +404,14 @@ class DriveClient:
         `retries` times, after which it raises `DriveThrottleError`. A genuine non-throttle
         error (auth, missing path) is raised immediately, not retried.
         """
-        attempt = 0
-        while True:
-            try:
-                return self.list(remote_path, timeout=timeout)
-            except subprocess.TimeoutExpired as exc:
-                reason: str = f"list timed out after {timeout:g}s"
-                last_error: Exception = exc
-            except DriveError as exc:
-                if not _is_throttle_error(str(exc)):
-                    raise
-                reason = str(exc)
-                last_error = exc
-            attempt += 1
-            if attempt > retries:
-                raise DriveThrottleError(
-                    f"remote is throttling `list {remote_path}` ({reason}); "
-                    f"gave up after {retries} retries. Back off and retry later."
-                ) from last_error
-            delay = min(base_delay * (2 ** (attempt - 1)), cap)
-            logger.warning(
-                "remote throttling on %s (%s); backing off %.1fs (retry %d/%d)",
-                remote_path,
-                reason,
-                delay,
-                attempt,
-                retries,
-            )
-            sleep(delay)
+        return _retry_with_backoff(  # type: ignore[return-value]
+            lambda: self.list(remote_path, timeout=timeout),
+            describe=f"`list {remote_path}`",
+            retries=retries,
+            base_delay=base_delay,
+            cap=cap,
+            sleep=sleep,
+        )
 
     def remote_identities(self, remote_parent: str) -> dict[str, RemoteIdentity]:
         """Map decrypted filename -> plaintext identity for the files directly under
@@ -440,6 +503,12 @@ class DriveClient:
         remote_parent: str,
         file_strategy: str | None = None,
         folder_strategy: str | None = None,
+        *,
+        timeout: float = TRANSFER_TIMEOUT_SECONDS,
+        retries: int = TRANSFER_MAX_RETRIES,
+        base_delay: float = TRANSFER_BACKOFF_BASE_SECONDS,
+        cap: float = TRANSFER_BACKOFF_CAP_SECONDS,
+        sleep: Callable[[float], None] = time.sleep,
     ) -> TransferResult:
         args = ["filesystem", "upload"]
         if file_strategy:
@@ -447,7 +516,9 @@ class DriveClient:
         if folder_strategy:
             args += ["-d", folder_strategy]
         args += [str(p) for p in local_paths] + [remote_parent]
-        return self._run_transfer(args)
+        return self._run_transfer_with_backoff(
+            args, timeout=timeout, retries=retries, base_delay=base_delay, cap=cap, sleep=sleep
+        )
 
     def download(
         self,
@@ -455,6 +526,12 @@ class DriveClient:
         local_folder: Path,
         file_strategy: str | None = None,
         folder_strategy: str | None = None,
+        *,
+        timeout: float = TRANSFER_TIMEOUT_SECONDS,
+        retries: int = TRANSFER_MAX_RETRIES,
+        base_delay: float = TRANSFER_BACKOFF_BASE_SECONDS,
+        cap: float = TRANSFER_BACKOFF_CAP_SECONDS,
+        sleep: Callable[[float], None] = time.sleep,
     ) -> TransferResult:
         args = ["filesystem", "download"]
         if file_strategy:
@@ -462,7 +539,9 @@ class DriveClient:
         if folder_strategy:
             args += ["-d", folder_strategy]
         args += remote_paths + [str(local_folder)]
-        return self._run_transfer(args)
+        return self._run_transfer_with_backoff(
+            args, timeout=timeout, retries=retries, base_delay=base_delay, cap=cap, sleep=sleep
+        )
 
     def trash(self, remote_paths: list[str]) -> list[dict]:
         result = self._run_json(["filesystem", "trash", *remote_paths])
@@ -498,9 +577,7 @@ class DriveClient:
         parent, _, name = stripped.rpartition("/")
         same_named = [e for e in self.list("/trash") if decrypted_name(e) == name]
         if not same_named:
-            raise DriveError(
-                f"cannot restore {original_path}: no trashed item is named {name!r}"
-            )
+            raise DriveError(f"cannot restore {original_path}: no trashed item is named {name!r}")
         parent_uid = self._node_uid(parent or "/")
         candidate = same_named[0]
         if candidate.get("parentUid") != parent_uid:

@@ -73,18 +73,14 @@ def test_list_returns_parsed_json_array(monkeypatch: pytest.MonkeyPatch) -> None
         _stub_run('[{"name": {"ok": true, "value": "a"}, "type": "file", "totalStorageSize": 5}]'),
     )
     entries = client.list("/my-files/test")
-    assert entries == [
-        {"name": {"ok": True, "value": "a"}, "type": "file", "totalStorageSize": 5}
-    ]
+    assert entries == [{"name": {"ok": True, "value": "a"}, "type": "file", "totalStorageSize": 5}]
 
 
 def test_run_json_auth_signal_raises_auth_error(monkeypatch: pytest.MonkeyPatch) -> None:
     # D5.1: a genuine auth signal ("not logged in") surfaces as DriveAuthError.
     client = DriveClient(binary="proton-drive")
     monkeypatch.setattr("protonfs.drive.shutil.which", lambda _: "/usr/bin/proton-drive")
-    monkeypatch.setattr(
-        subprocess, "run", _stub_run('{"error": "not logged in"}', returncode=1)
-    )
+    monkeypatch.setattr(subprocess, "run", _stub_run('{"error": "not logged in"}', returncode=1))
     with pytest.raises(DriveAuthError):
         client.list("/my-files/test")
 
@@ -395,9 +391,7 @@ def test_list_with_backoff_caps_the_delay(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setattr(client, "list", always_timeout)
     slept: list[float] = []
     with pytest.raises(DriveThrottleError):
-        client.list_with_backoff(
-            "/x", retries=5, base_delay=10, cap=15, sleep=slept.append
-        )
+        client.list_with_backoff("/x", retries=5, base_delay=10, cap=15, sleep=slept.append)
 
     assert slept == [10, 15, 15, 15, 15]  # 10, 20->15, 40->15, ... capped at 15
 
@@ -424,7 +418,77 @@ def test_walk_invokes_on_directory_per_directory_with_file_entries(
     assert seen == [["top.txt"], ["sub/inner.txt"]]
 
 
+# --- #69: throttle-resilient upload/download (parity with #33's list) ------------------
+
+
+def test_upload_retries_on_throttle_error_then_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _client(monkeypatch)
+    calls = {"n": 0}
+    ok_result = TransferResult(transferred_items=1, skipped_items=0, failed_items=0, failures=[])
+
+    def flaky(args, timeout=None):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise DriveError("429: too many requests")
+        return ok_result
+
+    monkeypatch.setattr(client, "_run_transfer", flaky)
+    slept: list[float] = []
+    result = client.upload([Path("x")], "/my-files/test", base_delay=1, sleep=slept.append)
+
+    assert calls["n"] == 3
+    assert result is ok_result
+    assert slept == [1, 2]  # exponential backoff between attempts
+
+
+def test_download_does_not_retry_a_non_throttle_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _client(monkeypatch)
+    calls = {"n": 0}
+
+    def permanent_failure(args, timeout=None):
+        calls["n"] += 1
+        raise DriveAuthError("unauthenticated")
+
+    monkeypatch.setattr(client, "_run_transfer", permanent_failure)
+    with pytest.raises(DriveAuthError):
+        client.download(["/my-files/test/x"], Path("."), sleep=lambda _: None)
+
+    assert calls["n"] == 1  # raised immediately, never retried
+
+
+def test_upload_raises_throttle_error_after_retry_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _client(monkeypatch)
+
+    def always_throttled(args, timeout=None):
+        raise DriveError("rate limit exceeded")
+
+    monkeypatch.setattr(client, "_run_transfer", always_throttled)
+    with pytest.raises(DriveThrottleError):
+        client.upload(
+            [Path("x")], "/my-files/test", retries=2, base_delay=0.01, sleep=lambda _: None
+        )
+
+
+def test_upload_retries_on_timeout_then_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _client(monkeypatch)
+    calls = {"n": 0}
+    ok_result = TransferResult(transferred_items=1, skipped_items=0, failed_items=0, failures=[])
+
+    def flaky(args, timeout=None):
+        calls["n"] += 1
+        if calls["n"] < 2:
+            raise subprocess.TimeoutExpired(cmd="proton-drive", timeout=timeout)
+        return ok_result
+
+    monkeypatch.setattr(client, "_run_transfer", flaky)
+    result = client.upload([Path("x")], "/my-files/test", base_delay=0.01, sleep=lambda _: None)
+
+    assert calls["n"] == 2
+    assert result is ok_result
+
+
 # --- restore against proton-drive >= 0.5.0 trash semantics (#56) ------------
+
 
 def _stub_run_seq(responses: list[tuple[str, int]]):
     """Sequential stub: each call consumes the next (stdout, returncode) pair and
