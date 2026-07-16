@@ -3,11 +3,89 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from protonfs import refreshstate
 from protonfs.commands.refresh import refresh
 from protonfs.config import init_config
 from protonfs.context import load_context
 from protonfs.drive import RemoteEntry
 from protonfs.index import IndexEntry
+
+
+def _seeded_entry(remote_path: str) -> IndexEntry:
+    return IndexEntry(
+        size=1,
+        mtime=0.0,
+        sha256="",
+        sha1="",
+        remote_path=remote_path,
+        origin_device="unknown",
+        local_state="metadata-only",
+        last_synced="2026-07-08T00:00:00+00:00",
+    )
+
+
+def test_refresh_clears_frontier_state_on_completion(tmp_path: Path, make_fake_drive) -> None:
+    # #33 item 2: a refresh that runs to completion leaves no resume state behind.
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.drive = make_fake_drive(walk_entries=[RemoteEntry("dump", is_dir=False, size=3)])
+
+    result = refresh(ctx, None, prune=False)
+
+    assert result.resumed is False
+    assert refreshstate.load_frontier(tmp_path, "/my-files/test") is None
+    assert not (tmp_path / ".protonfs" / refreshstate.REFRESH_STATE_FILE).exists()
+
+
+def test_refresh_resumes_from_saved_frontier(tmp_path: Path, make_fake_drive) -> None:
+    # A saved frontier for this pass root is handed to walk(), and cleared when the
+    # resumed pass completes.
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    fake = make_fake_drive(walk_entries=[RemoteEntry("dump", is_dir=False, size=3)])
+    ctx.drive = fake
+    saved = [("/my-files/test/run2", "run2/")]
+    refreshstate.save_frontier(tmp_path, "/my-files/test", saved)
+
+    result = refresh(ctx, None, prune=False)
+
+    assert result.resumed is True
+    assert fake.walk_frontier == saved  # refresh passed the saved frontier through to walk
+    assert refreshstate.load_frontier(tmp_path, "/my-files/test") is None  # cleared after
+
+
+def test_resumed_pass_skips_deletion_detection(tmp_path: Path, make_fake_drive) -> None:
+    # On resume, walk() only lists the remaining directories, so its entries are an
+    # incomplete view -- deletion detection MUST be skipped so already-listed files are
+    # not falsely pruned.
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    # An index entry absent from this invocation's (empty) walk would look remote-deleted.
+    ctx.index.set("earlier/dump", _seeded_entry("/my-files/test/earlier/dump"))
+    ctx.index.save()
+    ctx.drive = make_fake_drive(walk_entries=[])  # remaining frontier lists nothing here
+    refreshstate.save_frontier(tmp_path, "/my-files/test", [("/my-files/test/rest", "rest/")])
+
+    result = refresh(ctx, None, prune=True)
+
+    assert result.resumed is True
+    assert result.remote_deleted == 0
+    assert result.pruned == 0
+    assert ctx.index.get("earlier/dump") is not None  # not pruned
+
+
+def test_stale_frontier_for_other_root_is_ignored(tmp_path: Path, make_fake_drive) -> None:
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    fake = make_fake_drive(walk_entries=[RemoteEntry("dump", is_dir=False, size=3)])
+    ctx.drive = fake
+    # Frontier saved for a DIFFERENT root -> stale -> fresh pass (no resume).
+    refreshstate.save_frontier(tmp_path, "/my-files/other", [("/my-files/other/x", "x/")])
+
+    result = refresh(ctx, None, prune=False)
+
+    assert result.resumed is False
+    assert fake.walk_frontier is None  # started fresh, not resumed
 
 
 def test_refresh_seeds_metadata_only_for_new_remote_files(
@@ -172,7 +250,9 @@ def test_refresh_persists_seeded_entries_before_a_throttle_interruption(
     ctx = load_context(tmp_path)
     ctx.drive = make_fake_drive()
 
-    def wedging_walk(remote_root, on_directory=None, *, sleep=None):
+    def wedging_walk(
+        remote_root, on_directory=None, *, sleep=None, frontier=None, on_progress=None
+    ):
         # First directory seeds and persists...
         on_directory([RemoteEntry(rel_path="run1/a", is_dir=False, size=4)])
         # ...then the next directory throttles past the retry budget.

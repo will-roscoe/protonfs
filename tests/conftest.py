@@ -103,8 +103,9 @@ class FakeDrive:
         self.created_folders.append((parent_path, name))
         return {}
 
-    def walk(self, remote_root, on_directory=None, *, sleep=None):
+    def walk(self, remote_root, on_directory=None, *, sleep=None, frontier=None, on_progress=None):
         self.walk_roots.append(remote_root)
+        self.walk_frontier = frontier  # record what refresh passed (resume vs fresh)
         if self._walk_by_root is not None:
             entries = list(self._walk_by_root.get(remote_root, []))
         else:
@@ -122,6 +123,10 @@ class FakeDrive:
                     groups[parent].append(entry)
             for parent in groups or {"": []}:
                 on_directory(groups[parent])
+        # Simulate a walk that ran to completion: the frontier drains to empty, so a caller
+        # persisting progress ends with an empty frontier (refresh then clears its state).
+        if on_progress is not None:
+            on_progress([])
         return entries
 
     def trash(self, remote_paths):

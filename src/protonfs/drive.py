@@ -360,6 +360,8 @@ class DriveClient:
         on_directory: Callable[[list[RemoteEntry]], None] | None = None,
         *,
         sleep: Callable[[float], None] = time.sleep,
+        frontier: list[tuple[str, str]] | None = None,
+        on_progress: Callable[[list[tuple[str, str]]], None] | None = None,
     ) -> list[RemoteEntry]:
         """Breadth-first walk of the remote tree.
 
@@ -367,11 +369,19 @@ class DriveClient:
         is called with that directory's FILE entries right after the directory is listed, so
         a caller (refresh) can persist progress per directory -- if a later directory wedges
         past the retry budget, everything already handed to `on_directory` is durable.
+
+        Resumability (#33 item 2): pass `frontier` to seed the BFS queue from a saved state
+        instead of the root, and `on_progress` to be handed the queue's current contents
+        after each directory is listed and its children enqueued -- so a caller can persist
+        the frontier and resume an interrupted walk from where it stopped.
         """
         root = remote_root.rstrip("/")
         results: list[RemoteEntry] = []
-        # queue of (absolute remote path, rel prefix); deque gives O(1) popleft
-        queue: deque[tuple[str, str]] = deque([(root, "")])
+        # queue of (absolute remote path, rel prefix); deque gives O(1) popleft. Resume from
+        # a saved frontier when given, else start at the root.
+        queue: deque[tuple[str, str]] = (
+            deque(frontier) if frontier is not None else deque([(root, "")])
+        )
         while queue:
             abs_path, prefix = queue.popleft()
             dir_files: list[RemoteEntry] = []
@@ -400,6 +410,10 @@ class DriveClient:
                     dir_files.append(file_entry)
             if on_directory is not None:
                 on_directory(dir_files)
+            if on_progress is not None:
+                # Hand out the remaining queue (this dir popped, its children enqueued) so
+                # the caller can persist the frontier for resume.
+                on_progress(list(queue))
         return results
 
     def upload(

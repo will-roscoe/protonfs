@@ -5,6 +5,7 @@ import datetime
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from protonfs import refreshstate
 from protonfs.context import RepoContext
 from protonfs.diff import SyncState, classify, within_subpath
 from protonfs.ignore import IgnoreMatcher
@@ -20,6 +21,7 @@ class RefreshResult:
     pruned: int = 0
     changed_paths: list[str] = field(default_factory=list)
     deleted_paths: list[str] = field(default_factory=list)
+    resumed: bool = False
 
 
 def refresh(
@@ -70,16 +72,38 @@ def refresh(
         if persist and seeded_here:
             ctx.index.save()
 
-    entries = ctx.drive.walk(remote_root, on_directory=_seed_directory)
+    # #33 item 2: resume an interrupted walk from its saved frontier. A saved frontier for a
+    # different root is stale for this pass (load_frontier returns None). Only touch the
+    # state file when we are persisting (a dry-run preview must leave no trace).
+    saved = refreshstate.load_frontier(ctx.root, remote_root) if persist else None
+    result.resumed = saved is not None
+
+    def _save_progress(frontier: list) -> None:
+        if persist:
+            refreshstate.save_frontier(ctx.root, remote_root, frontier)
+
+    entries = ctx.drive.walk(
+        remote_root, on_directory=_seed_directory, frontier=saved, on_progress=_save_progress
+    )
+    # The pass completed (walk returned) -- drop the frontier so the next refresh starts fresh.
+    if persist:
+        refreshstate.clear(ctx.root)
+
+    # Change/deletion detection needs the COMPLETE remote listing (a file is only "deleted"
+    # if absent from the whole walk), so it runs after the walk finishes -- unlike seeding,
+    # it cannot be incremental. On a RESUMED pass, `entries` covers only the directories
+    # listed in THIS invocation (the frontier), NOT the whole tree, so running detection
+    # against it would falsely flag every already-listed file as remote-deleted. Skip it on
+    # resume: seeding still happened per-directory; detection waits for a fresh full pass.
+    if result.resumed:
+        return result
+
     remote = {e.rel_path: e for e in entries if not e.is_dir}
     # rel_paths from the walk are relative to remote_root; if a subpath was given,
     # re-prefix so keys match the index's repo-root-relative rel_paths.
     if subpath:
         remote = {f"{subpath}/{rel}": entry for rel, entry in remote.items()}
 
-    # Change/deletion detection needs the COMPLETE remote listing (a file is only "deleted"
-    # if absent from the whole walk), so it runs after the walk finishes -- unlike seeding,
-    # it cannot be incremental.
     diff_entries = classify(local, ctx.index, remote)
 
     for entry in diff_entries:
