@@ -141,6 +141,8 @@ separate first-class file rather than only being achievable via `ignore`.
 
 ## Releasing (maintainers)
 
+See [CHANGELOG.md](CHANGELOG.md) for release history and upgrade notes.
+
 Merges to `main` auto-tag a release, but only after the full test matrix passes
 with an 80% coverage floor on the exact commit being tagged (`auto-release.yml`
 calls the CI workflow before creating the tag). Before milestone or manual tags,
