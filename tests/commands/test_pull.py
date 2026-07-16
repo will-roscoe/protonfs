@@ -404,3 +404,24 @@ def test_progress_printer_disabled_off_tty(monkeypatch) -> None:
 
     monkeypatch.setattr(sys.stderr, "isatty", lambda: False)
     assert _progress_printer("pull") is None
+
+
+def test_pull_single_file_pathspec_downloads_only_that_file(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    """#96 follow-up: a pathspec naming a single FILE (not a directory) pulls exactly
+    that file -- siblings and unrelated dirs stay untouched. Reported as 'pulling a
+    single file locks up': the pre-fix code pulled the whole repo-wide backlog."""
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    for rel in ("a/wanted.bin", "a/other.bin", "b/unrelated.bin"):
+        ctx.index.set(rel, _metadata_only_entry(f"/my-files/test/{rel}"))
+    ctx.drive = make_fake_drive()
+
+    result = pull(ctx, "a/wanted.bin", resolve=None, dry_run=False)
+
+    assert result.transferred_items == 1
+    downloaded = [p for call in ctx.drive.download_calls for p in call[0]]
+    assert downloaded == ["/my-files/test/a/wanted.bin"]
+    assert not (tmp_path / "a" / "other.bin").exists()
+    assert not (tmp_path / "b").exists()
