@@ -89,13 +89,50 @@ jobs:
       - name: Test
         run: pytest -q
 
+  # darwin-arm64 run (one canonical Python): protonfs supports the darwin-arm64
+  # proton-drive prebuilt (#8), and macos-latest is an Apple Silicon (arm64) image
+  # as of the runner-images macOS 15 migration.
+  test-macos-arm:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install package with dev dependencies
+        run: pip install -e .[dev]
+
+      - name: Test
+        run: pytest -q
+
+  # darwin-x64 run (one canonical Python): protonfs supports the darwin-x64
+  # proton-drive prebuilt (#8) too. `macos-15-intel` is the current *standard*
+  # (free-for-public-repos) Intel image label -- distinct from the `-large`/
+  # `-xlarge` larger-runner labels, which are billed even on public repos.
+  test-macos-intel:
+    runs-on: macos-15-intel
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install package with dev dependencies
+        run: pip install -e .[dev]
+
+      - name: Test
+        run: pytest -q
+
   # Regenerate and commit the committed SVG badges ONCE, from a single canonical
   # Python version, only on a push to main. Split out of the matrix so the badge is
   # deterministic and the git push does not race across five parallel jobs.
   # `!cancelled()` (not the default all-succeeded) so a red run still refreshes the
   # per-arch status badges to "failing" instead of leaving them stale-green.
   badges:
-    needs: [test, test-arm]
+    needs: [test, test-arm, test-macos-arm, test-macos-intel]
     # inputs.skip-badges is only populated under workflow_call (empty/falsy on a
     # direct push), so this stays true for the push trigger and false when called
     # from auto-release as the release gate.
@@ -153,13 +190,15 @@ jobs:
             "https://img.shields.io/badge/python-${ENC}-blue?logo=python&logoColor=white"
           # per-architecture build status, from the actual job results of this run
           arch_badge() {
-            local file=$1 label=$2 result=$3
+            local file=$1 label=$2 result=$3 logo=$4
             if [ "$result" = "success" ]; then S=passing; C=brightgreen; else S=failing; C=red; fi
             curl -fsS -o ".github/badges/${file}.svg" \
-              "https://img.shields.io/badge/${label}-${S}-${C}?logo=linux&logoColor=white"
+              "https://img.shields.io/badge/${label}-${S}-${C}?logo=${logo}&logoColor=white"
           }
-          arch_badge build-linux-x64 "linux--x64" "${{ needs.test.result }}"
-          arch_badge build-linux-arm64 "linux--arm64" "${{ needs.test-arm.result }}"
+          arch_badge build-linux-x64 "linux--x64" "${{ needs.test.result }}" linux
+          arch_badge build-linux-arm64 "linux--arm64" "${{ needs.test-arm.result }}" linux
+          arch_badge build-darwin-arm64 "darwin--arm64" "${{ needs.test-macos-arm.result }}" apple
+          arch_badge build-darwin-x64 "darwin--x64" "${{ needs.test-macos-intel.result }}" apple
 
       - name: Commit updated badges
         run: |
@@ -167,6 +206,7 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add .github/badges/coverage.svg .github/badges/interrogate-badge.svg \
                   .github/badges/pytest.svg .github/badges/ruff.svg .github/badges/pyversion.svg \
-                  .github/badges/build-linux-x64.svg .github/badges/build-linux-arm64.svg
+                  .github/badges/build-linux-x64.svg .github/badges/build-linux-arm64.svg \
+                  .github/badges/build-darwin-x64.svg .github/badges/build-darwin-arm64.svg
           git diff --cached --quiet || git commit -m "chore: update CI badges [skip ci]"
           git push
