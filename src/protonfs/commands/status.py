@@ -1,3 +1,4 @@
+"""``protonfs status``: summarise sync state and map it to a script-friendly exit code."""
 from __future__ import annotations
 
 from collections import Counter
@@ -26,6 +27,18 @@ _CONFLICT = frozenset({SyncState.CONFLICT, SyncState.BOTH_MODIFIED})
 
 
 def compute_status(ctx: RepoContext, subpath: str | None) -> Counter:
+    """Summarise sync state as a count of files per :class:`~protonfs.diff.SyncState`.
+
+    Scans the working tree (scoped to ``subpath`` when given), classifies each file
+    against the local index, and tallies the resulting states.
+
+    :param ctx: the loaded repo context (root, config, index, drive).
+    :param subpath: repo-root-relative subtree to restrict the scan to, or ``None``
+        for the whole tree.
+    :returns: a :class:`collections.Counter` keyed by ``SyncState.value``.
+
+    .. seealso:: :func:`status_exit_code` maps this summary to a process exit code.
+    """
     ignore = IgnoreMatcher.from_file(ctx.root)
     scan_root = Path(subpath) if subpath else Path(".")
     local = scan(ctx.root, scan_root, ignore, ctx.index, low_io=ctx.config.defaults.low_io)

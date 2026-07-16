@@ -31,6 +31,11 @@ MANIFEST_URL = "https://proton.me/download/drive/cli/version.json"
 
 
 def _semver_tuple(version: str) -> tuple[int, ...]:
+    """Parse a plain ``X.Y.Z`` version into a comparable integer tuple.
+
+    :param version: a dotted numeric version string (no pre-release suffix).
+    :returns: the components as an ``int`` tuple, orderable with ``<``/``>``.
+    """
     return tuple(int(part) for part in version.split("."))
 
 

@@ -25,6 +25,11 @@ FrontierItem = tuple[str, str]
 
 
 def _state_path(repo_root: Path) -> Path:
+    """Return the path to the resumable-refresh state file inside ``repo_root``.
+
+    :param repo_root: the protonfs root.
+    :returns: ``<repo_root>/.protonfs/refresh-state.json``.
+    """
     return repo_root / ".protonfs" / REFRESH_STATE_FILE
 
 

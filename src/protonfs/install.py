@@ -110,6 +110,13 @@ class InstallError(RuntimeError):
 
 @dataclass
 class Platform:
+    """A target platform for a proton-drive prebuilt.
+
+    :ivar slug: the release slug, e.g. ``"linux-x64"`` / ``"darwin-arm64"``.
+    :ivar os_name: ``"linux"`` or ``"darwin"``.
+    :ivar arch: ``"x64"`` or ``"arm64"``.
+    """
+
     slug: str  # e.g. "linux-x64"
     os_name: str  # "linux" | "darwin"
     arch: str  # "x64" | "arm64"
@@ -117,6 +124,14 @@ class Platform:
 
 @dataclass
 class InstallResult:
+    """Result of a successful :func:`install_drive`.
+
+    :ivar path: where the verified binary was installed.
+    :ivar on_path: whether that location is on ``PATH`` (else a warning is emitted).
+    :ivar sha512: the verified SHA-512 of the installed binary.
+    :ivar warnings: non-fatal advisories (old glibc, off-PATH install dir, etc.).
+    """
+
     path: Path
     on_path: bool
     sha512: str
@@ -124,6 +139,15 @@ class InstallResult:
 
 
 def detect_platform(system: str | None = None, machine: str | None = None) -> Platform:
+    """Detect (or resolve, from explicit args) the current OS/arch as a :class:`Platform`.
+
+    :param system: override for :func:`platform.system` (for tests); defaults to the
+        running OS.
+    :param machine: override for :func:`platform.machine`; defaults to the running arch.
+    :returns: the resolved :class:`Platform`.
+    :raises InstallError: on an unsupported CPU architecture, or a non-linux/darwin OS
+        (native Windows is out of scope for 1.0 — use WSL).
+    """
     system = (system or _platform.system()).lower()
     machine = (machine or _platform.machine()).lower()
     if machine in ("x86_64", "amd64"):
@@ -154,10 +178,24 @@ def detect_platform(system: str | None = None, machine: str | None = None) -> Pl
 
 
 def resolve_version(version: str | None = None) -> str:
+    """Resolve which proton-drive version to install.
+
+    Precedence: an explicit ``version``, else ``$PROTONFS_DRIVE_VERSION``, else the
+    pinned :data:`DEFAULT_VERSION`.
+
+    :param version: an explicit override, or ``None`` to consult the env/default.
+    :returns: the resolved version string.
+    """
     return version or os.environ.get(VERSION_ENV) or DEFAULT_VERSION
 
 
 def binary_url(version: str, slug: str) -> str:
+    """Build the official download URL for a proton-drive prebuilt.
+
+    :param version: the release version (e.g. ``"0.5.0"``).
+    :param slug: the platform slug (e.g. ``"linux-x64"``).
+    :returns: the full download URL for that binary.
+    """
     return f"{DOWNLOAD_BASE}/{version}/{slug}/proton-drive"
 
 
@@ -215,6 +253,12 @@ def diagnose(plat: Platform, cpuinfo_text: str | None = None,
 
 
 def _no_avx2_message() -> str:
+    """Build the guidance shown when the linux-x64 prebuilt's AVX2 requirement is unmet.
+
+    Tailors the build-from-source instructions to whether ``bun``/``git`` are present.
+
+    :returns: the multi-line instructive error message.
+    """
     have_bun = shutil.which("bun") is not None
     have_git = shutil.which("git") is not None
     steps = (
@@ -252,6 +296,11 @@ def resolve_install_dir(path_env: str | None = None) -> tuple[Path, bool]:
 
 
 def _default_opener(url: str):
+    """Open ``url`` with the default download timeout (the injectable opener for tests).
+
+    :param url: the URL to fetch.
+    :returns: the :func:`urllib.request.urlopen` response context manager.
+    """
     return urllib.request.urlopen(url, timeout=DOWNLOAD_TIMEOUT)
 
 

@@ -1,3 +1,12 @@
+"""gitignore-syntax filtering of which repo files protonfs syncs.
+
+Two independent pattern files under ``.protonfs/`` control this, both using gitignore
+syntax via the :mod:`pathspec` library: ``ignore`` (a denylist, matches
+:data:`DEFAULT_IGNORE_TEMPLATE`'s defaults unless customized) and ``include`` (an
+optional allowlist, off by default). :class:`IgnoreMatcher` combines the two -- ignore
+always wins over include (#18).
+"""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -37,14 +46,30 @@ DEFAULT_INCLUDE_TEMPLATE = """\
 
 
 def ignore_path(repo_root: Path) -> Path:
+    """Return the path to the repo's ignore-pattern denylist file.
+
+    :param repo_root: Root of the repo being synced.
+    :returns: ``.protonfs/ignore`` under ``repo_root``.
+    """
     return repo_root / ".protonfs" / IGNORE_FILE_NAME
 
 
 def include_path(repo_root: Path) -> Path:
+    """Return the path to the repo's include-pattern allowlist file.
+
+    :param repo_root: Root of the repo being synced.
+    :returns: ``.protonfs/include`` under ``repo_root``.
+    """
     return repo_root / ".protonfs" / INCLUDE_FILE_NAME
 
 
 def init_ignore(repo_root: Path) -> None:
+    """Create ``.protonfs/ignore`` with :data:`DEFAULT_IGNORE_TEMPLATE` if absent.
+
+    :param repo_root: Root of the repo being synced.
+
+    .. note:: No-op if the file already exists -- never overwrites user customizations.
+    """
     path = ignore_path(repo_root)
     if path.exists():
         return
@@ -53,6 +78,13 @@ def init_ignore(repo_root: Path) -> None:
 
 
 def init_include(repo_root: Path) -> None:
+    """Create ``.protonfs/include`` with :data:`DEFAULT_INCLUDE_TEMPLATE` if absent.
+
+    :param repo_root: Root of the repo being synced.
+
+    .. note:: No-op if the file already exists. The written template is fully commented
+       out, so this changes sync behaviour for no repo until the user uncomments a line.
+    """
     path = include_path(repo_root)
     if path.exists():
         return
@@ -67,6 +99,19 @@ def _active_patterns(patterns: list[str]) -> list[str]:
 
 
 class IgnoreMatcher:
+    """Combines an ignore denylist with an optional include allowlist.
+
+    Ignore always wins over include (#18): a path matching both an ignore pattern and
+    an include pattern is still excluded. See :meth:`matches` for the exact precedence.
+
+    :param patterns: Gitignore-syntax ignore patterns (denylist).
+    :param include_patterns: Gitignore-syntax include patterns (allowlist), or ``None``.
+        Blank lines and full-line comments are dropped before use (see
+        :func:`_active_patterns`); if nothing remains active, the allowlist is treated
+        as absent (matches everything), not as an empty allowlist (which would match
+        nothing).
+    """
+
     def __init__(self, patterns: list[str], include_patterns: list[str] | None = None) -> None:
         self._spec = pathspec.GitIgnoreSpec.from_lines(patterns)
         active_include = _active_patterns(include_patterns or [])
@@ -79,6 +124,15 @@ class IgnoreMatcher:
 
     @classmethod
     def from_file(cls, repo_root: Path) -> IgnoreMatcher:
+        """Build an :class:`IgnoreMatcher` from a repo's ``.protonfs/ignore`` and
+        ``.protonfs/include`` files.
+
+        :param repo_root: Root of the repo being synced.
+        :returns: A matcher reflecting the repo's current pattern files; an absent file
+            is treated as containing no patterns.
+
+        .. seealso:: :func:`init_ignore`, :func:`init_include` to create default files.
+        """
         path = ignore_path(repo_root)
         patterns = path.read_text().splitlines() if path.exists() else []
         include_file = include_path(repo_root)

@@ -1,9 +1,8 @@
 Command Reference
 ==================
 
-.. contents:: Contents
-   :local:
-   :depth: 2
+.. Page contents are rendered by furo's right-hand sidebar; an explicit
+.. `.. contents::` directive collides with it (furo TOC JS error), so it is omitted.
 
 Every ``protonfs`` command, with its synopsis, arguments/options, what it actually
 does, and worked examples. This page describes *behavior*; for the frozen contract

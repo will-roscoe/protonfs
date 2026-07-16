@@ -1,9 +1,8 @@
 Stability Promise (M4.1)
 =========================
 
-.. contents:: Contents
-   :local:
-   :depth: 1
+.. Page contents are rendered by furo's right-hand sidebar; an explicit
+.. `.. contents::` directive collides with it (furo TOC JS error), so it is omitted.
 
 This page freezes the ``protonfs`` command-line surface as of 1.0: every command,
 option/argument name, exit code, config file location, config key, and environment

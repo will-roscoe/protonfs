@@ -1,3 +1,4 @@
+"""``protonfs push``: upload local-only/changed files to Drive, creating remote dirs."""
 from __future__ import annotations
 
 import datetime
@@ -70,6 +71,15 @@ def ensure_remote_root(ctx: RepoContext) -> None:
 
 
 def _ensure_remote_dir(ctx: RepoContext, remote_dir: str) -> None:
+    """Create every missing intermediate Drive folder from ``remote_root`` to ``remote_dir``.
+
+    Walks the path segment by segment, creating each; an "already exists" error is
+    ignored (a genuine failure surfaces on the subsequent upload). No-op when
+    ``remote_dir`` is outside ``remote_root`` or is the root itself.
+
+    :param ctx: the loaded repo context.
+    :param remote_dir: absolute Drive directory the upload targets.
+    """
     root = ctx.config.remote_root.rstrip("/")
     if not remote_dir.startswith(root):
         return
@@ -91,6 +101,23 @@ def push(
     resolve: str | None,
     dry_run: bool,
 ) -> TransferResult:
+    """Upload local-only and locally-changed files to Drive.
+
+    Scans the tree, classifies each file against the index, and uploads everything
+    local-only or changed, creating any missing remote directories first. On success
+    the index is updated to reflect the new synced state.
+
+    :param ctx: the loaded repo context.
+    :param subpath: repo-root-relative subtree to push, or ``None`` for everything.
+    :param resolve: conflict policy ``merge`` | ``keep-both`` | ``replace`` | ``skip``
+        for files that diverged on both sides, or ``None`` to surface them unresolved.
+    :param dry_run: when true, report what would upload without transferring or
+        persisting anything.
+    :returns: a :class:`~protonfs.drive.TransferResult` of what was uploaded/skipped.
+    :raises protonfs.drive.DriveError: on a Drive or lock failure.
+
+    .. seealso:: :func:`protonfs.commands.pull.pull` for the download direction.
+    """
     ignore = IgnoreMatcher.from_file(ctx.root)
     scan_root = Path(subpath) if subpath else Path(".")
     local = scan(ctx.root, scan_root, ignore, ctx.index, low_io=ctx.config.defaults.low_io)

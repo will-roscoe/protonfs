@@ -1,9 +1,8 @@
 Syncing across machines
 =======================
 
-.. contents:: Contents
-   :local:
-   :depth: 1
+.. Page contents are rendered by furo's right-hand sidebar; an explicit
+.. `.. contents::` directive collides with it (furo TOC JS error), so it is omitted.
 
 protonfs is designed so several machines can sync the same directory tree to the
 same Proton Drive location. This page describes that workflow and the pitfalls

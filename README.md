@@ -17,31 +17,50 @@
 [![](https://raw.githubusercontent.com/will-roscoe/protonfs/main/.github/badges/build-darwin-arm64.svg)](https://github.com/will-roscoe/protonfs/actions/workflows/ci.yml)
 
 
-Sync a local directory tree with [Proton Drive](https://proton.me/drive), via
-the official [Proton Drive CLI](https://github.com/ProtonDriveApps/sdk/tree/main/cli),
-with conflict-aware push/pull and a local sync manifest.
+<!-- SYNC:overview START - generated from docs/_shared/overview.rst, do not edit here -->
 
-Originally built to replace git-lfs as the storage layer for large,
-write-once simulation output — data that doesn't need version history, just
-somewhere durable to live and a way to fetch it back on demand.
+Sync a local directory tree with [Proton Drive](https://proton.me/drive), via the official [Proton Drive CLI](https://github.com/ProtonDriveApps/sdk/tree/main/cli), with conflict-aware push/pull and a local sync manifest.
 
-The command surface (`setup`, `status`, `ls`, `push`, `pull`, `rm`, `restore`,
-`refresh`, `install-drive`, `auth`) is implemented — see `src/protonfs/cli.py`.
+Originally built to replace git-lfs as the storage layer for large, write-once simulation output -- data that does not need version history, just somewhere durable to live and a way to fetch it back on demand.
 
-## Requirements
+### Why protonfs
+
+- **Conflict-aware push/pull** over a local sync manifest (`.protonfs/index.json`), so each machine knows what it has, what the remote has, and what diverged.
+- **Verify-before-delete offload** -- reclaim local disk space only for files proven byte-for-byte present on Drive (via Proton's plaintext size/digest, not the encrypted size).
+- **Headless-first**: a keyring/session-bus bootstrap and a `doctor` that diagnoses and repairs the Secret Service, so it works over SSH with no desktop.
+- **Durable by design**: atomic index writes, an advisory repo lock, resumable refresh under API throttling, and SHA-512-pinned proton-drive binaries.
+- **A frozen 1.0 command surface**: every command, option, exit code, and config key is a documented, stable contract.
+
+### Requirements
 
 - Python >= 3.9
-- The [`proton-drive`](https://proton.me/download/drive/cli/index.html) CLI
-  binary — install it with `protonfs install-drive` (below), or supply your own
-  on `PATH` / via `PROTONFS_DRIVE_BIN`.
+- The `proton-drive` CLI binary -- install it with `protonfs install-drive`, or supply your own on `PATH` / via `PROTONFS_DRIVE_BIN`.
 
-## Install
+### Install
 
 ```bash
 pip install protonfs
 protonfs install-drive     # downloads + SHA-512-verifies the official proton-drive binary
 protonfs auth login        # opens a URL to authenticate (passthrough to proton-drive)
 ```
+
+### Quickstart
+
+```bash
+cd ~/my-project
+protonfs setup             # init .protonfs/, prompt for the Drive path to sync into
+protonfs push --dry-run    # preview what would upload (changes nothing)
+protonfs push              # upload local files to Drive
+protonfs status            # confirm everything is in sync (exit 0 == clean)
+```
+
+On a headless server, run `protonfs doctor --fix` before `auth login` to prepare the keyring first.
+
+<!-- SYNC:overview END -->
+
+More: **[full documentation](https://will-roscoe.github.io/protonfs)** ·
+[task guide](https://will-roscoe.github.io/protonfs/getting-started/guide.html) ·
+[command reference](https://will-roscoe.github.io/protonfs/reference/index.html).
 
 `install-drive` detects your platform (linux-x64/arm64, macOS x64/arm64 — all
 checksum-pinned), requires AVX2 for the linux-x64 prebuilt (with an instructive

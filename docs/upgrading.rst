@@ -1,9 +1,8 @@
 Upgrading
 ==========
 
-.. contents:: Contents
-   :local:
-   :depth: 1
+.. Page contents are rendered by furo's right-hand sidebar; an explicit
+.. `.. contents::` directive collides with it (furo TOC JS error), so it is omitted.
 
 Three things can be upgraded, and they upgrade differently: **protonfs itself**
 (pip), the **proton-drive CLI binary** it drives (``protonfs upgrade``), and a

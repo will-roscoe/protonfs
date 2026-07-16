@@ -45,6 +45,15 @@ ALL_MANAGED_FILES = TRACKED_CONTROL_FILES + LOCAL_ONLY_FILES
 
 @dataclass
 class DeinitResult:
+    """Outcome of a :func:`run_deinit` teardown.
+
+    :ivar removed: the ``.protonfs/`` files actually removed.
+    :ivar dir_removed: whether the now-empty ``.protonfs/`` directory itself was removed.
+    :ivar in_git_repo: whether ``root`` is inside a git work tree (affects the printed
+        follow-up guidance).
+    :ivar tracked_removed: basenames of removed files that were git-tracked control files.
+    """
+
     removed: list[Path] = field(default_factory=list)
     dir_removed: bool = False
     in_git_repo: bool = False
@@ -57,6 +66,11 @@ def is_deinit_target(root: Path) -> bool:
 
 
 def ensure_deinit_target(root: Path) -> None:
+    """Raise unless ``root`` is a protonfs root that :func:`run_deinit` can tear down.
+
+    :param root: the directory to validate.
+    :raises click.ClickException: when ``root`` has no ``.protonfs/config.json``.
+    """
     if not is_deinit_target(root):
         raise click.ClickException(
             f"protonfs is not set up in {root} (no .protonfs/config.json found) -- "
@@ -65,6 +79,11 @@ def ensure_deinit_target(root: Path) -> None:
 
 
 def _is_inside_git_repo(root: Path) -> bool:
+    """Return whether ``root`` sits inside a git work tree (via ``git rev-parse``).
+
+    :param root: the directory to test.
+    :returns: ``True`` if ``git`` reports it is inside a work tree.
+    """
     result = subprocess.run(
         ["git", "-C", str(root), "rev-parse", "--is-inside-work-tree"],
         capture_output=True,
@@ -80,6 +99,24 @@ def plan_deinit(root: Path) -> list[Path]:
 
 
 def run_deinit(root: Path, dry_run: bool = False, yes: bool = False) -> DeinitResult:
+    """Remove protonfs's ``.protonfs/`` bookkeeping from ``root`` after confirmation.
+
+    Removes only protonfs's own control/state files (config, index, refresh state,
+    ignore/include, control ``.gitattributes``/``.gitignore``) and, if it ends up
+    empty, the ``.protonfs/`` directory. **Never** touches synced payload files,
+    local or remote. When inside a git repo it prints (but does not run) the git
+    steps to stage the deletions.
+
+    :param root: the protonfs root to tear down.
+    :param dry_run: when true, print the plan and change nothing.
+    :param yes: skip the interactive confirmation prompt.
+    :returns: a :class:`DeinitResult` describing what was removed.
+    :raises click.ClickException: when ``root`` is not a protonfs root, or the user
+        declines the confirmation prompt.
+
+    .. warning:: This deletes protonfs bookkeeping only. Your synced files stay put
+        on Drive and on disk; deinit is the inverse of ``setup``, not of ``push``.
+    """
     ensure_deinit_target(root)
     protonfs_dir = config_dir(root)
     to_remove = plan_deinit(root)

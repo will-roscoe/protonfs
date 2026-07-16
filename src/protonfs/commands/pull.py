@@ -1,4 +1,5 @@
 # src/protonfs/commands/pull.py
+"""``protonfs pull``: download remote-only/changed files from Drive into the working tree."""
 from __future__ import annotations
 
 import datetime
@@ -127,6 +128,26 @@ def pull(
     dry_run: bool,
     refresh: bool = False,
 ) -> TransferResult:
+    """Download remote-only (and, with ``resolve``, diverged) files into the tree.
+
+    Without ``resolve``, pull is conservative: it only brings down files absent
+    locally and never overwrites a local file, so it cannot clobber a local edit. A
+    live remote walk (needed to attribute a direction to diverged files) is paid for
+    only when a ``resolve`` policy is supplied.
+
+    :param ctx: the loaded repo context.
+    :param subpath: repo-root-relative subtree to pull, or ``None`` for everything.
+    :param resolve: divergence policy ``remote`` | ``local`` | ``both``, or ``None``
+        to skip diverged files entirely.
+    :param dry_run: when true, report what would transfer without downloading or
+        persisting anything.
+    :param refresh: when true, seed the index from a remote walk first (reusing the
+        local scan already computed here) so a fresh repo has entries to pull.
+    :returns: a :class:`~protonfs.drive.TransferResult` of what was fetched/skipped.
+    :raises protonfs.drive.DriveError: on a Drive or lock failure.
+
+    .. seealso:: :func:`protonfs.commands.push.push` for the upload direction.
+    """
     ignore = IgnoreMatcher.from_file(ctx.root)
     scan_root = Path(subpath) if subpath else Path(".")
     local = scan(ctx.root, scan_root, ignore, ctx.index, low_io=ctx.config.defaults.low_io)

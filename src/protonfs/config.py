@@ -1,3 +1,17 @@
+"""Layered configuration for a protonfs repo.
+
+Four layers combine into the effective :class:`Config` for a repo, highest precedence
+first: environment variables, the per-device local file (``.protonfs/config.local.json``,
+gitignored), the per-repo shared file (``.protonfs/config.json``, committed), and the
+global user file (``~/.config/protonfs/config.json``, or ``$PROTONFS_CONFIG``). See
+:func:`load_layered_config` for the full precedence chain and :func:`init_config` for how
+a new repo's layers are populated (#21).
+
+All writes go through :func:`_atomic_write_json`, which writes a temp file in the target
+directory and ``os.replace``s it into place, so a reader (or a crash mid-write) never
+observes a torn or truncated config file.
+"""
+
 from __future__ import annotations
 
 import json
@@ -27,17 +41,44 @@ _ENV_DEFAULTS_OVERRIDES = {
 
 @dataclass
 class Defaults:
+    """Built-in fallback values for repo-configurable sync behaviour.
+
+    :ivar on_conflict: Default action when a file is in :class:`~protonfs.diff.SyncState`
+        conflict (e.g. ``"skip"``); overridable per-repo or via ``$PROTONFS_ON_CONFLICT``.
+    :ivar low_io: Default for skip-hashing-unchanged-files mode; overridable per-repo or
+        via ``$PROTONFS_LOW_IO``.
+    """
+
     on_conflict: str = "skip"
     low_io: bool = False
 
 
 @dataclass
 class Config:
+    """A fully resolved protonfs configuration for one repo.
+
+    :ivar remote_root: Path (on the Proton Drive remote) this repo syncs against.
+    :ivar device_id: Unique identifier for this device/checkout, used to distinguish
+        concurrent syncers. Empty in a :class:`Config` written to the SHARED config file
+        (``config.json``); populated in the per-device local file or a layered-merge
+        result.
+    :ivar defaults: The (possibly repo-overridden) :class:`Defaults`.
+    """
+
     remote_root: str
     device_id: str
     defaults: Defaults = field(default_factory=Defaults)
 
     def to_dict(self) -> dict:
+        """Serialize to the shared ``config.json`` layout.
+
+        :returns: A dict with ``remote_root``, and only the ``defaults`` fields that
+            differ from :class:`Defaults`' built-ins (so an unset field still lets the
+            global config layer's default take effect -- see :func:`load_layered_config`).
+            ``device_id`` is included only if non-empty; new setups leave it empty here
+            and write the real value to ``config.local.json`` instead (see
+            :func:`init_config`).
+        """
         data: dict = {"remote_root": self.remote_root}
         # Omit an empty device_id rather than persisting a placeholder (#21): new setups
         # write the real device_id to config.local.json instead -- see `init_config`.
@@ -59,6 +100,13 @@ class Config:
 
     @classmethod
     def from_dict(cls, data: dict) -> Config:
+        """Build a :class:`Config` from a raw (possibly layer-merged) dict.
+
+        :param data: Parsed JSON dict; ``device_id`` and ``defaults`` are optional and
+            fall back to ``""`` and built-in :class:`Defaults` values respectively.
+        :returns: The resulting :class:`Config`.
+        :raises KeyError: If ``remote_root`` is missing.
+        """
         defaults_data = data.get("defaults", {})
         return cls(
             remote_root=data["remote_root"],
@@ -71,10 +119,22 @@ class Config:
 
 
 def config_dir(repo_root: Path) -> Path:
+    """Return the ``.protonfs`` control directory under ``repo_root``.
+
+    :param repo_root: Root of the repo being synced.
+    :returns: ``repo_root / ".protonfs"``.
+    """
     return repo_root / CONFIG_DIR_NAME
 
 
 def config_path(repo_root: Path) -> Path:
+    """Return the path to the per-repo SHARED config file.
+
+    :param repo_root: Root of the repo being synced.
+    :returns: ``.protonfs/config.json`` under ``repo_root``; this file is committed and
+        holds ``remote_root`` + ``defaults``. See :func:`local_config_path` for the
+        gitignored per-device counterpart.
+    """
     return config_dir(repo_root) / CONFIG_FILE_NAME
 
 
@@ -103,6 +163,17 @@ def global_config_path() -> Path:
 
 
 def _atomic_write_json(path: Path, data: dict) -> None:
+    """Write ``data`` as pretty-printed, sorted-key JSON to ``path`` atomically.
+
+    :param path: Destination file; parent directories are created as needed.
+    :param data: JSON-serializable dict to write.
+
+    .. note::
+       Same atomic-write pattern as ``IndexStore.save``: write to a temp file in the same
+       directory (same filesystem, so ``os.replace`` is a true atomic rename), so a
+       reader -- or a crash mid-write -- never sees a torn or truncated config file. The
+       temp file is removed on any exception.
+    """
     # Same atomic-write pattern as IndexStore.save: write to a temp file in the same
     # directory (same filesystem, so os.replace is a true atomic rename), so a reader --
     # or a crash -- never sees a torn or truncated config file.
@@ -122,6 +193,11 @@ def _atomic_write_json(path: Path, data: dict) -> None:
 
 
 def _read_json_dict(path: Path) -> dict:
+    """Read and parse ``path`` as a JSON dict, tolerating an absent or empty file.
+
+    :param path: File to read.
+    :returns: The parsed dict, or ``{}`` if the file does not exist or is blank.
+    """
     if not path.exists():
         return {}
     text = path.read_text().strip()
@@ -146,6 +222,13 @@ def load_config(repo_root: Path) -> Config | None:
 
 
 def save_config(repo_root: Path, config: Config) -> None:
+    """Atomically write ``config`` to the per-repo SHARED config file.
+
+    :param repo_root: Root of the repo being synced.
+    :param config: Config to persist via :meth:`Config.to_dict`.
+
+    .. seealso:: :func:`config_path`, :func:`_atomic_write_json`
+    """
     _atomic_write_json(config_path(repo_root), config.to_dict())
 
 
@@ -155,6 +238,13 @@ def load_local_config(repo_root: Path) -> dict:
 
 
 def save_local_config(repo_root: Path, data: dict) -> None:
+    """Atomically write ``data`` to the per-device local config file.
+
+    :param repo_root: Root of the repo being synced.
+    :param data: Raw dict to persist (e.g. ``{"device_id": ...}``); not a :class:`Config`.
+
+    .. seealso:: :func:`local_config_path`
+    """
     _atomic_write_json(local_config_path(repo_root), data)
 
 
@@ -164,10 +254,24 @@ def load_global_config() -> dict:
 
 
 def save_global_config(data: dict) -> None:
+    """Atomically write ``data`` to the global user/machine config file.
+
+    :param data: Raw dict to persist.
+
+    .. seealso:: :func:`global_config_path`
+    """
     _atomic_write_json(global_config_path(), data)
 
 
 def _deep_merge(base: dict, override: dict) -> dict:
+    """Recursively merge ``override`` onto ``base``, ``override`` winning on conflicts.
+
+    :param base: Lower-precedence dict (not mutated).
+    :param override: Higher-precedence dict; nested dicts are merged key-by-key rather
+        than replacing the whole sub-dict, so e.g. an env-only ``defaults.low_io`` override
+        does not erase a repo-configured ``defaults.on_conflict``.
+    :returns: A new merged dict.
+    """
     merged = dict(base)
     for key, value in override.items():
         if isinstance(value, dict) and isinstance(merged.get(key), dict):
@@ -178,6 +282,12 @@ def _deep_merge(base: dict, override: dict) -> dict:
 
 
 def _parse_bool_env(value: str) -> bool:
+    """Parse an environment variable string as a boolean.
+
+    :param value: Raw env var value.
+    :returns: ``True`` for (case-insensitive, whitespace-trimmed) ``"1"``, ``"true"``,
+        ``"yes"``, or ``"on"``; ``False`` for anything else.
+    """
     return value.strip().lower() in ("1", "true", "yes", "on")
 
 

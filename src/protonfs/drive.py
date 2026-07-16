@@ -1,4 +1,13 @@
 # src/protonfs/drive.py
+"""The proton-drive CLI wrapper: :class:`DriveClient` plus its result/error types.
+
+Every Drive operation protonfs performs shells out to the pinned ``proton-drive``
+binary and parses its JSON. This module wraps that: it classifies the CLI's error
+output into typed exceptions (auth vs keyring vs throttle vs generic), rides out API
+throttling with bounded exponential backoff on both listing and transfers, and models
+remote files with their *plaintext* identity (``claimedSize``/``claimedDigests``) so
+local-vs-remote comparisons never trip over Proton's encryption-size overhead.
+"""
 from __future__ import annotations
 
 import json
@@ -47,7 +56,11 @@ TRANSFER_BACKOFF_CAP_SECONDS = float(os.environ.get("PROTONFS_TRANSFER_BACKOFF_C
 
 
 class DriveError(RuntimeError):
-    pass
+    """Base class for every proton-drive failure protonfs surfaces.
+
+    The subclasses distinguish causes that need different remedies (auth, keyring,
+    throttle); a plain ``DriveError`` is any other Drive-side failure.
+    """
 
 
 class DriveThrottleError(DriveError):
@@ -59,7 +72,11 @@ class DriveThrottleError(DriveError):
 
 
 class DriveAuthError(DriveError):
-    pass
+    """proton-drive has no usable session -- the user must ``auth login`` again.
+
+    Distinct from :class:`DriveSecretsError`: here the credentials/session are the
+    problem, not the keyring that would store them.
+    """
 
 
 class DriveSecretsError(DriveError):
@@ -73,6 +90,14 @@ class DriveSecretsError(DriveError):
 
 @dataclass
 class TransferResult:
+    """Summary of a ``filesystem upload``/``download`` batch.
+
+    :ivar transferred_items: files actually transferred.
+    :ivar skipped_items: files the CLI skipped (already in sync, or excluded).
+    :ivar failed_items: files that failed to transfer.
+    :ivar failures: the raw per-failure dicts from the CLI, for reporting.
+    """
+
     transferred_items: int
     skipped_items: int
     failed_items: int
@@ -80,6 +105,11 @@ class TransferResult:
 
     @classmethod
     def from_json(cls, data: dict) -> TransferResult:
+        """Build a :class:`TransferResult` from the CLI's JSON, defaulting missing counts to 0.
+
+        :param data: the parsed ``value`` object from a transfer invocation.
+        :returns: the populated result.
+        """
         return cls(
             transferred_items=data.get("transferredItems", 0),
             skipped_items=data.get("skippedItems", 0),
@@ -90,6 +120,19 @@ class TransferResult:
 
 @dataclass
 class RemoteEntry:
+    """One entry from a remote directory walk.
+
+    :ivar rel_path: path relative to the walk root.
+    :ivar is_dir: whether the entry is a directory.
+    :ivar size: the encrypted ``totalStorageSize`` (slightly larger than plaintext).
+    :ivar claimed_size: proton's decrypted ``claimedSize`` (files only), or ``None``.
+    :ivar sha1: proton's plaintext ``claimedDigests.sha1`` (files only), or ``None``.
+
+    .. note:: Prefer ``claimed_size``/``sha1`` over ``size`` for any local-vs-remote
+        comparison -- a local byte size matches ``claimed_size`` exactly, whereas
+        ``size`` carries Proton's encryption overhead.
+    """
+
     rel_path: str
     is_dir: bool
     size: int  # encrypted totalStorageSize; runs slightly larger than the plaintext size
@@ -117,6 +160,10 @@ class RemoteIdentity:
 
 
 def binary_path() -> str:
+    """Return the proton-drive binary to invoke: ``$PROTONFS_DRIVE_BIN`` or the default.
+
+    :returns: the configured binary path/name (``"proton-drive"`` by default).
+    """
     return os.environ.get(BINARY_ENV_VAR, DEFAULT_BINARY)
 
 
@@ -156,11 +203,21 @@ _SECRETS_ERROR_SIGNALS = (
 
 
 def _is_secrets_error(message: str) -> bool:
+    """Return whether a CLI error message signals an unreachable/sealed OS keyring.
+
+    :param message: the CLI's stderr text.
+    :returns: ``True`` if it matches a known keyring-fault signal (checked before auth).
+    """
     lowered = message.lower()
     return any(signal in lowered for signal in _SECRETS_ERROR_SIGNALS)
 
 
 def _is_auth_error(message: str) -> bool:
+    """Return whether a CLI error message signals a genuine authentication failure.
+
+    :param message: the CLI's stderr text.
+    :returns: ``True`` if it matches a known auth-failure phrase.
+    """
     lowered = message.lower()
     return any(signal in lowered for signal in _AUTH_ERROR_SIGNALS)
 
@@ -184,6 +241,11 @@ _THROTTLE_ERROR_SIGNALS = (
 
 
 def _is_throttle_error(message: str) -> bool:
+    """Return whether a CLI error message signals transient throttling (worth a retry).
+
+    :param message: the CLI's stderr text.
+    :returns: ``True`` for rate-limit/timeout signatures, ``False`` for permanent faults.
+    """
     lowered = message.lower()
     return any(signal in lowered for signal in _THROTTLE_ERROR_SIGNALS)
 
@@ -234,6 +296,15 @@ def _retry_with_backoff(
 
 
 def _classify(message: str) -> DriveError:
+    """Map a CLI error message to the most specific :class:`DriveError` subclass.
+
+    Keyring faults are checked before auth (a keyring message carries no auth wording
+    but must not send the user round the login loop).
+
+    :param message: the CLI's error text.
+    :returns: a :class:`DriveSecretsError`, :class:`DriveAuthError`, or plain
+        :class:`DriveError`.
+    """
     if _is_secrets_error(message):
         return DriveSecretsError(
             f"proton-drive could not use the OS keyring: {message}\n"
@@ -256,12 +327,26 @@ def decrypted_name(entry: dict) -> str | None:
 
 
 class DriveClient:
+    """Thin wrapper over the ``proton-drive`` CLI: run commands, parse JSON, classify errors.
+
+    Each method shells out to the binary (``$PROTONFS_DRIVE_BIN`` or ``proton-drive``),
+    lazily bootstrapping the keyring environment on first use, and translates non-zero
+    exits into typed :class:`DriveError`\\ s. Listing and transfers ride out transient
+    API throttling with bounded exponential backoff.
+    """
+
     def __init__(self, binary: str | None = None) -> None:
+        """Construct a client bound to a proton-drive binary.
+
+        :param binary: an explicit binary path, or ``None`` to resolve via
+            :func:`binary_path` (``$PROTONFS_DRIVE_BIN`` or the default).
+        """
         self._binary = binary or binary_path()
         self._env: dict[str, str] | None = None
 
     @property
     def binary(self) -> str:
+        """The proton-drive binary path/name this client invokes."""
         return self._binary
 
     def binary_available(self) -> bool:
@@ -271,6 +356,7 @@ class DriveClient:
         return shutil.which(self._binary) is not None or Path(self._binary).exists()
 
     def _binary_available(self) -> bool:
+        """Internal alias for :meth:`binary_available` (kept for call-site stability)."""
         return self.binary_available()
 
     def _drive_env(self) -> dict[str, str]:
@@ -287,6 +373,14 @@ class DriveClient:
         return self._env
 
     def _invoke(self, args: list[str], timeout: float | None = None) -> subprocess.CompletedProcess:
+        """Run ``proton-drive <args> --json`` and return the completed process.
+
+        :param args: the subcommand + arguments (``--json`` is appended).
+        :param timeout: per-call timeout in seconds, or ``None`` for none.
+        :returns: the :class:`subprocess.CompletedProcess` (caller inspects returncode).
+        :raises DriveError: when the binary is not available.
+        :raises subprocess.TimeoutExpired: when the call exceeds ``timeout``.
+        """
         if not self._binary_available():
             raise DriveError(f"proton-drive binary not found: {self._binary}")
         return subprocess.run(
@@ -298,6 +392,14 @@ class DriveClient:
         )
 
     def _run_json(self, args: list[str], timeout: float | None = None) -> dict | list:
+        """Run a JSON subcommand and return its parsed output, classifying failures.
+
+        :param args: the subcommand + arguments.
+        :param timeout: per-call timeout in seconds, or ``None``.
+        :returns: the parsed JSON (dict or list).
+        :raises DriveError: (or a subclass, via :func:`_classify`) on a non-zero exit or
+            unparseable output.
+        """
         result = self._invoke(args, timeout=timeout)
         stdout = result.stdout.strip()
         try:
@@ -310,6 +412,13 @@ class DriveClient:
         return parsed
 
     def _run_transfer(self, args: list[str], timeout: float | None = None) -> TransferResult:
+        """Run a transfer subcommand and parse its result into a :class:`TransferResult`.
+
+        :param args: the ``filesystem upload``/``download`` argv.
+        :param timeout: per-call timeout in seconds, or ``None``.
+        :returns: the parsed transfer summary.
+        :raises DriveError: (or a subclass) on a non-zero exit or unparseable output.
+        """
         result = self._invoke(args, timeout=timeout)
         stdout = result.stdout.strip()
         try:
@@ -351,6 +460,13 @@ class DriveClient:
         )
 
     def version(self) -> str | None:
+        """Return the raw ``proton-drive version`` output, or ``None`` if it can't run.
+
+        :returns: the version banner string, or ``None`` when the binary is missing or
+            exits non-zero (e.g. a keyring fault before it can answer).
+
+        .. seealso:: :meth:`drive_version` for the parsed semver used by the support matrix.
+        """
         if not self._binary_available():
             return None
         result = subprocess.run(
@@ -384,6 +500,16 @@ class DriveClient:
         return True
 
     def list(self, remote_path: str, timeout: float | None = None) -> list[dict]:
+        """List the immediate children of a remote directory (raw CLI entry dicts).
+
+        :param remote_path: the absolute Drive directory to list.
+        :param timeout: per-call timeout in seconds, or ``None``.
+        :returns: the raw ``filesystem list`` entries (empty list if not a list).
+        :raises DriveError: on a Drive failure.
+
+        .. seealso:: :meth:`list_with_backoff` for the throttle-resilient variant used
+            by the recursive walk.
+        """
         result = self._run_json(["filesystem", "list", remote_path], timeout=timeout)
         return result if isinstance(result, list) else []
 
@@ -510,6 +636,23 @@ class DriveClient:
         cap: float = TRANSFER_BACKOFF_CAP_SECONDS,
         sleep: Callable[[float], None] = time.sleep,
     ) -> TransferResult:
+        """Upload local files/folders into a remote parent, riding out throttling.
+
+        :param local_paths: local files/directories to upload.
+        :param remote_parent: the absolute Drive directory to upload into.
+        :param file_strategy: proton-drive ``-f`` conflict strategy for files, or ``None``.
+        :param folder_strategy: proton-drive ``-d`` strategy for folders, or ``None``.
+        :param timeout: per-attempt timeout (seconds).
+        :param retries: max throttle retries before giving up.
+        :param base_delay: base backoff delay (seconds), doubled each retry.
+        :param cap: maximum backoff delay (seconds).
+        :param sleep: sleep function (injectable for tests).
+        :returns: the :class:`TransferResult` summary.
+        :raises DriveThrottleError: when throttling outlasts the retry budget.
+        :raises DriveError: on a non-throttle Drive failure (raised immediately).
+
+        .. seealso:: :meth:`download` for the reverse direction.
+        """
         args = ["filesystem", "upload"]
         if file_strategy:
             args += ["-f", file_strategy]
@@ -533,6 +676,23 @@ class DriveClient:
         cap: float = TRANSFER_BACKOFF_CAP_SECONDS,
         sleep: Callable[[float], None] = time.sleep,
     ) -> TransferResult:
+        """Download remote files/folders into a local folder, riding out throttling.
+
+        :param remote_paths: absolute Drive paths to download.
+        :param local_folder: the local directory to download into.
+        :param file_strategy: proton-drive ``-f`` conflict strategy for files, or ``None``.
+        :param folder_strategy: proton-drive ``-d`` strategy for folders, or ``None``.
+        :param timeout: per-attempt timeout (seconds).
+        :param retries: max throttle retries before giving up.
+        :param base_delay: base backoff delay (seconds), doubled each retry.
+        :param cap: maximum backoff delay (seconds).
+        :param sleep: sleep function (injectable for tests).
+        :returns: the :class:`TransferResult` summary.
+        :raises DriveThrottleError: when throttling outlasts the retry budget.
+        :raises DriveError: on a non-throttle Drive failure (raised immediately).
+
+        .. seealso:: :meth:`upload` for the reverse direction.
+        """
         args = ["filesystem", "download"]
         if file_strategy:
             args += ["-f", file_strategy]
@@ -544,6 +704,14 @@ class DriveClient:
         )
 
     def trash(self, remote_paths: list[str]) -> list[dict]:
+        """Move remote nodes to the trash (recoverable via :meth:`restore`).
+
+        :param remote_paths: absolute Drive paths to trash.
+        :returns: the raw per-node CLI results.
+        :raises DriveError: on a Drive failure.
+
+        .. seealso:: :meth:`restore` (undo) and :meth:`delete` (permanent).
+        """
         result = self._run_json(["filesystem", "trash", *remote_paths])
         return result if isinstance(result, list) else []
 
@@ -605,6 +773,15 @@ class DriveClient:
         return restored
 
     def delete(self, remote_paths: list[str]) -> list[dict]:
+        """Permanently delete remote nodes (only valid for nodes already in ``/trash``).
+
+        :param remote_paths: absolute ``/trash`` paths to delete permanently.
+        :returns: the raw per-node CLI results.
+        :raises DriveError: on a Drive failure (including deleting a non-trashed node).
+
+        .. warning:: Irreversible. proton-drive only permits permanent deletion of nodes
+            that are already trashed.
+        """
         result = self._run_json(["filesystem", "delete", *remote_paths])
         return result if isinstance(result, list) else []
 
@@ -628,5 +805,13 @@ class DriveClient:
         self._run_json(["filesystem", "empty-trash"])
 
     def create_folder(self, parent_path: str, name: str) -> dict:
+        """Create a single folder ``name`` under ``parent_path`` on Drive.
+
+        :param parent_path: the absolute Drive directory to create the folder in.
+        :param name: the new folder's name.
+        :returns: the raw CLI result dict.
+        :raises DriveError: on a Drive failure (an "already exists" error surfaces here;
+            callers building nested paths catch and ignore it).
+        """
         result = self._run_json(["filesystem", "create-folder", parent_path, name])
         return result if isinstance(result, dict) else {}

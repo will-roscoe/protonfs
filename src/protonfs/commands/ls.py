@@ -1,4 +1,5 @@
 # src/protonfs/commands/ls.py
+"""``protonfs ls``: list tracked files with their sync state, or list Drive's trash."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -33,6 +34,18 @@ def render_ls(
     trash: bool,
     console: Console,
 ) -> None:
+    """Print a table of tracked files with their sync state (or a trash listing).
+
+    :param ctx: the loaded repo context.
+    :param subpath: repo-root-relative subtree to list, or ``None`` for everything.
+    :param remote: when true, cross-reference a recursive remote walk so remote-only
+        and remote-changed states are shown (otherwise state is local-vs-index only).
+    :param trash: when true, list ``/trash`` entries instead of tracked files;
+        ``subpath``/``remote`` are ignored in this mode.
+    :param console: the :class:`rich.console.Console` to render the table to.
+
+    .. seealso:: :func:`remote_rel_paths` for the remote-listing helper.
+    """
     if trash:
         entries = ctx.drive.list("/trash")
         table = Table("name", "type")
