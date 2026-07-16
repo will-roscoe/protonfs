@@ -11,6 +11,13 @@ permissions:
   pull-requests: write
   contents: write
 
+# SECURITY: issue titles/bodies and comment bodies are attacker-controlled text.
+# They must NEVER be spliced into `run:` scripts or github-script template
+# literals via `${{ }}` (that is textual substitution BEFORE parsing — code
+# injection). Every use below passes them through `env:` and reads them as
+# `"$VAR"` (shell) or `process.env.VAR` (JS). Multi-line values written to
+# GITHUB_OUTPUT use the heredoc delimiter form for the same reason.
+
 jobs:
   investigate-bug:
     if: |
@@ -45,19 +52,23 @@ jobs:
       - name: Analyze bug with Copilot
         env:
           COPILOT_GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          ISSUE_LABELS: ${{ join(github.event.issue.labels.*.name, ', ') }}
         run: |
           copilot -p "Analyze this GitHub issue and determine if it's a genuine bug that can be fixed with a patch, or if it's a feature request.
 
-          Issue #${{ github.event.issue.number }}: ${{ github.event.issue.title }}
-          
-          Description: ${{ github.event.issue.body }}
-          
-          Labels: ${{ join(github.event.issue.labels.*.name, ', ') }}
-          
+          Issue #${ISSUE_NUMBER}: ${ISSUE_TITLE}
+
+          Description: ${ISSUE_BODY}
+
+          Labels: ${ISSUE_LABELS}
+
           If it's a genuine bug, output exactly: BUG_CONFIRMED: [brief fix description]
           If it's NOT a bug, output exactly: NOT_A_BUG: [explanation]
           If unsure, output: UNCERTAIN: [clarifying questions]
-          
+
           Be conservative - only confirm bugs that would clearly benefit from a code patch." \
             --allow-tool='shell(git:*,npm:*)' \
             --no-ask-user > investigation_result.txt
@@ -67,42 +78,54 @@ jobs:
         id: parse
         run: |
           RESULT=$(cat investigation_result.txt)
-          
+
           if [[ $RESULT == BUG_CONFIRMED:* ]]; then
-            echo "is_bug=true" >> $GITHUB_OUTPUT
-            echo "fix_description=${RESULT#BUG_CONFIRMED: }" >> $GITHUB_OUTPUT
+            IS_BUG=true
+            DESCRIPTION="${RESULT#BUG_CONFIRMED: }"
           elif [[ $RESULT == NOT_A_BUG:* ]]; then
-            echo "is_bug=false" >> $GITHUB_OUTPUT
-            echo "fix_description=${RESULT#NOT_A_BUG: }" >> $GITHUB_OUTPUT
+            IS_BUG=false
+            DESCRIPTION="${RESULT#NOT_A_BUG: }"
           else
-            echo "is_bug=uncertain" >> $GITHUB_OUTPUT
-            echo "fix_description=${RESULT#UNCERTAIN: }" >> $GITHUB_OUTPUT
+            IS_BUG=uncertain
+            DESCRIPTION="${RESULT#UNCERTAIN: }"
           fi
+          echo "is_bug=$IS_BUG" >> "$GITHUB_OUTPUT"
+          # Heredoc form: DESCRIPTION derives from model output over attacker text
+          # and may span lines; a plain key=value write would let it inject outputs.
+          {
+            echo "fix_description<<PROTONFS_EOF"
+            echo "$DESCRIPTION"
+            echo "PROTONFS_EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Generate fix with Copilot (if confirmed bug)
         if: steps.parse.outputs.is_bug == 'true'
         env:
           COPILOT_GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          FIX_DESCRIPTION: ${{ steps.parse.outputs.fix_description }}
         run: |
           copilot -p "You are a skilled software engineer. Generate a minimal, focused patch to fix this bug.
 
-          Issue #${{ github.event.issue.number }}: ${{ github.event.issue.title }}
-          
-          Description: ${{ github.event.issue.body }}
-          
-          Fix strategy: ${{ steps.parse.outputs.fix_description }}
-          
+          Issue #${ISSUE_NUMBER}: ${ISSUE_TITLE}
+
+          Description: ${ISSUE_BODY}
+
+          Fix strategy: ${FIX_DESCRIPTION}
+
           Tasks:
           1. Examine the repository code
           2. Identify the files that need changes
           3. Create a focused fix (minimal changes, no refactoring)
           4. Output the exact files and changes needed
-          
+
           Format your response as:
           FILES_TO_CHANGE:
           - file1.py: [description of changes]
           - file2.py: [description of changes]
-          
+
           Then provide the actual code changes." \
             --allow-tool='shell(git:*,npm:*)' \
             --no-ask-user > fix_plan.txt
@@ -111,42 +134,48 @@ jobs:
       - name: Update issue (bug confirmed)
         if: steps.parse.outputs.is_bug == 'true'
         uses: actions/github-script@v7
+        env:
+          FIX_DESCRIPTION: ${{ steps.parse.outputs.fix_description }}
         with:
           script: |
             github.rest.issues.createComment({
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: `✅ **Bug Confirmed!**\n\n${{ steps.parse.outputs.fix_description }}\n\nI've identified the fix. You can:\n- Review the fix strategy above\n- Comment with \\\`/investigate [alternative approach]\\\` to suggest a different fix\n- Create a PR based on the fix plan`
+              body: `✅ **Bug Confirmed!**\n\n${process.env.FIX_DESCRIPTION}\n\nI've identified the fix. You can:\n- Review the fix strategy above\n- Comment with \`/investigate [alternative approach]\` to suggest a different fix\n- Create a PR based on the fix plan`
             })
 
       - name: Update issue (not a bug)
         if: steps.parse.outputs.is_bug == 'false'
         uses: actions/github-script@v7
+        env:
+          FIX_DESCRIPTION: ${{ steps.parse.outputs.fix_description }}
         with:
           script: |
             github.rest.issues.createComment({
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: `⚠️ **Not a Bug (or Requires More Info)**\n\n${{ steps.parse.outputs.fix_description }}\n\nThis doesn't appear to be a code bug. Consider:\n- Reframing as a feature request\n- Providing more reproduction steps\n- Checking documentation`
+              body: `⚠️ **Not a Bug (or Requires More Info)**\n\n${process.env.FIX_DESCRIPTION}\n\nThis doesn't appear to be a code bug. Consider:\n- Reframing as a feature request\n- Providing more reproduction steps\n- Checking documentation`
             })
 
       - name: Update issue (uncertain)
         if: steps.parse.outputs.is_bug == 'uncertain'
         uses: actions/github-script@v7
+        env:
+          FIX_DESCRIPTION: ${{ steps.parse.outputs.fix_description }}
         with:
           script: |
             github.rest.issues.createComment({
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: `❓ **Need Clarification**\n\n${{ steps.parse.outputs.fix_description }}\n\nPlease provide more details. After you respond, I can:\n- Re-analyze with more context\n- Propose a fix if confirmed as a bug`
+              body: `❓ **Need Clarification**\n\n${process.env.FIX_DESCRIPTION}\n\nPlease provide more details. After you respond, I can:\n- Re-analyze with more context\n- Propose a fix if confirmed as a bug`
             })
 
   handle-investigate-comment:
     if: |
-      github.event_name == 'issue_comment' && 
+      github.event_name == 'issue_comment' &&
       contains(github.event.comment.body, '/investigate') &&
       !github.event.issue.pull_request
     runs-on: ubuntu-latest
@@ -177,24 +206,33 @@ jobs:
 
       - name: Extract suggested approach
         id: extract
+        env:
+          COMMENT_BODY: ${{ github.event.comment.body }}
         run: |
-          COMMENT="${{ github.event.comment.body }}"
-          APPROACH=$(echo "$COMMENT" | sed 's|/investigate||g' | xargs)
-          echo "approach=$APPROACH" >> $GITHUB_OUTPUT
+          APPROACH=$(echo "$COMMENT_BODY" | sed 's|/investigate||g' | xargs)
+          {
+            echo "approach<<PROTONFS_EOF"
+            echo "$APPROACH"
+            echo "PROTONFS_EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Generate alternative fix
         if: steps.extract.outputs.approach != ''
         env:
           COPILOT_GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          APPROACH: ${{ steps.extract.outputs.approach }}
         run: |
           copilot -p "A user has suggested an alternative fix approach for this bug.
 
-          Issue #${{ github.event.issue.number }}: ${{ github.event.issue.title }}
-          
-          Description: ${{ github.event.issue.body }}
-          
-          User's suggested approach: ${{ steps.extract.outputs.approach }}
-          
+          Issue #${ISSUE_NUMBER}: ${ISSUE_TITLE}
+
+          Description: ${ISSUE_BODY}
+
+          User's suggested approach: ${APPROACH}
+
           Tasks:
           1. Evaluate the user's suggestion
           2. Generate a fix using their approach
@@ -207,11 +245,13 @@ jobs:
       - name: Comment with alternative fix
         if: steps.extract.outputs.approach != ''
         uses: actions/github-script@v7
+        env:
+          APPROACH: ${{ steps.extract.outputs.approach }}
         with:
           script: |
             github.rest.issues.createComment({
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: `✨ **Alternative Approach Analyzed**\n\nI've analyzed your suggestion:\n> ${{ steps.extract.outputs.approach }}\n\nReview the alternative fix plan above and create a PR if it looks good!`
+              body: `✨ **Alternative Approach Analyzed**\n\nI've analyzed your suggestion:\n> ${process.env.APPROACH}\n\nReview the alternative fix plan above and create a PR if it looks good!`
             })

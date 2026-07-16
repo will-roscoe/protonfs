@@ -19,6 +19,12 @@ on:
         type: string
         default: ""
 
+# Least privilege by default: build only reads the repo. The publish job carries
+# id-token: write (PyPI trusted publishing) and the release job contents: write,
+# each at job level.
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
