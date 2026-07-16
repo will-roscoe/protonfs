@@ -14,6 +14,7 @@ Run locally with:
 from __future__ import annotations
 
 import os
+import time
 import uuid
 from pathlib import Path
 
@@ -126,7 +127,23 @@ def test_live_trash_then_restore_roundtrip(tmp_path: Path, live_dir) -> None:
     assert name not in [e.rel_path for e in client.walk(remote_dir) if not e.is_dir]
 
     client.restore([remote_file])
-    assert name in [e.rel_path for e in client.walk(remote_dir) if not e.is_dir]
+    # Restore is eventually consistent: the API reports success seconds before the
+    # node is re-linked into its parent's listing (measured ~4-15s, longer under
+    # load; a v1.0.0 release-gate run failed asserting at t=0 while the file had
+    # verifiably left /trash). Poll with a bounded deadline instead of asserting
+    # immediately -- the trash assert above stays immediate because unlinking has
+    # never been observed to lag.
+    deadline = time.monotonic() + 90
+    while True:
+        names = [e.rel_path for e in client.walk(remote_dir) if not e.is_dir]
+        if name in names:
+            break
+        if time.monotonic() > deadline:
+            raise AssertionError(
+                f"{name} not visible in {remote_dir} within 90s of restore "
+                f"returning (listing: {names})"
+            )
+        time.sleep(5)
 
 
 def test_live_trash_list_shows_trashed_item(tmp_path: Path, live_dir) -> None:
