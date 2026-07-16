@@ -37,10 +37,12 @@ protonfs install-drive     # downloads + SHA-512-verifies the official proton-dr
 protonfs auth login        # opens a URL to authenticate (passthrough to proton-drive)
 ```
 
-`install-drive` detects your platform, requires AVX2 for the linux-x64 prebuilt
-(with an instructive fallback otherwise), and never installs a binary whose
-SHA-512 does not match the pinned checksum. Override the version with
-`PROTONFS_DRIVE_VERSION` and the expected checksum with `PROTONFS_DRIVE_SHA512`.
+`install-drive` detects your platform (linux-x64/arm64, macOS x64/arm64 — all
+checksum-pinned), requires AVX2 for the linux-x64 prebuilt (with an instructive
+fallback otherwise), and never installs a binary whose SHA-512 does not match
+the pinned checksum. Override the version with `PROTONFS_DRIVE_VERSION` and the
+expected checksum with `PROTONFS_DRIVE_SHA512`. On Windows, use WSL — native
+Windows is out of scope for 1.0.
 
 ## Headless Linux (SSH, no desktop)
 

@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from protonfs.install import (
+    DEFAULT_VERSION,
     InstallError,
     Platform,
     binary_url,
@@ -60,25 +61,37 @@ def test_detect_platform_darwin_arm64() -> None:
     assert p.slug == "darwin-arm64"
 
 
-def test_detect_platform_windows_raises() -> None:
-    with pytest.raises(InstallError, match="unsupported OS"):
+def test_detect_platform_windows_raises_with_wsl_hint() -> None:
+    # Issue #9: native Windows is out of scope for 1.0; the error must point at WSL.
+    with pytest.raises(InstallError, match="WSL"):
         detect_platform(system="Windows", machine="AMD64")
 
 
-def test_detect_platform_linux_arm_raises() -> None:
-    with pytest.raises(InstallError, match="linux-arm64"):
-        detect_platform(system="Linux", machine="aarch64")
+def test_detect_platform_linux_arm64() -> None:
+    # Upstream publishes linux-arm64 as of 0.5.0 — it is a supported slug now.
+    p = detect_platform(system="Linux", machine="aarch64")
+    assert p == Platform(slug="linux-arm64", os_name="linux", arch="arm64")
 
 
 # --- url / checksum -------------------------------------------------------
 
 def test_binary_url() -> None:
-    assert binary_url("0.4.6", "linux-x64") == (
-        "https://proton.me/download/drive/cli/0.4.6/linux-x64/proton-drive"
+    assert binary_url("0.5.0", "linux-x64") == (
+        "https://proton.me/download/drive/cli/0.5.0/linux-x64/proton-drive"
     )
 
 
-def test_pinned_sha512_linux_x64_is_pinned() -> None:
+@pytest.mark.parametrize(
+    "slug", ["linux-x64", "linux-arm64", "darwin-x64", "darwin-arm64"]
+)
+def test_pinned_sha512_default_version_all_platforms_pinned(slug: str) -> None:
+    # Every supported platform must ship pinned at DEFAULT_VERSION (issues #8, #10).
+    sha = pinned_sha512(DEFAULT_VERSION, slug)
+    assert sha is not None and len(sha) == 128
+
+
+def test_pinned_sha512_previous_version_kept_verifiable() -> None:
+    # PROTONFS_DRIVE_VERSION downgrades to a previously pinned release stay verified.
     sha = pinned_sha512("0.4.6", "linux-x64")
     assert sha is not None and len(sha) == 128
 
@@ -88,9 +101,9 @@ def test_pinned_sha512_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
     assert pinned_sha512("0.4.6", "darwin-x64") == "abc123"
 
 
-def test_pinned_sha512_unpinned_platform_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_pinned_sha512_unpinned_version_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("PROTONFS_DRIVE_SHA512", raising=False)
-    assert pinned_sha512("0.4.6", "darwin-arm64") is None
+    assert pinned_sha512("9.9.9", "darwin-arm64") is None
 
 
 # --- diagnosis ------------------------------------------------------------
@@ -164,13 +177,31 @@ def test_install_drive_no_avx2_raises_instructive() -> None:
         install_drive(plat=plat, cpuinfo_text="flags : sse4_2")
 
 
-def test_install_drive_unpinned_platform_without_override_raises(
+def test_install_drive_unpinned_version_without_override_raises(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("PROTONFS_DRIVE_SHA512", raising=False)
     plat = Platform("darwin-arm64", "darwin", "arm64")
     with pytest.raises(InstallError, match="no pinned SHA-512"):
-        install_drive(plat=plat)
+        install_drive(version="9.9.9", plat=plat)
+
+
+def test_install_drive_linux_arm64_skips_avx2_gate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # AVX2 is an x86 flag; arm cpuinfo never lists it. The gate must not block arm64.
+    data = b"arm64-binary"
+    sha = hashlib.sha512(data).hexdigest()
+    monkeypatch.setenv("PROTONFS_DRIVE_SHA512", sha)
+    plat = Platform("linux-arm64", "linux", "arm64")
+
+    result = install_drive(
+        plat=plat,
+        dest_dir=tmp_path,
+        cpuinfo_text="Features\t: fp asimd evtstrm aes\n",  # no avx2, ever
+        downloader=_opener_for(data),
+    )
+    assert result.path.read_bytes() == data
 
 
 def test_install_drive_happy_path_installs_and_sets_executable(

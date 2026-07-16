@@ -29,17 +29,45 @@ import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 
-DEFAULT_VERSION = "0.4.6"
+DEFAULT_VERSION = "0.5.0"
 VERSION_ENV = "PROTONFS_DRIVE_VERSION"
 SHA512_ENV = "PROTONFS_DRIVE_SHA512"
 DOWNLOAD_BASE = "https://proton.me/download/drive/cli"
+# Official upstream release manifest: lists every published platform build of the
+# current release with its SHA-512. This is where re-pins come from — see
+# .github/scripts/repin_proton_drive.py for the tracking/re-pin policy.
+VERSION_MANIFEST_URL = f"{DOWNLOAD_BASE}/version.json"
 DOWNLOAD_TIMEOUT = 60  # seconds; avoids a stalled connection hanging the installer
 
-# Pinned SHA-512 of the official prebuilt, keyed by (version, slug). linux-x64 is
-# verified against the released 0.4.6 binary. darwin checksums are added when a
-# maintainer pins them from the official downloads; until then those platforms
-# require an explicit PROTONFS_DRIVE_SHA512 override (we never install unverified).
+# Pinned SHA-512 of the official prebuilt, keyed by (version, slug).
+#
+# Re-pin policy (issue #10): when bumping DEFAULT_VERSION, run
+# `python .github/scripts/repin_proton_drive.py` — it fetches the upstream
+# version.json manifest, independently downloads each supported platform binary,
+# verifies the manifest checksum against the downloaded bytes, and prints the new
+# table entries. Pins are only ever added from that double-verification; a version
+# without a pin for the running platform requires an explicit PROTONFS_DRIVE_SHA512
+# override (we never install unverified). Older pinned versions stay in the table so
+# PROTONFS_DRIVE_VERSION downgrades remain verifiable.
 PINNED_SHA512 = {
+    # 0.5.0 (released 2026-07-13): manifest checksums independently re-verified by
+    # downloading each binary and hashing it (2026-07-16).
+    ("0.5.0", "linux-x64"): (
+        "d85edbc57412c92a9705b70a8d3a5c66ad933331554d6b922b912d6df29b4e5e"
+        "9b0d7a940a594927dd4788e1f8db86d5e9a23f084f07dbd5327f7a9e51d61272"
+    ),
+    ("0.5.0", "linux-arm64"): (
+        "a679e1e09d29413452a6ac24664dbd249bcafa1fb208e24b9c04133cd97488bf"
+        "686d350cfcd2522742ac69de428142ac65cb56eb11f25260d3b4ffaa57d39054"
+    ),
+    ("0.5.0", "darwin-x64"): (
+        "51b1e402f6a8ffe11f6a046e7ada9f402d8d891bc75e832b6547f42bf465e346"
+        "49b6ea0a99f745848bc4ab0b272bbd6d19a2f6120eaeaa1b2140ca27a412ec34"
+    ),
+    ("0.5.0", "darwin-arm64"): (
+        "b8db6b5c6b01b6643ff77f1565ae88668097ecfd3558f4230da60e31df64e91a"
+        "009c7801f3d72fc4ea58b51b9def817595ecaa636213881922fe332107799239"
+    ),
     ("0.4.6", "linux-x64"): (
         "d187409932742e6fdc6aae2995998f4c89ea51999283395bc8d0bdc5343a79d3"
         "1bf5a485d5af9adf3b7909fc92f2d2ef0b133edc4939d5faf1d096eb744425bb"
@@ -84,19 +112,19 @@ def detect_platform(system: str | None = None, machine: str | None = None) -> Pl
             f"published for x86_64 and arm64 only."
         )
     if system == "linux":
-        if arch != "x64":
-            raise InstallError(
-                f"no official proton-drive prebuilt for linux-{arch}; only linux-x64 is "
-                f"published. Build from source or run on an x86_64 host."
-            )
-        slug = "linux-x64"
+        slug = f"linux-{arch}"
         os_name = "linux"
     elif system == "darwin":
         slug = f"darwin-{arch}"
         os_name = "darwin"
     else:
+        # Native Windows is out of scope for 1.0 (issue #9): upstream publishes
+        # windows-x64/arm64 prebuilts, but protonfs itself (Secret Service keyring,
+        # POSIX paths) is untested there. WSL is the supported Windows path — inside
+        # WSL this branch is never reached (platform.system() == "Linux").
         raise InstallError(
-            f"unsupported OS '{system}'. proton-drive prebuilts exist for linux and macOS."
+            f"unsupported OS '{system}'. protonfs supports linux and macOS natively; "
+            f"on Windows, run inside WSL (which installs the linux-x64 build)."
         )
     return Platform(slug=slug, os_name=os_name, arch=arch)
 
@@ -249,7 +277,9 @@ def install_drive(
     version = resolve_version(version)
     plat = plat or detect_platform()
 
-    if plat.os_name == "linux" and not has_avx2(cpuinfo_text):
+    # AVX2 is an x86-only requirement of the Bun-compiled linux-x64 prebuilt; the
+    # arm64 build has no equivalent gate (and arm cpuinfo never lists 'avx2').
+    if plat.slug == "linux-x64" and not has_avx2(cpuinfo_text):
         raise InstallError(_no_avx2_message())
 
     expected = pinned_sha512(version, plat.slug)
