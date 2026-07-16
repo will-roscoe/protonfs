@@ -12,4 +12,5 @@ and a local sync manifest.
    reference/index
    guarantees
    stability
+   upgrading
    api/index

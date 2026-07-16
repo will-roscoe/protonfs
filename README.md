@@ -143,7 +143,10 @@ separate first-class file rather than only being achievable via `ignore`.
 
 ## Releasing (maintainers)
 
-See [CHANGELOG.md](CHANGELOG.md) for release history and upgrade notes.
+See [CHANGELOG.md](CHANGELOG.md) for release history and upgrade notes. To
+upgrade an installation: `pip install --upgrade protonfs`, then `protonfs
+upgrade` to bring the proton-drive binary and any repo state current (docs:
+[Upgrading](https://will-roscoe.github.io/protonfs/upgrading.html)).
 
 Merges to `main` auto-tag a release, but only after the full test matrix passes
 with an 80% coverage floor on the exact commit being tagged (`auto-release.yml`

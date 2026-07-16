@@ -283,5 +283,6 @@ of it, exiting ``0`` when fully current and ``1`` when an upgrade is available.
 See also
 ---------
 * :doc:`getting-started/index` for installation and first-run setup.
+* :doc:`upgrading` for the upgrade story built on this support matrix.
 * :doc:`getting-started/syncing` for the push/pull/status workflow this contract
   supports.
