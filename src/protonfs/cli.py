@@ -166,6 +166,57 @@ def pull(path: str | None, resolve: str | None, dry_run: bool, refresh: bool) ->
 
 
 @main.command()
+@click.argument("path", required=False)
+@click.option(
+    "--no-verify",
+    is_flag=True,
+    help="Skip re-verifying files against the remote before deleting local bytes (unsafe).",
+)
+@click.option("--dry-run", is_flag=True, help="Preview what would be offloaded; delete nothing.")
+@click.option("--yes", is_flag=True, help="Skip confirmation prompt.")
+@_drive_error_boundary
+def offload(path: str | None, no_verify: bool, dry_run: bool, yes: bool) -> None:
+    """Delete local bytes of protonfs-tracked files confirmed present on Drive.
+
+    The inverse of `pull`: reclaims local disk space while leaving the Drive copy
+    intact. Reversible -- a later `pull` restores the file in full. By default every
+    file is re-verified against a live remote listing (not just the index) before its
+    local copy is deleted; pass --no-verify to skip that check.
+    """
+    from protonfs.commands.offload import offload as offload_files
+    from protonfs.context import load_context
+    from protonfs.locking import repo_lock
+
+    ctx = load_context()
+    verify = not no_verify
+
+    if not yes and not dry_run:
+        click.confirm(
+            f"Delete local copies of tracked files under '{path or '.'}' "
+            f"(Drive copies are kept)?",
+            abort=True,
+        )
+
+    with repo_lock(ctx.root):
+        result = offload_files(ctx, path, verify=verify, dry_run=dry_run)
+
+    verb = "would offload" if dry_run else "offloaded"
+    click.echo(
+        f"{verb}={result.offloaded} bytes_reclaimed={result.bytes_reclaimed} "
+        f"skipped_unverified={result.skipped_unverified}"
+    )
+    for p in result.offloaded_paths:
+        click.echo(f"  {'WOULD OFFLOAD' if dry_run else 'offloaded'} {p}")
+    if result.skipped_unverified:
+        click.echo(
+            f"  -> {result.skipped_unverified} file(s) could not be confirmed on the "
+            "remote and were left untouched locally:"
+        )
+        for p in result.skipped_paths:
+            click.echo(f"      {p}")
+
+
+@main.command()
 @click.argument("path")
 @click.option("-r", "--recursive", is_flag=True)
 @click.option("-f", "--force", is_flag=True, help="Permanently delete (trash, then delete).")
