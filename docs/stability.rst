@@ -133,6 +133,14 @@ flag/argument name; these names, not just their presence, are frozen.
        ``--version``, ``--skip-keyring``.
      - ``0`` success (installed, keyring warnings are non-fatal); ``1`` install
        failure or unusable keyring; ``2`` usage error.
+   * - ``upgrade``
+     - Upgrade proton-drive to this release's highest supported version (verify-first,
+       atomic swap; never past ``highest_supported()`` -- a newer upstream is reported,
+       not installed) and, inside a protonfs root, run pending repo-state migrations.
+       Options: ``--check`` (preview, change nothing), ``--drive-only``, ``--repo-only``.
+     - ``0`` success, or with ``--check``: fully current; ``1`` failure, or with
+       ``--check``: an upgrade/migration is available; ``2`` usage error (including
+       ``--drive-only`` with ``--repo-only``).
    * - ``doctor``
      - Check this host can run proton-drive (binary, session bus, OS keyring).
        Option: ``--fix``.
@@ -265,6 +273,12 @@ new version's checksums for every supported platform, adds it to
 ``SUPPORTED_DRIVE_VERSIONS``, and cuts a new protonfs release with that as its
 ``highest_supported()``. This keeps the installed ``proton-drive`` version always
 within the range a given protonfs release was built and tested against.
+
+``protonfs upgrade`` is the user-facing voice of this policy: it upgrades an
+outdated binary to ``highest_supported()`` (SHA-512-verified before an atomic
+swap), reports -- without installing -- when upstream's Stable release is ahead,
+and runs pending repo-state migrations. ``protonfs upgrade --check`` previews all
+of it, exiting ``0`` when fully current and ``1`` when an upgrade is available.
 
 See also
 ---------
