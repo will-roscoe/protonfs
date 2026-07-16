@@ -10,6 +10,7 @@ Run locally with:
     PROTONFS_TEST_REMOTE=/my-files/test \
     pytest tests/test_live_integration.py -v
 """
+
 from __future__ import annotations
 
 import os
@@ -61,6 +62,53 @@ def test_live_upload_walk_download_roundtrip(tmp_path: Path, live_dir) -> None:
     dest.mkdir()
     client.download([f"{remote_dir}/sample.bin"], dest)
     assert (dest / "sample.bin").read_bytes() == payload
+
+
+def test_live_uid_addressed_permanent_delete_still_unsupported(tmp_path: Path, live_dir) -> None:
+    """Probe for issue #6: uid-addressed permanent delete of a trashed node.
+
+    protonfs's ``rm -f`` refuses to permanently delete when two trashed items share
+    a basename, because proton-drive can only address a trashed node for deletion by
+    ``/trash/<basename>`` -- not by its stable UID. If that ever changes, ``rm -f``
+    could delete the correct node unambiguously and the duplicate-basename guard in
+    ``commands/rm.py`` could be lifted.
+
+    This test asserts the CURRENT (blocked) behavior. When a future proton-drive
+    starts accepting UID addressing for permanent delete, the delete below will
+    succeed instead of raising, this assertion will flip, and the test will FAIL
+    LOUDLY -- signalling that the D2.2 stance in ``commands/rm.py`` should be revisited.
+    """
+    from protonfs.drive import DriveError, decrypted_name
+
+    client, remote_dir = live_dir
+    src = tmp_path / "uid_probe.bin"
+    src.write_bytes(b"uid-probe-" + uuid.uuid4().hex.encode())
+    client.upload([src], remote_dir)
+
+    entry = next(e for e in client.list(remote_dir) if e.get("type") != "folder")
+    uid = entry["uid"]
+
+    remote_file = f"{remote_dir}/uid_probe.bin"
+    client.trash([remote_file])
+
+    # Both UID addressing forms must still be rejected. If either permanently deletes
+    # the trashed node, UID addressing now works -> revisit commands/rm.py (#6).
+    for addr in (f"/trash/{uid}", uid):
+        with pytest.raises(DriveError):
+            client.delete([addr])
+
+    # And it must still be sitting in trash (nothing was permanently removed).
+    trashed_names = [decrypted_name(e) for e in client.list("/trash")]
+    assert "uid_probe.bin" in trashed_names, (
+        "trashed node vanished without a basename-path delete -- UID addressing may "
+        "now be supported; revisit the rm -f duplicate-basename guard (#6)"
+    )
+
+    # Clean up the trashed probe file by its supported basename path (reversible anyway).
+    try:
+        client.delete(["/trash/uid_probe.bin"])
+    except DriveError:
+        pass
 
 
 def test_live_trash_then_restore_roundtrip(tmp_path: Path, live_dir) -> None:
