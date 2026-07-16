@@ -38,6 +38,32 @@ def _tracked_entry(remote_path: str) -> IndexEntry:
 # tests exercise that wiring end-to-end (acquire + release around the command body).
 
 
+def test_cli_status_exit_code_clean(tmp_path: Path, monkeypatch, make_fake_drive) -> None:
+    # No files, nothing tracked -> clean -> exit 0.
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.drive = make_fake_drive()
+    monkeypatch.setattr("protonfs.context.load_context", lambda *a, **k: ctx)
+
+    result = CliRunner().invoke(main, ["status"])
+
+    assert result.exit_code == 0, result.output
+
+
+def test_cli_status_exit_code_drift(tmp_path: Path, monkeypatch, make_fake_drive) -> None:
+    # An untracked local file is local-only drift -> exit 1.
+    (tmp_path / "new_file").write_bytes(b"data")
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.drive = make_fake_drive()
+    monkeypatch.setattr("protonfs.context.load_context", lambda *a, **k: ctx)
+
+    result = CliRunner().invoke(main, ["status"])
+
+    assert result.exit_code == 1, result.output
+    assert "local-only: 1" in result.output
+
+
 def test_cli_refresh_runs_under_lock(tmp_path: Path, monkeypatch, make_fake_drive) -> None:
     init_config(tmp_path, "/my-files/test")
     ctx = load_context(tmp_path)

@@ -111,3 +111,20 @@ The standard loop on any client:
    protonfs status                   # local-only / remote-only / synced / conflict
    protonfs push --resolve replace   # send local-only up
    protonfs pull --refresh           # bring remote-only down (if this machine wants them)
+
+``status`` also sets an **exit code** so an unattended caller can branch without
+parsing the printed counts:
+
+- ``0`` — clean: every file is synced or intentionally remote-only (nothing to reconcile).
+- ``1`` — drift: non-conflict divergence exists (something to push, pull, or prune).
+- ``2`` — conflict: at least one file needs a human or a ``--resolve`` strategy.
+
+Conflict outranks drift when both are present, e.g.:
+
+.. code-block:: bash
+
+   protonfs status; case $? in
+     0) echo "in sync" ;;
+     1) echo "drift -- run push/pull" ;;
+     2) echo "conflict -- resolve first" ;;
+   esac
