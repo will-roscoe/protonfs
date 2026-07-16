@@ -1,6 +1,7 @@
 # tests/commands/test_setup.py
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
@@ -59,6 +60,7 @@ def test_write_git_control_files_creates_exempting_attributes_and_gitignore(
     ]
     assert "index.json" in pattern_lines
     assert "refresh-state.json" in pattern_lines
+    assert "config.local.json" in pattern_lines  # #21: per-device config, never committed
     # The shared contract stays tracked -- config.json / ignore must NOT be gitignored.
     assert "config.json" not in pattern_lines
     assert "ignore" not in pattern_lines
@@ -114,6 +116,30 @@ def test_ensure_config_prompts_when_missing(
     result = ensure_config(tmp_path)
     assert result.remote_root == "/my-files/new"
     assert load_config(tmp_path) is not None
+
+
+def test_ensure_config_new_repo_writes_device_id_to_local_file_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(click, "prompt", lambda *a, **k: "/my-files/new")
+    ensure_config(tmp_path)
+    shared_on_disk = json.loads((tmp_path / ".protonfs" / "config.json").read_text())
+    assert "device_id" not in shared_on_disk
+    assert (tmp_path / ".protonfs" / "config.local.json").exists()
+
+
+def test_ensure_config_migrates_old_layout_device_id_to_local(tmp_path: Path) -> None:
+    from protonfs.config import Config, load_local_config, save_config
+
+    save_config(tmp_path, Config(remote_root="/my-files/old", device_id="old-device"))
+
+    result = ensure_config(tmp_path)
+
+    assert result.remote_root == "/my-files/old"
+    assert result.device_id == "old-device"
+    shared_on_disk = json.loads((tmp_path / ".protonfs" / "config.json").read_text())
+    assert "device_id" not in shared_on_disk
+    assert load_local_config(tmp_path)["device_id"] == "old-device"
 
 
 def test_migrate_lfs_is_noop_when_not_lfs_tracked(tmp_path: Path, make_fake_drive) -> None:

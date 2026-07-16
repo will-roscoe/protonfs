@@ -8,7 +8,7 @@ import click
 
 from protonfs.commands.push import ensure_remote_root
 from protonfs.commands.push import push as push_files
-from protonfs.config import Config, init_config, load_config
+from protonfs.config import Config, init_config, load_layered_config, migrate_device_id_to_local
 from protonfs.context import RepoContext
 from protonfs.drive import DriveClient
 from protonfs.ignore import init_ignore, init_include
@@ -58,8 +58,12 @@ def ensure_authenticated(drive: DriveClient) -> None:
 
 
 def ensure_config(root: Path) -> Config:
-    existing = load_config(root)
+    existing = load_layered_config(root)
     if existing is not None:
+        # #21: repos set up before per-device layering existed may still have device_id
+        # in the shared config.json -- move it to config.local.json now that we're here
+        # anyway. Straightforward and idempotent; doesn't change the resolved config.
+        migrate_device_id_to_local(root)
         return existing
     remote_root = click.prompt("Remote Drive root path for this repo (e.g. /my-files/myproject)")
     return init_config(root, remote_root)
@@ -90,13 +94,14 @@ _PROTONFS_GITATTRIBUTES = (
 )
 # .protonfs/.gitignore content: the sync contract (config.json + ignore + include) is
 # committed and shared; per-device/transient state (index.json, the resumable-refresh
-# cursor) is local-only. `include` (#18) is deliberately NOT listed here -- it belongs
-# with config.json and ignore in the tracked/shared set.
+# cursor, config.local.json) is local-only. `include` (#18) is deliberately NOT listed
+# here -- it belongs with config.json and ignore in the tracked/shared set.
 _PROTONFS_GITIGNORE = (
-    "# Managed by `protonfs setup` (#20). Local-only, per-device state -- never commit these;\n"
-    "# config.json, ignore, and include ARE committed (the shared sync contract).\n"
+    "# Managed by `protonfs setup` (#20, #21). Local-only, per-device state -- never commit\n"
+    "# these; config.json, ignore, and include ARE committed (the shared sync contract).\n"
     "index.json\n"
     "refresh-state.json\n"
+    "config.local.json\n"
 )
 
 

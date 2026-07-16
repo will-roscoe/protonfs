@@ -382,5 +382,43 @@ def auth(action: str) -> None:
         raise click.exceptions.Exit(code)
 
 
+@main.group()
+def config() -> None:
+    """Get/set protonfs config (#21): env > local > shared > global > built-in default."""
+
+
+@config.command("get")
+@click.argument("key")
+def config_get_cmd(key: str) -> None:
+    """Print the RESOLVED value of KEY (e.g. `remote_root`, `defaults.low_io`)."""
+    from pathlib import Path
+
+    from protonfs.commands.config import config_get
+
+    click.echo(config_get(Path.cwd(), key))
+
+
+@config.command("set")
+@click.argument("key")
+@click.argument("value")
+@click.option(
+    "--global", "scope_global", is_flag=True, help="Write to the global user config."
+)
+@click.option(
+    "--local", "scope_local", is_flag=True, help="Write to the per-device local config."
+)
+def config_set_cmd(key: str, value: str, scope_global: bool, scope_local: bool) -> None:
+    """Set KEY = VALUE. Default scope is the shared per-repo config (committed)."""
+    from pathlib import Path
+
+    from protonfs.commands.config import config_set
+
+    if scope_global and scope_local:
+        raise click.ClickException("--global and --local are mutually exclusive.")
+    scope = "global" if scope_global else "local" if scope_local else "shared"
+    path = config_set(Path.cwd(), key, value, scope=scope)
+    click.echo(f"Set {key} in {path}.")
+
+
 if __name__ == "__main__":
     main()
