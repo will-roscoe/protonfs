@@ -19,8 +19,9 @@ Post Installation Setup
 CLI. The latest compatible version can be installed via 
 
 .. code-block:: bash
+
    protonfs install-drive
-   
+
 Alternatively you can supply the binary yourself by passing it via `PROTONFS_DRIVE_BIN` env variable, or ensuring it is added to `PATH`.
 
 Supported platforms

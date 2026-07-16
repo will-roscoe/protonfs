@@ -58,6 +58,7 @@ def main() -> None:
         "enclosing repo off LFS."
     ),
 )
+@_drive_error_boundary
 def setup(dry_run: bool, migrate_lfs: bool | None) -> None:
     """Install/verify the proton-drive CLI, init .protonfs/, migrate off git-lfs if present."""
     from pathlib import Path
