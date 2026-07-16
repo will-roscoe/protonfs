@@ -11,7 +11,7 @@ from protonfs.commands.push import push as push_files
 from protonfs.config import Config, init_config, load_config
 from protonfs.context import RepoContext
 from protonfs.drive import DriveClient
-from protonfs.ignore import init_ignore
+from protonfs.ignore import init_ignore, init_include
 from protonfs.index import IndexStore
 from protonfs.lfs import find_pointer_stubs, is_lfs_tracked
 from protonfs.secretservice import SecretServiceError, ensure_secret_service
@@ -81,18 +81,20 @@ def is_git_toplevel(root: Path) -> bool:
 
 # .protonfs/.gitattributes content: keep protonfs's OWN control files as normal git objects,
 # never git-LFS pointers, so a clone without an LFS pull still receives the real sync contract
-# (config.json + ignore) rather than 130-byte pointer stubs (#20).
+# (config.json + ignore + include) rather than 130-byte pointer stubs (#20).
 _PROTONFS_GITATTRIBUTES = (
     "# Managed by `protonfs setup` (#20). Keep protonfs's control files as normal git\n"
     "# objects even if the enclosing repo routes this path through git-LFS, so a clone\n"
     "# without an LFS pull still gets the real sync contract, not pointer stubs.\n"
     "* !filter !diff !merge text\n"
 )
-# .protonfs/.gitignore content: the sync contract (config.json + ignore) is committed and
-# shared; per-device/transient state (index.json, the resumable-refresh cursor) is local-only.
+# .protonfs/.gitignore content: the sync contract (config.json + ignore + include) is
+# committed and shared; per-device/transient state (index.json, the resumable-refresh
+# cursor) is local-only. `include` (#18) is deliberately NOT listed here -- it belongs
+# with config.json and ignore in the tracked/shared set.
 _PROTONFS_GITIGNORE = (
     "# Managed by `protonfs setup` (#20). Local-only, per-device state -- never commit these;\n"
-    "# config.json and ignore ARE committed (the shared sync contract).\n"
+    "# config.json, ignore, and include ARE committed (the shared sync contract).\n"
     "index.json\n"
     "refresh-state.json\n"
 )
@@ -251,6 +253,7 @@ def run_setup(root: Path, dry_run: bool = False, migrate: bool | None = None) ->
 
     config = ensure_config(root)
     init_ignore(root)
+    init_include(root)
     write_git_control_files(root)
     config_file = root / ".protonfs" / "config.json"
     click.echo(f"Config ready at {config_file} (remote_root={config.remote_root}).")

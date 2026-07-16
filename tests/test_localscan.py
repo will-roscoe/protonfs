@@ -103,6 +103,22 @@ def test_scan_low_io_recomputes_when_size_differs(tmp_path: Path) -> None:
     assert result["dump_0001"].sha1 == hashlib.sha1(b"data").hexdigest()
 
 
+def test_scan_respects_include_allowlist_across_nested_dirs(tmp_path: Path) -> None:
+    # Directory descent must not require any `!*/`-style trick: a plain include pattern
+    # should reach files nested arbitrarily deep, since scan() walks all directories
+    # unconditionally and only applies ignore/include filtering to file paths (#18).
+    (tmp_path / "run1" / "nested").mkdir(parents=True)
+    (tmp_path / "run1" / "nested" / "dump.ev").write_bytes(b"keep")
+    (tmp_path / "run1" / "notes.txt").write_bytes(b"drop")
+    index = IndexStore(tmp_path)
+    ignore = IgnoreMatcher([], include_patterns=["*.ev"])
+
+    result = scan(tmp_path, Path("."), ignore, index, low_io=False)
+
+    assert "run1/nested/dump.ev" in result
+    assert "run1/notes.txt" not in result
+
+
 def test_scan_marks_pointer_stub_as_lfs_pointer(tmp_path: Path) -> None:
     f = tmp_path / "big.bin"
     f.write_text(
