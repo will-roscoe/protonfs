@@ -372,6 +372,38 @@ def install_drive_cmd(version: str | None, skip_keyring: bool) -> None:
 
 
 @main.command()
+@click.option(
+    "--check",
+    is_flag=True,
+    help="Report what would happen; change nothing. Exit 0 if fully current, 1 if an "
+    "upgrade or migration is available.",
+)
+@click.option("--drive-only", is_flag=True, help="Only the proton-drive binary; skip migrations.")
+@click.option("--repo-only", is_flag=True, help="Only repo-state migrations; skip the binary.")
+@_drive_error_boundary
+def upgrade(check: bool, drive_only: bool, repo_only: bool) -> None:
+    """Upgrade proton-drive to the highest supported version + migrate repo state.
+
+    A protonfs release only ever upgrades proton-drive to its own highest supported
+    version; a newer upstream release requires a newer protonfs (reported, never
+    installed). Inside a protonfs root, pending repo-state migrations run too.
+    """
+    from pathlib import Path
+
+    from protonfs.commands.upgrade import run_upgrade
+    from protonfs.install import InstallError
+
+    if drive_only and repo_only:
+        raise click.UsageError("--drive-only and --repo-only are mutually exclusive.")
+    try:
+        code = run_upgrade(Path.cwd(), check=check, drive_only=drive_only, repo_only=repo_only)
+    except InstallError as exc:
+        raise click.ClickException(str(exc)) from exc
+    if code != 0:
+        raise click.exceptions.Exit(code)
+
+
+@main.command()
 @click.option("--fix", is_flag=True, help="Repair what protonfs can (bootstrap the keyring).")
 def doctor(fix: bool) -> None:
     """Check this host can run proton-drive (binary, session bus, OS keyring)."""
