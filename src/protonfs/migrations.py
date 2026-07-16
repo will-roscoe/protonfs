@@ -88,6 +88,11 @@ class MigrationResult:
 
 
 def _index_is_current(root: Path) -> bool:
+    """``is_applied`` probe: whether ``index.json`` is already at the current schema.
+
+    :param root: the protonfs root.
+    :returns: ``True`` when there is no index or it is already current.
+    """
     index_file = root / ".protonfs" / INDEX_FILE_NAME
     if not index_file.exists():
         return True  # nothing to migrate
@@ -100,6 +105,10 @@ def _index_is_current(root: Path) -> bool:
 
 
 def _index_apply(root: Path) -> None:
+    """``apply``: re-save the index so its in-memory forward-migration lands on disk.
+
+    :param root: the protonfs root.
+    """
     # Loading migrates in memory (see index.py `_migrate`); saving persists it.
     IndexStore(root).save()
 
@@ -108,6 +117,11 @@ def _index_apply(root: Path) -> None:
 
 
 def _device_id_is_local(root: Path) -> bool:
+    """``is_applied`` probe: whether the shared config no longer carries ``device_id``.
+
+    :param root: the protonfs root.
+    :returns: ``True`` when there is no shared config or it has no ``device_id``.
+    """
     shared_path = config_path(root)
     if not shared_path.exists():
         return True  # not a set-up repo at all -- nothing to relocate
@@ -116,6 +130,10 @@ def _device_id_is_local(root: Path) -> bool:
 
 
 def _device_id_apply(root: Path) -> None:
+    """``apply``: relocate ``device_id`` from the shared config to ``config.local.json``.
+
+    :param root: the protonfs root.
+    """
     migrate_device_id_to_local(root)
 
 
@@ -131,6 +149,14 @@ def _missing_lines(path: Path, content: str) -> bool:
 
 
 def _control_files_current(root: Path) -> bool:
+    """``is_applied`` probe: whether all ``.protonfs/`` control files are present + complete.
+
+    Checks ``ignore``/``include`` exist and the control ``.gitattributes``/``.gitignore``
+    contain every managed line.
+
+    :param root: the protonfs root.
+    :returns: ``True`` when nothing needs backfilling.
+    """
     if not ignore_path(root).exists() or not include_path(root).exists():
         return False
     protonfs_dir = root / ".protonfs"
@@ -144,6 +170,10 @@ def _control_files_current(root: Path) -> bool:
 
 
 def _control_files_apply(root: Path) -> None:
+    """``apply``: backfill the ``.protonfs/`` ignore/include and control git files.
+
+    :param root: the protonfs root.
+    """
     init_ignore(root)
     init_include(root)
     write_git_control_files(root)
@@ -159,10 +189,19 @@ def _control_files_apply(root: Path) -> None:
 
 
 def _refresh_state_is_current(root: Path) -> bool:
+    """``is_applied`` probe for the refresh-state format: always current (no legacy format).
+
+    :param root: the protonfs root (unused; the format has never changed).
+    :returns: always ``True``.
+    """
     return True
 
 
 def _refresh_state_apply(root: Path) -> None:
+    """``apply`` for the refresh-state format: a no-op placeholder for future changes.
+
+    :param root: the protonfs root (unused).
+    """
     pass  # no legacy format exists; nothing to do
 
 
