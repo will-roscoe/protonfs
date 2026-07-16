@@ -2,12 +2,52 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from protonfs.commands.push import LFS_POINTER_KIND, push
+import pytest
+
+from protonfs.commands.push import LFS_POINTER_KIND, ensure_remote_root, push
 from protonfs.config import init_config
 from protonfs.context import load_context
 from protonfs.diff import DiffEntry, SyncState
-from protonfs.drive import TransferResult
+from protonfs.drive import DriveError, TransferResult
 from protonfs.lfs import POINTER_SIGNATURE
+
+
+def test_ensure_remote_root_creates_each_missing_segment(tmp_path: Path, make_fake_drive) -> None:
+    # #17: remote_root itself (not just dirs below it) is created, segment by segment.
+    init_config(tmp_path, "/my-files/proj/sim")
+    ctx = load_context(tmp_path)
+    fake = make_fake_drive()
+    ctx.drive = fake
+
+    ensure_remote_root(ctx)
+
+    assert ("/my-files", "proj") in fake.created_folders
+    assert ("/my-files/proj", "sim") in fake.created_folders
+
+
+def test_ensure_remote_root_rejects_path_outside_a_known_area(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    # A remote_root that is not under /my-files can never be created -> precise error (#17).
+    init_config(tmp_path, "/myproject")
+    ctx = load_context(tmp_path)
+    ctx.drive = make_fake_drive()
+
+    with pytest.raises(DriveError, match="my-files"):
+        ensure_remote_root(ctx)
+
+
+def test_push_creates_remote_root_before_uploading(tmp_path: Path, make_fake_drive) -> None:
+    (tmp_path / "dump").write_bytes(b"data")
+    init_config(tmp_path, "/my-files/proj/sim")
+    ctx = load_context(tmp_path)
+    fake = make_fake_drive()
+    ctx.drive = fake
+
+    push(ctx, None, resolve=None, dry_run=False)
+
+    assert ("/my-files", "proj") in fake.created_folders
+    assert ("/my-files/proj", "sim") in fake.created_folders
 
 
 def test_push_uploads_local_only_files_and_updates_index(

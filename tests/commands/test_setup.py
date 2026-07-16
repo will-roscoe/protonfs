@@ -13,12 +13,68 @@ from protonfs.commands.setup import (
     ensure_authenticated,
     ensure_cli_present,
     ensure_config,
+    is_git_toplevel,
     migrate_lfs,
+    write_git_control_files,
 )
 from protonfs.config import load_config
 from protonfs.context import RepoContext
 from protonfs.drive import TransferResult
 from protonfs.index import IndexStore
+
+
+def _git_init(path: Path) -> None:
+    subprocess.run(["git", "-C", str(path), "init", "-q"], check=True)
+
+
+def test_is_git_toplevel_true_at_repo_root(tmp_path: Path) -> None:
+    _git_init(tmp_path)
+    assert is_git_toplevel(tmp_path) is True
+
+
+def test_is_git_toplevel_false_in_subdirectory(tmp_path: Path) -> None:
+    _git_init(tmp_path)
+    sub = tmp_path / "sim"
+    sub.mkdir()
+    # A subdir of a git repo is NOT the toplevel -> migration must not run there (#19).
+    assert is_git_toplevel(sub) is False
+
+
+def test_is_git_toplevel_false_when_not_a_git_repo(tmp_path: Path) -> None:
+    assert is_git_toplevel(tmp_path) is False
+
+
+def test_write_git_control_files_creates_exempting_attributes_and_gitignore(
+    tmp_path: Path,
+) -> None:
+    write_git_control_files(tmp_path)
+
+    attrs = (tmp_path / ".protonfs" / ".gitattributes").read_text()
+    assert "!filter" in attrs and "!diff" in attrs and "!merge" in attrs  # exempt from LFS (#20)
+    ignore = (tmp_path / ".protonfs" / ".gitignore").read_text()
+    pattern_lines = [
+        ln.strip()
+        for ln in ignore.splitlines()
+        if ln.strip() and not ln.strip().startswith("#")
+    ]
+    assert "index.json" in pattern_lines
+    assert "refresh-state.json" in pattern_lines
+    # The shared contract stays tracked -- config.json / ignore must NOT be gitignored.
+    assert "config.json" not in pattern_lines
+    assert "ignore" not in pattern_lines
+
+
+def test_write_git_control_files_is_idempotent_and_preserves_user_lines(tmp_path: Path) -> None:
+    protonfs_dir = tmp_path / ".protonfs"
+    protonfs_dir.mkdir()
+    (protonfs_dir / ".gitignore").write_text("index.json\nmy-own-scratch/\n")
+
+    write_git_control_files(tmp_path)
+
+    ignore = (protonfs_dir / ".gitignore").read_text()
+    assert ignore.count("index.json") == 1  # not duplicated
+    assert "my-own-scratch/" in ignore  # user's line preserved
+    assert "refresh-state.json" in ignore  # missing managed line appended
 
 
 def test_ensure_cli_present_raises_when_missing(make_fake_drive) -> None:

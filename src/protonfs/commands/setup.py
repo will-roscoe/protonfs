@@ -6,6 +6,7 @@ from pathlib import Path
 
 import click
 
+from protonfs.commands.push import ensure_remote_root
 from protonfs.commands.push import push as push_files
 from protonfs.config import Config, init_config, load_config
 from protonfs.context import RepoContext
@@ -62,6 +63,72 @@ def ensure_config(root: Path) -> Config:
         return existing
     remote_root = click.prompt("Remote Drive root path for this repo (e.g. /my-files/myproject)")
     return init_config(root, remote_root)
+
+
+def is_git_toplevel(root: Path) -> bool:
+    """True when `root` is the top level of a git repo (not a subdirectory of one, and not
+    outside git entirely). Used to decide whether an LFS migration -- which rewrites
+    .gitattributes and commits across the WHOLE repo -- is appropriate to run here (#19)."""
+    result = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "--show-toplevel"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return False  # not a git repo at all
+    return Path(result.stdout.strip()).resolve() == root.resolve()
+
+
+# .protonfs/.gitattributes content: keep protonfs's OWN control files as normal git objects,
+# never git-LFS pointers, so a clone without an LFS pull still receives the real sync contract
+# (config.json + ignore) rather than 130-byte pointer stubs (#20).
+_PROTONFS_GITATTRIBUTES = (
+    "# Managed by `protonfs setup` (#20). Keep protonfs's control files as normal git\n"
+    "# objects even if the enclosing repo routes this path through git-LFS, so a clone\n"
+    "# without an LFS pull still gets the real sync contract, not pointer stubs.\n"
+    "* !filter !diff !merge text\n"
+)
+# .protonfs/.gitignore content: the sync contract (config.json + ignore) is committed and
+# shared; per-device/transient state (index.json, the resumable-refresh cursor) is local-only.
+_PROTONFS_GITIGNORE = (
+    "# Managed by `protonfs setup` (#20). Local-only, per-device state -- never commit these;\n"
+    "# config.json and ignore ARE committed (the shared sync contract).\n"
+    "index.json\n"
+    "refresh-state.json\n"
+)
+
+
+def _ensure_lines(path: Path, content: str) -> bool:
+    """Write `content` to `path` if absent; if present, append any of its lines that are
+    missing. Idempotent and non-destructive to a user's own edits. Returns True if it wrote."""
+    if not path.exists():
+        path.write_text(content)
+        return True
+    existing = path.read_text()
+    existing_lines = {line.strip() for line in existing.splitlines()}
+    missing = [ln for ln in content.splitlines() if ln.strip() and ln.strip() not in existing_lines]
+    if not missing:
+        return False
+    with path.open("a") as fh:
+        if existing and not existing.endswith("\n"):
+            fh.write("\n")
+        fh.write("\n".join(missing) + "\n")
+    return True
+
+
+def write_git_control_files(root: Path) -> None:
+    """Write `.protonfs/.gitattributes` (exempt control files from LFS) and
+    `.protonfs/.gitignore` (ignore local-only state) so the committed-vs-local split is
+    correct by default (#20). Idempotent; safe to run when `root` is not a git repo."""
+    protonfs_dir = root / ".protonfs"
+    protonfs_dir.mkdir(parents=True, exist_ok=True)
+    wrote_attrs = _ensure_lines(protonfs_dir / ".gitattributes", _PROTONFS_GITATTRIBUTES)
+    wrote_ignore = _ensure_lines(protonfs_dir / ".gitignore", _PROTONFS_GITIGNORE)
+    if wrote_attrs or wrote_ignore:
+        click.echo(
+            "Wrote .protonfs/.gitattributes + .protonfs/.gitignore "
+            "(control files exempt from git-LFS; index.json kept local)."
+        )
 
 
 def _untrack_lfs_patterns(root: Path) -> list[str]:
@@ -173,7 +240,7 @@ def maybe_uninstall_lfs_filters(root: Path) -> None:
     subprocess.run(["git", "-C", str(root), "lfs", "uninstall"], check=True)
 
 
-def run_setup(root: Path, dry_run: bool = False) -> None:
+def run_setup(root: Path, dry_run: bool = False, migrate: bool | None = None) -> None:
     drive = DriveClient()
     version = ensure_cli_present(drive)
     click.echo(f"proton-drive CLI found: {version}")
@@ -184,19 +251,44 @@ def run_setup(root: Path, dry_run: bool = False) -> None:
 
     config = ensure_config(root)
     init_ignore(root)
+    write_git_control_files(root)
     config_file = root / ".protonfs" / "config.json"
     click.echo(f"Config ready at {config_file} (remote_root={config.remote_root}).")
 
     ctx = RepoContext(root=root, config=config, index=IndexStore(root), drive=drive)
-    migrated = migrate_lfs(ctx, dry_run=dry_run)
+    # #17: create the whole remote_root path now (fail fast with a precise error if it is not
+    # under a valid Drive area), so the first push does not fail because the folder is absent.
+    if not dry_run:
+        ensure_remote_root(ctx)
+        click.echo(f"Ensured remote root exists on Drive: {config.remote_root}")
 
-    removed = clean_pointer_stubs(root)
-    if removed:
-        click.echo(f"Removed {removed} leftover git-lfs pointer stub file(s).")
+    # #19: the LFS migration rewrites .gitattributes and commits across the WHOLE enclosing
+    # repo, so only run it when this root IS the git toplevel -- unless the user explicitly
+    # opts in/out via --migrate-lfs/--no-migrate-lfs. Initialising a sync directory that is a
+    # subdirectory of a larger repo must not migrate that repo off LFS.
+    should_migrate = migrate if migrate is not None else is_git_toplevel(root)
+    if not should_migrate:
+        if migrate is False:
+            click.echo("Skipping git-LFS migration (--no-migrate-lfs).")
+        else:
+            click.echo(
+                "protonfs root is not the git toplevel (or not a git repo); skipping the "
+                "repo-wide git-LFS migration. Pass --migrate-lfs to force it here."
+            )
+        migrated = False
     else:
-        click.echo("No leftover git-lfs pointer stubs found.")
+        migrated = migrate_lfs(ctx, dry_run=dry_run)
 
+    # Only reap leftover pointer stubs as part of an ACTUAL migration. When migration was
+    # skipped (a subdirectory root, or --no-migrate-lfs), any pointer stubs present are
+    # legitimately git-LFS-managed files the user is keeping -- deleting them would be data
+    # loss (#19).
     if migrated and not dry_run:
+        removed = clean_pointer_stubs(root)
+        if removed:
+            click.echo(f"Removed {removed} leftover git-lfs pointer stub file(s).")
+        else:
+            click.echo("No leftover git-lfs pointer stubs found.")
         maybe_uninstall_lfs_filters(root)
 
     click.echo("protonfs setup complete.")
