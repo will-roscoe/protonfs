@@ -98,6 +98,9 @@ jobs:
           else
             git add CHANGELOG.md
             git commit -m "docs(changelog): finalize ${TAG} [skip ci]"
+            # A badge workflow may have committed to main since this job checked
+            # out; rebase so the push is fast-forward instead of failing the release.
+            git pull --rebase origin main
             git push origin HEAD:main
           fi
 
