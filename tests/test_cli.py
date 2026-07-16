@@ -200,3 +200,50 @@ def test_cli_rm_accepts_multiple_paths(tmp_path: Path, monkeypatch, make_fake_dr
 def test_cli_rm_still_requires_at_least_one_path() -> None:
     result = CliRunner().invoke(main, ["rm"])
     assert result.exit_code == 2  # usage error, unchanged from the 1.0 contract
+
+
+# --- #97: --format on status / ls flags -------------------------------------------------
+
+
+def test_cli_status_format_json(tmp_path: Path, monkeypatch, make_fake_drive) -> None:
+    import json
+
+    (tmp_path / "new_file").write_bytes(b"data")
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.drive = make_fake_drive()
+    monkeypatch.setattr("protonfs.context.load_context", lambda *a, **k: ctx)
+
+    result = CliRunner().invoke(main, ["status", "--format", "json"])
+
+    assert result.exit_code == 1  # drift exit code is preserved in json mode
+    payload = json.loads(result.output)
+    assert payload["counts"]["local-only"] == 1
+    assert payload["exit_code"] == 1
+
+
+def test_cli_ls_dirs_state_and_format_flags(tmp_path: Path, monkeypatch, make_fake_drive) -> None:
+    import json
+
+    (tmp_path / "run1").mkdir()
+    (tmp_path / "run1" / "f").write_bytes(b"12345")
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.drive = make_fake_drive()
+    monkeypatch.setattr("protonfs.context.load_context", lambda *a, **k: ctx)
+
+    result = CliRunner().invoke(
+        main, ["ls", "--dirs", "--state", "local-only", "--format", "json"]
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload == [
+        {
+            "path": "run1",
+            "files": 1,
+            "local_bytes": 5,
+            "indexed_bytes": 0,
+            "states": {"local-only": 1},
+        }
+    ]

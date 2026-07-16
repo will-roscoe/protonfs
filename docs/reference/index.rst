@@ -48,7 +48,7 @@ Examples::
 
 ``status``
 ----------
-**Synopsis:** ``protonfs status [PATH]...``
+**Synopsis:** ``protonfs status [PATH]... [--format {plain,json}]``
 
 Scans the local tree (optionally scoped to ``PATH``), compares it against the
 local index, and prints a count per sync state (``synced``, ``local-only``,
@@ -57,19 +57,24 @@ local index, and prints a count per sync state (``synced``, ``local-only``,
 ``remote-deleted``, ``lfs-pointer``). It does not talk to Drive beyond the index
 already on disk — run ``refresh`` first for an up-to-date picture of the remote.
 
+- ``--format`` — ``plain`` (the classic ``state: count`` lines, default) or
+  ``json`` (one object with a ``counts`` map and the ``exit_code``).
+
 Exit code: ``0`` clean, ``1`` drift present, ``2`` conflict present (conflict
-outranks drift). See :doc:`../stability` for the exact mapping and
-:doc:`../guarantees` for how states are classified.
+outranks drift) — identical in both formats. See :doc:`../stability` for the
+exact mapping and :doc:`../guarantees` for how states are classified.
 
 Examples::
 
     protonfs status
     protonfs status subdir/
     protonfs status; echo "exit=$?"
+    protonfs status --format json | jq .counts
 
 ``ls``
 ------
-**Synopsis:** ``protonfs ls [PATH]... [--remote] [--trash]``
+**Synopsis:** ``protonfs ls [PATH]... [--remote] [--trash] [--dirs] [--state STATE]...
+[--format {table,plain,json}]``
 
 Lists tracked files with their sync state, as a table of ``path`` / ``state``.
 
@@ -78,12 +83,27 @@ Lists tracked files with their sync state, as a table of ``path`` / ``state``.
   yet).
 - ``--trash`` — list ``/trash`` instead of the working tree (name and type only; no
   sync-state column, since trashed items aren't tracked in the index).
+- ``--dirs`` — aggregate per immediate subdirectory instead of listing every file:
+  one row per directory with its file count, cumulative **local** size (bytes on
+  disk; ``0`` for fully offloaded dirs), cumulative **indexed** size (what the index
+  records — the remote-side size), and a per-state count summary. This is the
+  storage-breakdown view: ``protonfs ls --dirs`` on a large tree answers "which
+  directories are taking space locally vs on Drive" without printing 10,000
+  ``remote-only`` lines.
+- ``--state STATE`` — only show files in the given sync state(s); repeatable
+  (``--state remote-only --state local-only``). Applies before ``--dirs``
+  aggregation, so the two compose.
+- ``--format`` — ``table`` (rich, default), ``plain`` (tab-separated lines for
+  shell pipelines), or ``json`` (one JSON document per listed PATH).
 
 Examples::
 
     protonfs ls
     protonfs ls --remote subdir/
     protonfs ls --trash
+    protonfs ls --dirs                       # per-directory storage breakdown
+    protonfs ls --state remote-only --format plain | cut -f1
+    protonfs ls sim/ --dirs --format json    # scriptable per-dir sizes/counts
 
 ``push``
 --------

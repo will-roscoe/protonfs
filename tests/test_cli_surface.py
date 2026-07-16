@@ -54,8 +54,8 @@ EXPECTED_TRASH_SUBCOMMANDS = frozenset({"list", "empty"})
 EXPECTED_OPTIONS: dict[str, frozenset[str]] = {
     "setup": frozenset({"--dry-run", "--migrate-lfs", "--no-migrate-lfs"}),
     "deinit": frozenset({"--dry-run", "--yes"}),
-    "status": frozenset(),
-    "ls": frozenset({"--remote", "--trash"}),
+    "status": frozenset({"--format"}),
+    "ls": frozenset({"--remote", "--trash", "--dirs", "--state", "--format"}),
     "push": frozenset({"--resolve", "--dry-run"}),
     "pull": frozenset({"--resolve", "--dry-run", "--refresh"}),
     "offload": frozenset({"--no-verify", "--dry-run", "--yes"}),

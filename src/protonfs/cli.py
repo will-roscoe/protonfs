@@ -145,7 +145,15 @@ def deinit(dry_run: bool, yes: bool) -> None:
 
 @main.command()
 @click.argument("path", nargs=-1)
-def status(path: tuple[str, ...]) -> None:
+@click.option(
+    "--format",
+    "fmt",
+    type=click.Choice(["plain", "json"]),
+    default="plain",
+    show_default=True,
+    help="Output format: the classic state-per-line counts, or one JSON object.",
+)
+def status(path: tuple[str, ...], fmt: str) -> None:
     """Summarize sync state (counts by local-only/remote-only/synced/conflict).
 
     Accepts any number of PATHs (e.g. from a shell glob); counts are combined.
@@ -164,20 +172,84 @@ def status(path: tuple[str, ...]) -> None:
     counts: Counter = Counter()
     for subpath in _normalize_paths(path):
         counts.update(compute_status(ctx, subpath))
-    for state in SyncState:
-        click.echo(f"{state.value}: {counts.get(state.value, 0)}")
     code = status_exit_code(counts)
+    if fmt == "json":
+        import json
+
+        click.echo(
+            json.dumps(
+                {
+                    "counts": {state.value: counts.get(state.value, 0) for state in SyncState},
+                    "exit_code": code,
+                }
+            )
+        )
+    else:
+        for state in SyncState:
+            click.echo(f"{state.value}: {counts.get(state.value, 0)}")
     if code != 0:
         raise click.exceptions.Exit(code)
+
+
+# The frozen SyncState values (docs/stability.rst): spelled out literally so `--state`'s
+# Choice needs no protonfs import at CLI-definition time (startup cost). A unit test
+# asserts this stays equal to diff.SyncState's values.
+_STATE_CHOICES = (
+    "synced",
+    "local-only",
+    "remote-only",
+    "metadata-only",
+    "conflict",
+    "local-modified",
+    "remote-modified",
+    "both-modified",
+    "local-deleted",
+    "remote-changed",
+    "remote-deleted",
+    "lfs-pointer",
+)
 
 
 @main.command()
 @click.argument("path", nargs=-1)
 @click.option("--remote", is_flag=True, help="Force a live Drive listing instead of the index.")
 @click.option("--trash", is_flag=True, help="List /trash instead.")
+@click.option(
+    "--dirs",
+    is_flag=True,
+    help="Aggregate per immediate subdirectory: file counts by state plus cumulative "
+    "local/indexed sizes, instead of listing every file.",
+)
+@click.option(
+    "--state",
+    "states",
+    multiple=True,
+    type=click.Choice(_STATE_CHOICES),
+    help="Only show files in this sync state (repeatable).",
+)
+@click.option(
+    "--format",
+    "fmt",
+    type=click.Choice(["table", "plain", "json"]),
+    default="table",
+    show_default=True,
+    help="Output format: rich table, tab-separated lines, or JSON.",
+)
 @_drive_error_boundary
-def ls(path: tuple[str, ...], remote: bool, trash: bool) -> None:
-    """List tracked files with their sync state (any number of PATHs)."""
+def ls(
+    path: tuple[str, ...],
+    remote: bool,
+    trash: bool,
+    dirs: bool,
+    states: tuple[str, ...],
+    fmt: str,
+) -> None:
+    """List tracked files with their sync state (any number of PATHs).
+
+    --dirs summarizes each immediate subdirectory (counts by state, cumulative
+    local/indexed sizes) instead of listing thousands of files; --state filters to
+    the states you care about; --format plain|json makes the output scriptable.
+    """
     from rich.console import Console
 
     from protonfs.commands.ls import render_ls
@@ -187,9 +259,12 @@ def ls(path: tuple[str, ...], remote: bool, trash: bool) -> None:
     console = Console()
     subpaths = _normalize_paths(path)
     for subpath in subpaths:
-        if len(subpaths) > 1:
+        if len(subpaths) > 1 and fmt == "table":
             console.print(f"[bold]{subpath}:[/bold]")
-        render_ls(ctx, subpath, remote, trash, console)
+        render_ls(
+            ctx, subpath, remote, trash, console,
+            dirs=dirs, states=states, fmt=fmt, echo=click.echo,
+        )
 
 
 @main.command()

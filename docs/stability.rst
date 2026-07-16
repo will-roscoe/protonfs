@@ -103,13 +103,15 @@ flag/argument name; these names, not just their presence, are frozen.
    * - ``status``
      - Summarize sync state (counts by local-only/remote-only/synced/conflict).
        Argument: ``PATH...`` (optional, repeatable; e.g. from a shell glob).
+       Option: ``--format [plain|json]``.
      - ``0`` clean (synced or intentionally remote-only); ``1`` drift present
        (something to push/pull/prune); ``2`` conflict present (needs a human or
        ``--resolve``). Conflict outranks drift when both are present. (Usage errors
        also use ``2``, but status's own ``2`` is a data outcome, not a usage error.)
    * - ``ls``
      - List tracked files with their sync state. Argument: ``PATH...`` (optional, repeatable; e.g. from a shell glob).
-       Options: ``--remote``, ``--trash``.
+       Options: ``--remote``, ``--trash``, ``--dirs``, ``--state`` (repeatable),
+       ``--format [table|plain|json]``.
      - ``0`` success; ``1`` Drive/auth error; ``2`` usage error.
    * - ``push``
      - Upload local-only/changed files to Drive. Argument: ``PATH...`` (optional, repeatable; e.g. from a shell glob).
