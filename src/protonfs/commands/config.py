@@ -35,8 +35,16 @@ from protonfs.config import (
 # Keys settable/gettable through this command -- kept in lockstep with the `Config`
 # dataclass shape (#21 asks that it stay stable; this is the only place that needs to
 # know its field layout for dotted-path access).
-KNOWN_KEYS = ("remote_root", "device_id", "defaults.on_conflict", "defaults.low_io")
-_BOOL_KEYS = {"defaults.low_io"}
+KNOWN_KEYS = (
+    "remote_root",
+    "device_id",
+    "defaults.on_conflict",
+    "defaults.low_io",
+    "defaults.event_log",
+    "defaults.progress_style",
+)
+_BOOL_KEYS = {"defaults.low_io", "defaults.event_log"}
+_CHOICE_KEYS = {"defaults.progress_style": ("inline", "lines")}
 
 
 def _get_nested(data: dict, dotted_key: str):
@@ -71,15 +79,22 @@ def _set_nested(data: dict, dotted_key: str, value) -> None:
 def _coerce_value(key: str, raw: str):
     """Coerce a raw string CLI value to the type the config key expects.
 
-    Boolean keys accept ``1/true/yes/on`` (case-insensitive) as true; every other
-    key is stored as the raw string.
+    Boolean keys accept ``1/true/yes/on`` (case-insensitive) as true; choice keys
+    validate against allowed values; every other key is stored as the raw string.
 
     :param key: the config key being set.
     :param raw: the raw string value from the command line.
     :returns: a ``bool`` for boolean keys, else the unchanged string.
+    :raises click.ClickException: when a choice key receives an invalid value.
     """
     if key in _BOOL_KEYS:
         return raw.strip().lower() in ("1", "true", "yes", "on")
+    if key in _CHOICE_KEYS:
+        choices = _CHOICE_KEYS[key]
+        if raw not in choices:
+            raise click.ClickException(
+                f"invalid value {raw!r} for {key}; choose one of {', '.join(choices)}."
+            )
     return raw
 
 

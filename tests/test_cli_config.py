@@ -55,3 +55,22 @@ def test_cli_config_get_missing_repo_errors(
     monkeypatch.chdir(tmp_path)
     result = CliRunner().invoke(main, ["config", "get", "remote_root"])
     assert result.exit_code != 0
+
+
+def test_config_set_progress_style_rejects_bad_value(tmp_path, monkeypatch) -> None:
+    import click
+    import pytest
+
+    from protonfs.commands.config import config_set
+    from protonfs.config import init_config
+    init_config(tmp_path, "/my-files/test")
+    with pytest.raises(click.ClickException):
+        config_set(tmp_path, "defaults.progress_style", "sideways")
+
+
+def test_config_set_event_log_bool(tmp_path) -> None:
+    from protonfs.commands.config import config_get, config_set
+    from protonfs.config import init_config
+    init_config(tmp_path, "/my-files/test")
+    config_set(tmp_path, "defaults.event_log", "on")
+    assert config_get(tmp_path, "defaults.event_log") == "True"
