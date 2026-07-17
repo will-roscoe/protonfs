@@ -252,6 +252,30 @@ def _is_throttle_error(message: str) -> bool:
     return any(signal in lowered for signal in _THROTTLE_ERROR_SIGNALS)
 
 
+# A `filesystem upload`/`download` argv carries every file path in the batch (hundreds
+# for a big sim dir). Spelling all of them out in a throttle warning or error made the
+# output unreadable (issue: "unreadable if pushing 700 files"), so collapse the middle
+# path run to a count while keeping the verb and the destination.
+_SUMMARIZE_THRESHOLD = 6
+
+
+def _summarize_command(args: list[str]) -> str:
+    """Render an argv for logs/errors, collapsing a long file list to a count.
+
+    Short commands pass through verbatim. A long one keeps its first two tokens (e.g.
+    ``filesystem upload``) and its final argument (the remote/local destination), and
+    replaces the file paths in between with ``(<n> files)``.
+
+    :param args: the argument vector handed to ``proton-drive``.
+    :returns: a bounded, human-readable one-line description.
+    """
+    parts = [str(a) for a in args]
+    if len(parts) <= _SUMMARIZE_THRESHOLD:
+        return " ".join(parts)
+    middle = parts[2:-1]
+    return f"{parts[0]} {parts[1]} ({len(middle)} files) {parts[-1]}"
+
+
 def _retry_with_backoff(
     attempt_fn: Callable[[], object],
     *,
@@ -385,7 +409,7 @@ class DriveClient:
         """
         if not self._binary_available():
             raise DriveError(f"proton-drive binary not found: {self._binary}")
-        logger.debug("invoke %s", " ".join(str(a) for a in [self._binary, *args, "--json"]))
+        logger.debug("invoke %s", _summarize_command([self._binary, *args, "--json"]))
         result = subprocess.run(
             [self._binary, *args, "--json"],
             capture_output=True,
@@ -458,7 +482,7 @@ class DriveClient:
         """
         return _retry_with_backoff(  # type: ignore[return-value]
             lambda: self._run_transfer(args, timeout=timeout),
-            describe=f"`{' '.join(args)}`",
+            describe=f"`{_summarize_command(args)}`",
             retries=retries,
             base_delay=base_delay,
             cap=cap,
