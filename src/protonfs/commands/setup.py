@@ -316,7 +316,9 @@ def maybe_uninstall_lfs_filters(root: Path) -> None:
     subprocess.run(["git", "-C", str(root), "lfs", "uninstall"], check=True)
 
 
-def run_setup(root: Path, dry_run: bool = False, migrate: bool | None = None) -> None:
+def run_setup(
+    root: Path, dry_run: bool = False, migrate: bool | None = None, reporter=None
+) -> None:
     """Run the full ``protonfs setup`` flow for ``root``.
 
     In order: verify the proton-drive binary, bootstrap the keyring, check auth,
@@ -327,19 +329,29 @@ def run_setup(root: Path, dry_run: bool = False, migrate: bool | None = None) ->
     :param dry_run: when true, preview without persisting or touching Drive/git.
     :param migrate: force (``True``) or skip (``False``) the git-LFS migration;
         ``None`` migrates only when ``root`` is the git toplevel.
+    :param reporter: Reporter to narrate progress through; defaults to the process
+        reporter.
     :raises click.ClickException: on any failed precondition (binary, keyring, auth,
         Drive error, failed LFS upload, declined confirmation).
 
     .. seealso:: :func:`migrate_lfs` for the LFS migration this may invoke.
     """
+    from protonfs.reporting import get_reporter
+
+    reporter = reporter or get_reporter()
+
     drive = DriveClient()
+    reporter.phase("checking proton-drive CLI")
     version = ensure_cli_present(drive)
     click.echo(f"proton-drive CLI found: {version}")
 
+    reporter.phase("preparing keyring")
     ensure_secrets(drive)
+    reporter.phase("checking authentication")
     ensure_authenticated(drive)
     click.echo("Authenticated with Proton Drive.")
 
+    reporter.phase("writing config + control files")
     config = ensure_config(root)
     init_ignore(root)
     init_include(root)
@@ -351,6 +363,7 @@ def run_setup(root: Path, dry_run: bool = False, migrate: bool | None = None) ->
     # #17: create the whole remote_root path now (fail fast with a precise error if it is not
     # under a valid Drive area), so the first push does not fail because the folder is absent.
     if not dry_run:
+        reporter.phase("ensuring remote root")
         ensure_remote_root(ctx)
         click.echo(f"Ensured remote root exists on Drive: {config.remote_root}")
 
@@ -369,6 +382,7 @@ def run_setup(root: Path, dry_run: bool = False, migrate: bool | None = None) ->
             )
         migrated = False
     else:
+        reporter.phase("git-LFS migration")
         migrated = migrate_lfs(ctx, dry_run=dry_run)
 
     # Only reap leftover pointer stubs as part of an ACTUAL migration. When migration was
@@ -384,3 +398,4 @@ def run_setup(root: Path, dry_run: bool = False, migrate: bool | None = None) ->
         maybe_uninstall_lfs_filters(root)
 
     click.echo("protonfs setup complete.")
+    reporter.done("setup complete")

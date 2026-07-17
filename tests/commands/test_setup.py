@@ -650,3 +650,29 @@ def test_run_setup_dry_run_skips_remote_root_and_cleanup(
     run_setup(tmp_path, dry_run=True, migrate=None)
 
     assert any("setup complete" in line for line in lines)
+
+
+def test_run_setup_narrates_steps_through_reporter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, recording_reporter_cls
+) -> None:
+    from protonfs.config import Config
+
+    config = Config(remote_root="/my-files/test", device_id="d1")
+    _stub_setup_guards(monkeypatch, config)
+    monkeypatch.setattr(setup_mod, "ensure_remote_root", lambda ctx: None)
+    monkeypatch.setattr(setup_mod, "migrate_lfs", lambda ctx, dry_run: False)
+    monkeypatch.setattr(setup_mod.click, "echo", lambda msg="": None)
+
+    reporter = recording_reporter_cls()
+    run_setup(tmp_path, dry_run=False, migrate=True, reporter=reporter)
+
+    phases = [name for kind, name in reporter.calls if kind == "phase"]
+    assert phases == [
+        "checking proton-drive CLI",
+        "preparing keyring",
+        "checking authentication",
+        "writing config + control files",
+        "ensuring remote root",
+        "git-LFS migration",
+    ]
+    assert ("done", "setup complete") in reporter.calls

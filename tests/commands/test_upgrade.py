@@ -297,3 +297,20 @@ def test_cli_mutually_exclusive_flags_usage_error() -> None:
     result = CliRunner().invoke(main, ["upgrade", "--drive-only", "--repo-only"])
     assert result.exit_code == 2
     assert "mutually exclusive" in result.output
+
+
+def test_run_upgrade_narrates_steps_through_reporter(
+    tmp_path: Path, capsys, recording_reporter_cls
+) -> None:
+    root = _old_layout_repo(tmp_path)
+    reporter = recording_reporter_cls()
+    run_upgrade(
+        root,
+        client=FakeVersionClient("0.4.6"),
+        installer=FakeInstaller(),
+        upstream_fetch=lambda: None,
+        reporter=reporter,
+    )
+    phases = [name for kind, name in reporter.calls if kind == "phase"]
+    assert phases == ["checking proton-drive version", "running repo migrations"]
+    assert ("done", "upgrade complete") in reporter.calls
