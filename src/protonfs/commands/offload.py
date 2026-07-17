@@ -36,6 +36,10 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class OffloadResult:
+    """Outcome of an :func:`offload` pass: how many local copies were reclaimed, how
+    many were left untouched (unverified on the remote, or with unsynced local edits),
+    the bytes freed, and the rel-paths behind each count."""
+
     offloaded: int = 0
     skipped_unverified: int = 0
     skipped_modified: int = 0
@@ -51,6 +55,20 @@ def offload(
     verify: bool = True,
     dry_run: bool = False,
 ) -> OffloadResult:
+    """Delete the local bytes of tracked files confirmed present on Drive (the inverse
+    of :func:`~protonfs.commands.pull.pull`).
+
+    Only files the index records as locally present and in scope of ``subpath``/ignore
+    are considered; each is (by default) re-verified against a live remote listing
+    before its local copy is removed and its index entry is demoted to metadata-only.
+
+    :param ctx: the loaded repo context.
+    :param subpath: repo-root-relative subtree to offload, or ``None`` for everything.
+    :param verify: re-check each file against the remote before deleting local bytes;
+        when false, trust the index (faster, unsafe).
+    :param dry_run: report what would be freed without deleting anything.
+    :returns: an :class:`OffloadResult` summarising freed/kept files and bytes.
+    """
     ignore = IgnoreMatcher.from_file(ctx.root)
 
     # Only consider files that are: recorded in the index as locally present, in

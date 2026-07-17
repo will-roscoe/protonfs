@@ -32,6 +32,17 @@ from protonfs.drive import decrypted_name
 
 
 def rm(ctx: RepoContext, rel_path: str, recursive: bool, force: bool, confirmed: bool) -> None:
+    """Remove ``rel_path`` from Drive: trash it (recoverable) or, with ``force``,
+    permanently delete it (trash then delete).
+
+    :param ctx: the loaded repo context.
+    :param rel_path: the file/directory to remove, repo-root-relative.
+    :param recursive: required to remove a directory; without it a directory is refused.
+    :param force: permanently delete instead of leaving the item in Drive's trash.
+    :param confirmed: skip the interactive confirmation (the ``--yes`` flag).
+    :raises click.ClickException: on a directory without ``recursive``, or a Drive error
+        (including a same-basename trash ambiguity that blocks a safe permanent delete).
+    """
     local_target = ctx.root / rel_path
     if local_target.is_dir() and not recursive:
         raise click.ClickException(
