@@ -22,6 +22,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from protonfs.logs import backend_passthrough_enabled
+
 logger = logging.getLogger(__name__)
 
 BINARY_ENV_VAR = "PROTONFS_DRIVE_BIN"
@@ -383,13 +385,17 @@ class DriveClient:
         """
         if not self._binary_available():
             raise DriveError(f"proton-drive binary not found: {self._binary}")
-        return subprocess.run(
+        logger.debug("invoke %s", " ".join(str(a) for a in [self._binary, *args, "--json"]))
+        result = subprocess.run(
             [self._binary, *args, "--json"],
             capture_output=True,
             text=True,
             env=self._drive_env(),
             timeout=timeout,
         )
+        if backend_passthrough_enabled() and result.stderr:
+            logger.debug("proton-drive stderr: %s", result.stderr.strip())
+        return result
 
     def _run_json(self, args: list[str], timeout: float | None = None) -> dict | list:
         """Run a JSON subcommand and return its parsed output, classifying failures.

@@ -643,3 +643,53 @@ def test_empty_trash_invokes_empty_trash_command(monkeypatch: pytest.MonkeyPatch
     client.empty_trash()
 
     assert run.calls[0][1:4] == ["filesystem", "empty-trash", "--json"]
+
+
+# --- backend passthrough logging (5h) -----------------------------------------------
+
+
+def test_invoke_logs_argv_at_debug(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import logging
+
+    client = DriveClient(binary="proton-drive")
+    monkeypatch.setattr("protonfs.drive.shutil.which", lambda _: "/usr/bin/proton-drive")
+    monkeypatch.setattr(subprocess, "run", _stub_run('{"ok": true}'))
+
+    with caplog.at_level(logging.DEBUG, logger="protonfs.drive"):
+        client._invoke(["filesystem", "list", "/"])
+
+    assert any("invoke" in r.getMessage() for r in caplog.records)
+
+
+def test_invoke_logs_stderr_when_backend_passthrough_enabled(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import logging
+
+    client = DriveClient(binary="proton-drive")
+    monkeypatch.setattr("protonfs.drive.shutil.which", lambda _: "/usr/bin/proton-drive")
+    monkeypatch.setattr(subprocess, "run", _stub_run("", stderr="some backend noise"))
+    monkeypatch.setattr("protonfs.drive.backend_passthrough_enabled", lambda: True)
+
+    with caplog.at_level(logging.DEBUG, logger="protonfs.drive"):
+        client._invoke(["filesystem", "list", "/"])
+
+    assert any("some backend noise" in r.getMessage() for r in caplog.records)
+
+
+def test_invoke_does_not_log_stderr_when_backend_passthrough_disabled(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import logging
+
+    client = DriveClient(binary="proton-drive")
+    monkeypatch.setattr("protonfs.drive.shutil.which", lambda _: "/usr/bin/proton-drive")
+    monkeypatch.setattr(subprocess, "run", _stub_run("", stderr="some backend noise"))
+    monkeypatch.setattr("protonfs.drive.backend_passthrough_enabled", lambda: False)
+
+    with caplog.at_level(logging.DEBUG, logger="protonfs.drive"):
+        client._invoke(["filesystem", "list", "/"])
+
+    assert not any("some backend noise" in r.getMessage() for r in caplog.records)
