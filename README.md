@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="https://raw.githubusercontent.com/will-roscoe/protonfs/main/docs/_static/logo.svg" width="120" alt="protonfs logo">
+</p>
+
 # protonfs [![](https://raw.githubusercontent.com/will-roscoe/protonfs/main/.github/badges/version.svg)](https://github.com/will-roscoe/protonfs/releases/latest)
 
 [![](https://img.shields.io/badge/pypi-repo?logo=pypi&logoColor=%23ffd242&logoSize=auto&color=%233775a9)](https://pypi.org/project/protonfs/) 

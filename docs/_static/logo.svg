@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 500">
+  <defs>
+    <linearGradient id="proton-fill">
+      <stop offset="0" stop-color="rgb(244, 129, 225)"/>
+      <stop offset="1" stop-color="rgb(127, 96, 255)"/>
+    </linearGradient>
+    <linearGradient id="proton-highlight">
+      <stop offset="0" stop-color="rgb(229, 79, 205)"/>
+      <stop offset="1" stop-color="rgb(109, 74, 255)"/>
+    </linearGradient>
+    <radialGradient id="fill-radial" href="#proton-fill" gradientUnits="userSpaceOnUse" cx="169.235" cy="284.533" r="93.42" gradientTransform="matrix(0.180715, -1.29921, 2.297425, 0.319562, -454.735626, 409.431061)"/>
+    <radialGradient id="highlight-radial" href="#proton-highlight" gradientUnits="userSpaceOnUse" cx="205.974" cy="264.857" r="93.42" gradientTransform="matrix(0.334784, -1.409653, 3.440233, 0.817034, -768.451111, 354.025543)"/>
+    <mask id="highlight-mask">
+      <rect x="133.629" y="115.607" width="186.839" height="186.839" rx="29" ry="29" fill="rgb(255, 255, 255)"/>
+    </mask>
+  </defs>
+  <!-- Proton Drive diamond: a rounded square rotated 45deg, pink -> purple gradient.
+       The rotation's pivot (transform-origin 242.421,193.655) is baked into the
+       transform list so it renders identically in every SVG engine. -->
+  <g transform="translate(-234.430069, 23.501768)">
+    <rect x="149.001" y="100.235" width="186.839" height="186.839" rx="29" ry="29" fill="url(#fill-radial)" transform="translate(242.421 193.655) matrix(0.707107, 0.707107, -0.707107, 0.707107, 225.616514, -11.915162) translate(-242.421 -193.655)"/>
+    <rect x="149.001" y="100.235" width="186.839" height="186.839" rx="29" ry="29" fill="url(#highlight-radial)" mask="url(#highlight-mask)" transform="translate(242.421 193.655) matrix(0.707107, 0.707107, -0.707107, 0.707107, 225.616529, -11.915153) translate(-242.421 -193.655)"/>
+  </g>
+  <!-- Git branch glyph: trunk + fork in white, with baked-in commit nodes as plain
+       circles. The original used marker elements, which GitHub strips and many
+       renderers drop, causing the inconsistent display. -->
+  <g fill="none" stroke="rgb(255, 255, 255)" stroke-width="19" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M 195.365 111.322 L 233.607 150.176 L 285.311 205.241"/>
+    <path d="M 233.901 150.588 L 233.607 269.683"/>
+  </g>
+  <g fill="rgb(255, 255, 255)">
+    <circle cx="233.607" cy="150.176" r="20"/>
+    <circle cx="285.311" cy="205.241" r="20"/>
+    <circle cx="233.607" cy="269.683" r="20"/>
+  </g>
+</svg>

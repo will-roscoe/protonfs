@@ -12,6 +12,54 @@ import functools
 import click
 
 from protonfs import __version__
+from protonfs.argv import reorder_argv
+
+# Shown at the bottom of every subcommand's --help so the global flags are discoverable
+# there, not only on `protonfs --help`. They are accepted in any position (see
+# PositionalFlagGroup); this is documentation, they are not per-command options.
+_GLOBAL_OPTIONS_HELP = (
+    "Global options (accepted before or after the command, e.g. `protonfs push -v PATH`):\n"
+    "  -v, --verbose                       increase console detail (-v..-vvvv)\n"
+    "  --progress-inline/--progress-lines  progress render style\n"
+    "  --event-log/--no-event-log          write .protonfs/events.log\n"
+    "Run `protonfs --help` for details."
+)
+
+
+class _GlobalsEpilog:
+    """Mixin: append the global-options block to a command/group's ``--help``."""
+
+    def format_epilog(self, ctx, formatter):
+        """Render the normal epilog, then the shared global-options block."""
+        super().format_epilog(ctx, formatter)
+        formatter.write_paragraph()
+        for line in _GLOBAL_OPTIONS_HELP.splitlines():
+            formatter.write_text(line)
+
+
+class _EpilogCommand(_GlobalsEpilog, click.Command):
+    """A leaf command whose ``--help`` documents the global options."""
+
+
+class _EpilogGroup(_GlobalsEpilog, click.Group):
+    """A subgroup (config/trash) whose ``--help`` documents the global options, and
+    whose own subcommands inherit :class:`_EpilogCommand`."""
+
+    command_class = _EpilogCommand
+
+
+class PositionalFlagGroup(click.Group):
+    """The top-level group: rewrites argv so global flags and subcommand flags may
+    appear in any position (see :func:`~protonfs.argv.reorder_argv`), and hands its
+    subcommands/subgroups the global-options epilog classes.
+    """
+
+    command_class = _EpilogCommand
+    group_class = _EpilogGroup
+
+    def parse_args(self, ctx, args):
+        """Reorder ``args`` into Click's canonical form before the normal parse."""
+        return super().parse_args(ctx, reorder_argv(list(args), frozenset(self.commands)))
 
 
 def _drive_error_boundary(func):
@@ -81,7 +129,7 @@ def _accumulate_transfer(total, part) -> None:
     total.failures += part.failures
 
 
-@click.group()
+@click.group(cls=PositionalFlagGroup)
 @click.version_option(__version__, prog_name="protonfs")
 @click.option("-v", "--verbose", count=True, help="Increase console detail (-v..-vvvv).")
 @click.option(

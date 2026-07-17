@@ -362,3 +362,66 @@ def test_cli_survives_corrupt_repo_config(tmp_path: Path, monkeypatch) -> None:
 
     assert result.exit_code == 0
     assert result.exception is None
+
+
+# --- position-independent flags (argv reorder) -----------------------------------------
+
+
+def test_cli_global_flag_after_subcommand(tmp_path, monkeypatch, make_fake_drive) -> None:
+    """`protonfs status -v` (global flag after the subcommand) must work, not error."""
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.drive = make_fake_drive()
+    monkeypatch.setattr("protonfs.context.load_context", lambda *a, **k: ctx)
+
+    result = CliRunner().invoke(main, ["status", "-v"])
+
+    assert result.exit_code == 0, result.output
+    assert "synced: 0" in result.output
+
+
+def test_cli_subcommand_flag_before_subcommand(tmp_path, monkeypatch, make_fake_drive) -> None:
+    """`protonfs --dry-run push` (a subcommand flag before the subcommand) must work."""
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.drive = make_fake_drive()
+    monkeypatch.setattr("protonfs.context.load_context", lambda *a, **k: ctx)
+
+    result = CliRunner().invoke(main, ["--dry-run", "push"])
+
+    assert result.exit_code == 0, result.output
+    assert "transferred=0" in result.output
+
+
+def test_cli_global_flag_after_subgroup_chain(tmp_path, monkeypatch, make_fake_drive) -> None:
+    init_config(tmp_path, "/my-files/test")
+    monkeypatch.chdir(tmp_path)
+
+    result = CliRunner().invoke(main, ["config", "set", "defaults.low_io", "true", "-v"])
+
+    assert result.exit_code == 0, result.output
+    assert "Set defaults.low_io" in result.output
+
+
+def test_cli_subcommand_help_documents_global_options() -> None:
+    result = CliRunner().invoke(main, ["push", "--help"])
+    assert result.exit_code == 0
+    assert "Global options" in result.output
+    assert "--event-log" in result.output
+
+
+def test_cli_global_flag_names_match_group_options() -> None:
+    """Freshness guard: argv.GLOBAL_FLAG_NAMES + -v must equal the group's real options."""
+    import click
+
+    from protonfs.argv import GLOBAL_FLAG_NAMES
+
+    group_opts: set[str] = set()
+    for p in main.params:
+        if isinstance(p, click.Option):
+            group_opts.update(p.opts)
+            group_opts.update(p.secondary_opts)
+    # Every long global flag the reorderer hoists must be a real group option.
+    assert GLOBAL_FLAG_NAMES <= group_opts
+    # And the group exposes exactly these long options plus -v/--verbose and --version.
+    assert group_opts == GLOBAL_FLAG_NAMES | {"-v", "--verbose", "--version"}

@@ -693,3 +693,28 @@ def test_invoke_does_not_log_stderr_when_backend_passthrough_disabled(
         client._invoke(["filesystem", "list", "/"])
 
     assert not any("some backend noise" in r.getMessage() for r in caplog.records)
+
+
+# --- command summarization: keep large-transfer logs readable --------------------------
+
+
+def test_summarize_command_passes_short_commands_through() -> None:
+    from protonfs.drive import _summarize_command
+
+    assert _summarize_command(["filesystem", "list", "/my-files/x"]) == (
+        "filesystem list /my-files/x"
+    )
+
+
+def test_summarize_command_collapses_long_file_lists() -> None:
+    from protonfs.drive import _summarize_command
+
+    args = ["filesystem", "upload", *[f"/repo/sim/f_{i:05d}" for i in range(197)], "/my-files/sim"]
+    out = _summarize_command(args)
+
+    # The hundreds of paths collapse to a count; the verb and destination survive.
+    assert "filesystem upload" in out
+    assert "/my-files/sim" in out
+    assert "197 files" in out or "197 paths" in out
+    assert "f_00042" not in out  # no interior path spelled out
+    assert len(out) < 120  # bounded, not thousands of chars
