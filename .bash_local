@@ -1,0 +1,27 @@
+# Repo-local shell setup for protonfs. Auto-sourced by the directory-aware loader in
+# ~/.bashrc when you are inside this repo (and it is allowlisted in
+# ~/.config/repo-shell/allowed). Define _repo_activate / _repo_deactivate; the loader
+# runs activate on entry and deactivate on leaving, and never re-runs while you move
+# within the repo.
+
+_repo_activate() {
+  # Emulate a post-push hook (git has no native one): after a SUCCESSFUL `git push`,
+  # run this repo's .git/hooks/post-push (fetch tags, fast-forward, reinstall so the
+  # editable install's hatch-vcs version matches the pushed/released state).
+  git() {
+    if [ "${1:-}" = "push" ]; then
+      local root hook
+      root="$(command git rev-parse --show-toplevel 2>/dev/null)"
+      hook="$root/.git/hooks/post-push"
+      command git "$@" && [ -x "$hook" ] && "$hook"
+    else
+      command git "$@"
+    fi
+  }
+  printf '\033[2mprotonfs: git running as wrapper (post-push auto-sync on)\033[0m\n'
+}
+
+_repo_deactivate() {
+  unset -f git   # restore the normal git on leaving the repo
+  printf '\033[2mprotonfs: git wrapper removed\033[0m\n'
+}
