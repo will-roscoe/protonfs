@@ -158,6 +158,7 @@ def human_size(n: int) -> str:
 
 
 def _states_summary(states: dict[str, int]) -> str:
+    """Render a ``{state: count}`` map as a compact ``state=count ...`` string."""
     return " ".join(f"{state}={count}" for state, count in sorted(states.items()))
 
 
@@ -188,8 +189,8 @@ def render_ls(
     :param states: sync-state filter; empty means all states (#97).
     :param fmt: ``table`` (rich, default) | ``plain`` (tab-separated) | ``json`` (#97).
     :param visual: ``"treemap"`` | ``"waffle"`` to draw a per-directory storage-usage
-        chart (by indexed/remote size) instead of the table; ``None`` for no chart.
-        Implies directory aggregation (#94).
+        chart (by each dir's :attr:`DirSummary.apparent_bytes` footprint) instead of the
+        table; ``None`` for no chart. Implies directory aggregation (#94).
     :param echo: sink for plain/json lines (overridable for tests).
 
     .. seealso:: :func:`collect_entries` / :func:`summarize_dirs` for the data layer,

@@ -33,6 +33,12 @@ Quick task index
        :ref:`protonfs pull --dry-run <cmd-pull>`
    * - See the sync state of every tracked file
      - :ref:`protonfs status <cmd-status>` / :ref:`protonfs ls <cmd-ls>`
+   * - See which directories use the most storage
+     - :ref:`protonfs ls --dirs <cmd-ls>` (add
+       :ref:`--visual treemap|waffle <cmd-ls>` for a chart)
+   * - Get machine-readable output for a script
+     - :ref:`protonfs status --format json <cmd-status>` /
+       :ref:`protonfs ls --format json|plain <cmd-ls>`
    * - Learn about files on Drive I have never pulled
      - :ref:`protonfs refresh <cmd-refresh>`
    * - Free local disk space but keep the files on Drive

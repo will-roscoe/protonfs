@@ -186,6 +186,7 @@ class Rect:
 
 
 def _layout_row(sizes: list[float], x: float, y: float, dy: float) -> list[Rect]:
+    """Stack ``sizes`` as a column of full-``dy``-height rects filling left-to-right."""
     width = sum(sizes) / dy
     rects, cursor = [], y
     for size in sizes:
@@ -195,6 +196,7 @@ def _layout_row(sizes: list[float], x: float, y: float, dy: float) -> list[Rect]
 
 
 def _layout_col(sizes: list[float], x: float, y: float, dx: float) -> list[Rect]:
+    """Stack ``sizes`` as a row of full-``dx``-width rects filling top-to-bottom."""
     height = sum(sizes) / dx
     rects, cursor = [], x
     for size in sizes:
@@ -204,10 +206,12 @@ def _layout_col(sizes: list[float], x: float, y: float, dx: float) -> list[Rect]
 
 
 def _layout(sizes: list[float], x: float, y: float, dx: float, dy: float) -> list[Rect]:
+    """Lay one strip of ``sizes`` along the shorter side of the region (squarify's step)."""
     return _layout_row(sizes, x, y, dy) if dx >= dy else _layout_col(sizes, x, y, dx)
 
 
 def _worst_ratio(sizes: list[float], x: float, y: float, dx: float, dy: float) -> float:
+    """Worst (furthest-from-1) aspect ratio a strip of ``sizes`` would produce here."""
     return max(max(r.dx / r.dy, r.dy / r.dx) for r in _layout(sizes, x, y, dx, dy))
 
 
@@ -234,6 +238,7 @@ def squarify(values: list[float], x: float, y: float, dx: float, dy: float) -> l
 
 
 def _squarify_scaled(sizes: list[float], x: float, y: float, dx: float, dy: float) -> list[Rect]:
+    """Recursive core of :func:`squarify`: ``sizes`` are pre-scaled to area units."""
     if not sizes:
         return []
     if len(sizes) == 1:

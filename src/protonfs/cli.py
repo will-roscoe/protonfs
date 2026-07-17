@@ -1,3 +1,10 @@
+"""The ``protonfs`` command-line entry point: the Click command tree.
+
+Each command is a thin wrapper that lazily imports and calls its
+:mod:`protonfs.commands` implementation, so ``--help`` and shell completion stay
+fast (no Drive/keyring imports until a command actually runs). The frozen 1.0
+surface these commands expose is documented in ``docs/stability.rst``.
+"""
 from __future__ import annotations
 
 import functools
@@ -239,8 +246,9 @@ _STATE_CHOICES = (
     "--visual",
     type=click.Choice(["treemap", "waffle"]),
     default=None,
-    help="Draw a per-directory storage-usage chart (by indexed/remote size) instead of "
-    "the listing. Implies directory aggregation; terminal-only (not for --format/--trash).",
+    help="Draw a per-directory storage-usage chart (by each dir's apparent footprint) "
+    "instead of the listing. Implies directory aggregation; terminal-only (not for "
+    "--format/--trash).",
 )
 @_drive_error_boundary
 def ls(
