@@ -204,6 +204,32 @@ def test_offload_subpath_scoping_leaves_outside_files_untouched(
     assert ctx.index.get("outside").local_state == "present"
 
 
+def test_offload_narrates_skip_and_item(
+    tmp_path: Path, make_fake_drive, recording_reporter_cls
+) -> None:
+    init_config(tmp_path, "/my-files/test")
+    (tmp_path / "kept").write_bytes(b"data")
+    (tmp_path / "gone").write_bytes(b"data")
+    ctx = load_context(tmp_path)
+    ctx.index.set("kept", _synced_entry(tmp_path / "kept", "/my-files/test/kept"))
+    ctx.index.set("gone", _synced_entry(tmp_path / "gone", "/my-files/test/gone"))
+    fake = make_fake_drive()
+    ctx.drive = fake
+    # Only "kept" actually landed on the remote; "gone" stays unverified -> skipped + warned.
+    fake.upload([tmp_path / "kept"], "/my-files/test")
+    rep = recording_reporter_cls()
+
+    result = offload(ctx, None, reporter=rep)
+
+    kinds = [c[0] for c in rep.calls]
+    assert kinds[0] == "phase"
+    assert "warn" in kinds
+    assert "item" in kinds
+    assert kinds[-1] == "done"
+    assert result.offloaded == 1
+    assert result.skipped_unverified == 1
+
+
 def test_offload_reversible_via_classify_metadata_only(tmp_path: Path, make_fake_drive) -> None:
     init_config(tmp_path, "/my-files/test")
     (tmp_path / "dump_0001").write_bytes(b"data")

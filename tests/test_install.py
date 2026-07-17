@@ -276,3 +276,26 @@ def test_every_supported_version_has_at_least_one_pin() -> None:
     # Matrix consistency: no supported version is entirely unpinnable.
     for version in SUPPORTED_DRIVE_VERSIONS:
         assert any((version, slug) in PINNED_SHA512 for slug in _ALL_SLUGS)
+
+
+def test_install_drive_narrates_download_and_done(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, recording_reporter_cls
+) -> None:
+    data = b"the-real-binary"
+    sha = hashlib.sha512(data).hexdigest()
+    monkeypatch.setenv("PROTONFS_DRIVE_SHA512", sha)
+    plat = Platform("linux-x64", "linux", "x64")
+
+    reporter = recording_reporter_cls()
+    result = install_drive(
+        plat=plat,
+        dest_dir=tmp_path,
+        cpuinfo_text="flags : avx2",
+        downloader=_opener_for(data),
+        reporter=reporter,
+    )
+
+    phases = [name for kind, name in reporter.calls if kind == "phase"]
+    assert phases == ["downloading proton-drive"]
+    assert any(kind == "done" and msg == "installed" for kind, msg in reporter.calls)
+    assert result.path.read_bytes() == data

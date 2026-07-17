@@ -20,7 +20,6 @@ upload. Any file that fails this check is left untouched locally and reported as
 """
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -30,8 +29,6 @@ from protonfs.diff import within_subpath
 from protonfs.ignore import IgnoreMatcher
 from protonfs.index import IndexEntry
 from protonfs.localscan import hash_file_digests
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -54,6 +51,7 @@ def offload(
     subpath: str | None,
     verify: bool = True,
     dry_run: bool = False,
+    reporter=None,
 ) -> OffloadResult:
     """Delete the local bytes of tracked files confirmed present on Drive (the inverse
     of :func:`~protonfs.commands.pull.pull`).
@@ -67,8 +65,14 @@ def offload(
     :param verify: re-check each file against the remote before deleting local bytes;
         when false, trust the index (faster, unsafe).
     :param dry_run: report what would be freed without deleting anything.
+    :param reporter: :class:`~protonfs.reporting.Reporter` to narrate progress through;
+        defaults to the process reporter (:func:`~protonfs.reporting.get_reporter`).
     :returns: an :class:`OffloadResult` summarising freed/kept files and bytes.
     """
+    from protonfs.reporting import get_reporter
+
+    reporter = reporter or get_reporter()
+    reporter.phase("scanning candidates", subpath=subpath or ".")
     ignore = IgnoreMatcher.from_file(ctx.root)
 
     # Only consider files that are: recorded in the index as locally present, in
@@ -90,6 +94,7 @@ def offload(
 
     result = OffloadResult()
     if not candidates:
+        reporter.done("offloaded", files=result.offloaded, reclaimed=result.bytes_reclaimed)
         return result
 
     for parent, rels in group_by_parent(candidates).items():
@@ -115,7 +120,7 @@ def offload(
             # pass the size verify below. Compare the live local sha256 to the index's record.
             local_sha256, _ = hash_file_digests(local_path)
             if local_sha256 != entry.sha256:
-                logger.warning("offload skip: %s has unsynced local edits", rel)
+                reporter.warn(f"skip {rel}: unsynced local edits")
                 result.skipped_modified += 1
                 result.modified_paths.append(rel)
                 continue
@@ -126,12 +131,7 @@ def offload(
                     ident.claimed_size is None or ident.claimed_size == local_size
                 )
                 if not verified:
-                    reason = (
-                        "absent" if ident is None else f"size {ident.claimed_size} != {local_size}"
-                    )
-                    logger.warning(
-                        "offload skip: %s not verified on remote (%s)", rel, reason
-                    )
+                    reporter.warn(f"skip {rel}: not verified on remote")
                     result.skipped_unverified += 1
                     result.skipped_paths.append(rel)
                     continue
@@ -143,6 +143,7 @@ def offload(
             if dry_run:
                 continue
 
+            reporter.item("x", rel)
             local_path.unlink()
             ctx.index.set(
                 rel,
@@ -164,4 +165,5 @@ def offload(
             ctx.index.save()
     if not dry_run:
         ctx.index.save()
+    reporter.done("offloaded", files=result.offloaded, reclaimed=result.bytes_reclaimed)
     return result

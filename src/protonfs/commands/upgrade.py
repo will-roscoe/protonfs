@@ -77,15 +77,25 @@ def run_upgrade(
     client: DriveClient | None = None,
     installer=install_drive,
     upstream_fetch=upstream_stable_version,
+    reporter=None,
 ) -> int:
     """Run (or, with `check`, preview) the upgrade. Returns the process exit code:
     with `check`, 0 == fully current and 1 == an upgrade/migration is available;
-    without it, 0 on success (failures raise)."""
+    without it, 0 on success (failures raise).
+
+    :param reporter: Reporter to narrate progress through; defaults to the process
+        reporter.
+    """
+    from protonfs.reporting import get_reporter
+
+    reporter = reporter or get_reporter()
+
     client = client or DriveClient()
     highest = highest_supported()
     actions_available = False
 
     if not repo_only:
+        reporter.phase("checking proton-drive version")
         installed = client.drive_version()
         if installed is None:
             click.echo(f"proton-drive: not installed; highest supported is {highest}.")
@@ -131,6 +141,7 @@ def run_upgrade(
 
     if not drive_only:
         if config_path(root).exists():
+            reporter.phase("running repo migrations")
             pending = pending_migrations(root)
             if not pending:
                 click.echo("repo state: current (no pending migrations).")
@@ -157,4 +168,5 @@ def run_upgrade(
             + ("everything is current." if not actions_available else "upgrade available.")
         )
         return 1 if actions_available else 0
+    reporter.done("upgrade complete")
     return 0

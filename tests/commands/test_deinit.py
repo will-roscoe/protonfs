@@ -28,6 +28,8 @@ def _full_setup(root: Path) -> None:
     write_git_control_files(root)
     IndexStore(root).save()
     save_frontier(root, "/my-files/test", [])
+    (root / ".protonfs" / "events.log").write_text("")
+    (root / ".protonfs" / "events.log.1").write_text("")
 
 
 def test_full_teardown_removes_every_managed_file_and_the_directory(tmp_path: Path) -> None:
@@ -158,3 +160,12 @@ def test_declined_confirmation_leaves_tree_untouched(
 def test_not_a_protonfs_root_raises_click_exception(tmp_path: Path) -> None:
     with pytest.raises(click.ClickException):
         run_deinit(tmp_path)
+
+
+def test_deinit_removes_event_log(tmp_path: Path) -> None:
+    from protonfs.config import init_config
+
+    init_config(tmp_path, "/my-files/test")
+    (tmp_path / ".protonfs" / "events.log").write_text("x")
+    run_deinit(tmp_path, dry_run=False, yes=True)
+    assert not (tmp_path / ".protonfs" / "events.log").exists()

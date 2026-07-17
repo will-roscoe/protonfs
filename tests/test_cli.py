@@ -305,3 +305,60 @@ def test_cli_ls_visual_rejects_trash(tmp_path: Path, monkeypatch, make_fake_driv
 
     assert result.exit_code == 2
     assert "nothing to chart" in result.output
+
+
+def test_cli_verbose_count_configures_reporter(tmp_path, monkeypatch, make_fake_drive) -> None:
+    """``-vv`` on any subcommand configures a Reporter at level 2 before it runs."""
+    from collections import Counter
+
+    from protonfs.reporting import get_reporter
+
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.drive = make_fake_drive()
+    monkeypatch.setattr("protonfs.context.load_context", lambda *a, **k: ctx)
+    captured = {}
+
+    def _fake_compute_status(c, p):
+        captured["lvl"] = get_reporter().level
+        return Counter()
+
+    monkeypatch.setattr("protonfs.commands.status.compute_status", _fake_compute_status)
+    CliRunner().invoke(main, ["-vv", "status"])
+    assert captured["lvl"] == 2
+
+
+def test_cli_event_log_flag_writes_file(tmp_path, monkeypatch, make_fake_drive) -> None:
+    """``--event-log`` on the group makes the subcommand write ``.protonfs/events.log``."""
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.drive = make_fake_drive()
+    monkeypatch.setattr("protonfs.context.load_context", lambda *a, **k: ctx)
+    monkeypatch.chdir(tmp_path)
+    CliRunner().invoke(main, ["-v", "--event-log", "status"])
+    assert (tmp_path / ".protonfs" / "events.log").exists()
+
+
+def test_cli_no_verbose_stdout_unchanged(tmp_path, monkeypatch, make_fake_drive) -> None:
+    """Regression: default invocation still prints exactly the state counts on stdout."""
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.drive = make_fake_drive()
+    monkeypatch.setattr("protonfs.context.load_context", lambda *a, **k: ctx)
+    result = CliRunner().invoke(main, ["status"])
+    assert "synced: 0" in result.output
+
+
+def test_cli_survives_corrupt_repo_config(tmp_path: Path, monkeypatch) -> None:
+    """A corrupt .protonfs/config.json must not crash the group callback itself (#F2):
+    diagnostics (doctor/config set) are how you FIX a broken config, so they -- and any
+    other command whose body does not need config -- must still run."""
+    protonfs_dir = tmp_path / ".protonfs"
+    protonfs_dir.mkdir()
+    (protonfs_dir / "config.json").write_text("{corrupt")
+    monkeypatch.chdir(tmp_path)
+
+    result = CliRunner().invoke(main, ["shell-init"])
+
+    assert result.exit_code == 0
+    assert result.exception is None

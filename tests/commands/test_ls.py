@@ -53,6 +53,34 @@ def test_render_ls_remote_includes_remote_only_files(tmp_path: Path, make_fake_d
     assert "remote-only" in buf.getvalue()
 
 
+def test_ls_remote_narrates_walk(tmp_path: Path, make_fake_drive, recording_reporter_cls) -> None:
+    from protonfs.commands.ls import collect_entries
+
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.drive = make_fake_drive(
+        walk_entries=[RemoteEntry("nested/remote_only.bin", is_dir=False, size=3)]
+    )
+    rep = recording_reporter_cls()
+
+    collect_entries(ctx, None, remote=True, reporter=rep)
+
+    kinds = [c[0] for c in rep.calls]
+    assert kinds == ["phase"]
+
+
+def test_ls_local_only_does_not_narrate(tmp_path: Path, recording_reporter_cls) -> None:
+    from protonfs.commands.ls import collect_entries
+
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    rep = recording_reporter_cls()
+
+    collect_entries(ctx, None, remote=False, reporter=rep)
+
+    assert rep.calls == []
+
+
 def test_render_ls_remote_includes_nested_remote_only_files(
     tmp_path: Path, make_fake_drive
 ) -> None:

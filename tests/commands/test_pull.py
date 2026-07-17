@@ -6,7 +6,7 @@ from pathlib import Path
 from protonfs.commands.pull import pull
 from protonfs.config import init_config
 from protonfs.context import load_context
-from protonfs.drive import RemoteEntry
+from protonfs.drive import RemoteEntry, TransferResult
 from protonfs.index import IndexEntry
 
 
@@ -334,10 +334,25 @@ def test_pull_cli_empty_index_without_refresh_prints_hint(
     assert "pull --refresh" in result.output
 
 
-# --- #93: on_progress reporting --------------------------------------------------------
+# --- #93: progress reporting via the Reporter -------------------------------------------
 
 
-def test_pull_reports_progress_per_batch(tmp_path: Path, monkeypatch, make_fake_drive) -> None:
+def test_pull_narrates_phases(tmp_path: Path, make_fake_drive, recording_reporter_cls) -> None:
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.index.set("a/f", _metadata_only_entry("/my-files/test/a/f"))
+    ctx.drive = make_fake_drive()
+    rep = recording_reporter_cls()
+
+    pull(ctx, None, resolve=None, dry_run=False, reporter=rep)
+
+    kinds = [c[0] for c in rep.calls]
+    assert "phase" in kinds and "done" in kinds
+
+
+def test_pull_reports_progress_per_batch(
+    tmp_path: Path, monkeypatch, make_fake_drive, recording_reporter_cls
+) -> None:
     init_config(tmp_path, "/my-files/test")
     ctx = load_context(tmp_path)
     for rel in ("run1/a", "run1/b", "run2/c"):
@@ -348,62 +363,40 @@ def test_pull_reports_progress_per_batch(tmp_path: Path, monkeypatch, make_fake_
         "protonfs.commands.pull.batches", lambda items, size=1: [[i] for i in items]
     )
 
-    calls: list[tuple[int, int]] = []
-    result = pull(
-        ctx, None, resolve=None, dry_run=False, on_progress=lambda d, t: calls.append((d, t))
-    )
+    rep = recording_reporter_cls()
+    result = pull(ctx, None, resolve=None, dry_run=False, reporter=rep)
 
+    progress_calls = [c[1:] for c in rep.calls if c[0] == "progress"]
+    # The final forced call repeats (3, 3); drop it to check per-batch cadence separately.
     assert result.transferred_items == 3
-    assert [t for _, t in calls] == [3, 3, 3]  # total is the whole pull, not the batch
-    assert [d for d, _ in calls] == [1, 2, 3]  # monotonic across parent groups
+    assert [t for _, t in progress_calls] == [3, 3, 3, 3]  # total is the whole pull
+    assert [d for d, _ in progress_calls] == [1, 2, 3, 3]  # monotonic, forced final repeat
 
 
-def test_pull_cli_progress_silent_when_stderr_not_a_tty(
-    tmp_path: Path, monkeypatch, make_fake_drive
+def test_pull_narrates_no_item_for_a_failed_download(
+    tmp_path: Path, make_fake_drive, recording_reporter_cls
 ) -> None:
-    """#93: progress is an interactive-only stderr overlay -- non-TTY invocations
-    (scripts, CI, CliRunner) must see exactly the frozen 1.0 output."""
-    from click.testing import CliRunner
-
-    from protonfs.cli import main
-
+    # F5: a failed batch member must not get a "v" item line -- it never landed locally.
     init_config(tmp_path, "/my-files/test")
     ctx = load_context(tmp_path)
-    ctx.index.set("run1/a", _metadata_only_entry("/my-files/test/run1/a"))
-    ctx.index.save()
-    ctx.drive = make_fake_drive()
-    monkeypatch.setattr("protonfs.context.load_context", lambda *a, **k: ctx)
+    ctx.index.set("ok", _metadata_only_entry("/my-files/test/ok"))
+    ctx.index.set("broken", _metadata_only_entry("/my-files/test/broken"))
+    ctx.drive = make_fake_drive(
+        download_result=TransferResult(
+            transferred_items=1,
+            skipped_items=0,
+            failed_items=1,
+            failures=[{"name": "broken", "error": "boom"}],
+        )
+    )
+    rep = recording_reporter_cls()
 
-    result = CliRunner().invoke(main, ["pull"])
+    result = pull(ctx, None, resolve=None, dry_run=False, reporter=rep)
 
-    assert result.exit_code == 0, result.output
-    assert "\r" not in result.output  # no progress overlay leaked
-
-
-def test_progress_printer_renders_on_tty(monkeypatch, capsys) -> None:
-    import sys
-
-    from protonfs.cli import _progress_printer
-
-    monkeypatch.setattr(sys.stderr, "isatty", lambda: True)
-    render = _progress_printer("pull")
-    assert render is not None
-
-    render(1, 2)
-    render(2, 2)
-
-    err = capsys.readouterr().err
-    assert "\rpull: 1/2 file(s)" in err
-    assert "\rpull: 2/2 file(s)\n" in err  # newline finishes the line at done == total
-
-
-def test_progress_printer_disabled_off_tty(monkeypatch) -> None:
-    import sys
-
-    from protonfs.cli import _progress_printer
-
-    monkeypatch.setattr(sys.stderr, "isatty", lambda: False)
-    assert _progress_printer("pull") is None
+    item_paths = [c[1] for c in rep.calls if c[0] == "item"]
+    assert "ok" in item_paths
+    assert "broken" not in item_paths
+    assert result.failed_items == 1
 
 
 def test_pull_single_file_pathspec_downloads_only_that_file(

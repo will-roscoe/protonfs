@@ -37,6 +37,35 @@ def test_rm_trashes_and_removes_from_index(tmp_path: Path, make_fake_drive) -> N
     assert ctx.index.get("dump_0001") is None
 
 
+def test_rm_narrates_trash_and_delete(
+    tmp_path: Path, make_fake_drive, recording_reporter_cls
+) -> None:
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.index.set(
+        "dump_0001",
+        IndexEntry(
+            size=1,
+            mtime=1.0,
+            sha256="h",
+            sha1="",
+            remote_path="/my-files/test/dump_0001",
+            origin_device="d1",
+            local_state="present",
+            last_synced="2026-07-08T00:00:00+00:00",
+        ),
+    )
+    fake = make_fake_drive()
+    ctx.drive = fake
+    rep = recording_reporter_cls()
+
+    rm(ctx, "dump_0001", recursive=False, force=True, confirmed=True, reporter=rep)
+
+    items = [c[1] for c in rep.calls if c[0] == "item"]
+    assert "dump_0001" in items
+    assert len(items) == 2
+
+
 def test_rm_force_deletes_when_exactly_one_trash_match(tmp_path: Path, make_fake_drive) -> None:
     # D2.2: rm -f trashes, then permanently deletes only when exactly one item of
     # that basename is in /trash (unambiguous).

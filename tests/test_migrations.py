@@ -118,7 +118,7 @@ class TestPendingMigrations:
         _make_mid_era_repo(tmp_path)
         pending = pending_migrations(tmp_path)
         ids = {m.id for m in pending}
-        assert ids == {"index-schema-current", "control-file-backfill"}
+        assert ids == {"index-schema-current", "control-file-backfill", "event-log-gitignore"}
 
     def test_current_repo_has_nothing_pending(self, tmp_path: Path) -> None:
         _make_current_repo(tmp_path)
@@ -146,6 +146,7 @@ class TestRunMigrationsDryRun:
             "index-schema-current",
             "device-id-to-local-config",
             "control-file-backfill",
+            "event-log-gitignore",
         }
         # nothing on disk touched
         assert (tmp_path / ".protonfs" / "config.json").read_text() == before_config
@@ -175,6 +176,7 @@ class TestRunMigrationsApply:
             "index-schema-current",
             "device-id-to-local-config",
             "control-file-backfill",
+            "event-log-gitignore",
         }
         assert result.layout_version_before == 0
         assert result.layout_version_after == CURRENT_LAYOUT_VERSION
@@ -203,7 +205,11 @@ class TestRunMigrationsApply:
     def test_mid_era_repo_migrates_remaining_steps_only(self, tmp_path: Path) -> None:
         _make_mid_era_repo(tmp_path)
         result = run_migrations(tmp_path)
-        assert set(result.applied) == {"index-schema-current", "control-file-backfill"}
+        assert set(result.applied) == {
+            "index-schema-current",
+            "control-file-backfill",
+            "event-log-gitignore",
+        }
 
         local = load_local_config(tmp_path)
         assert local["device_id"] == "mid-device-id"  # untouched, already local
@@ -251,7 +257,7 @@ class TestIdempotency:
     def test_dry_run_then_apply_then_dry_run_again(self, tmp_path: Path) -> None:
         _make_0_2_0_repo(tmp_path)
         first_dry = run_migrations(tmp_path, dry_run=True)
-        assert len(first_dry.applied) == 3
+        assert len(first_dry.applied) == 4
 
         run_migrations(tmp_path)
 
@@ -270,3 +276,14 @@ class TestLayoutVersion:
         _make_0_2_0_repo(tmp_path)
         run_migrations(tmp_path)
         assert layout_version(tmp_path) == CURRENT_LAYOUT_VERSION
+
+
+def test_event_log_gitignore_migration(tmp_path: Path) -> None:
+    from protonfs.config import init_config
+
+    init_config(tmp_path, "/my-files/test")
+    # simulate an old repo whose .protonfs/.gitignore lacks the event-log lines
+    (tmp_path / ".protonfs" / ".gitignore").write_text("index.json\n")
+    assert any(m.id == "event-log-gitignore" for m in pending_migrations(tmp_path))
+    run_migrations(tmp_path, dry_run=False)
+    assert "events.log" in (tmp_path / ".protonfs" / ".gitignore").read_text()

@@ -192,3 +192,29 @@ class TestMigrateDeviceIdToLocal:
 
         local_data = load_local_config(tmp_path)
         assert local_data["device_id"] == "local-device"
+
+
+def test_defaults_have_event_log_and_progress_style() -> None:
+    from protonfs.config import Defaults
+    d = Defaults()
+    assert d.event_log is False
+    assert d.progress_style == "inline"
+
+
+def test_from_dict_reads_new_defaults(tmp_path) -> None:
+    from protonfs.config import Config
+    cfg = Config.from_dict(
+        {"remote_root": "/x", "defaults": {"event_log": True, "progress_style": "lines"}}
+    )
+    assert cfg.defaults.event_log is True
+    assert cfg.defaults.progress_style == "lines"
+
+
+def test_env_overrides_event_log_and_progress_style(monkeypatch, tmp_path) -> None:
+    from protonfs.config import init_config, load_layered_config
+    init_config(tmp_path, "/my-files/test")
+    monkeypatch.setenv("PROTONFS_EVENT_LOG", "true")
+    monkeypatch.setenv("PROTONFS_PROGRESS_STYLE", "lines")
+    cfg = load_layered_config(tmp_path)
+    assert cfg.defaults.event_log is True
+    assert cfg.defaults.progress_style == "lines"

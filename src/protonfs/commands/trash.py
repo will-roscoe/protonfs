@@ -62,12 +62,20 @@ def list_trash(ctx: RepoContext, console: Console) -> None:
     console.print(table)
 
 
-def empty_trash(ctx: RepoContext, confirmed: bool) -> None:
+def empty_trash(ctx: RepoContext, confirmed: bool, reporter=None) -> None:
     """Permanently empty /trash for the whole account. Irreversible, and NOT scoped
     to this repo's `remote_root` -- it empties every trashed item on the account,
     not just ones protonfs put there. Requires the user to type an exact
     confirmation phrase unless `confirmed` (--yes) is set.
+
+    :param ctx: the loaded repo context.
+    :param confirmed: skip the interactive typed confirmation (the ``--yes`` flag).
+    :param reporter: :class:`~protonfs.reporting.Reporter` to narrate progress through;
+        defaults to the process reporter (:func:`~protonfs.reporting.get_reporter`).
     """
+    from protonfs.reporting import get_reporter
+
+    reporter = reporter or get_reporter()
     if not confirmed:
         click.echo(
             "This will PERMANENTLY delete every item currently in this Proton Drive "
@@ -80,4 +88,5 @@ def empty_trash(ctx: RepoContext, confirmed: bool) -> None:
         if typed.strip().lower() != _CONFIRMATION_PHRASE:
             raise click.ClickException("confirmation text did not match; trash was not emptied.")
 
+    reporter.phase("emptying trash")
     ctx.drive.empty_trash()

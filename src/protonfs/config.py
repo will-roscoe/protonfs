@@ -36,6 +36,8 @@ _ENV_KEY_OVERRIDES = {
 _ENV_DEFAULTS_OVERRIDES = {
     "on_conflict": "PROTONFS_ON_CONFLICT",
     "low_io": "PROTONFS_LOW_IO",
+    "event_log": "PROTONFS_EVENT_LOG",
+    "progress_style": "PROTONFS_PROGRESS_STYLE",
 }
 
 
@@ -47,10 +49,16 @@ class Defaults:
         conflict (e.g. ``"skip"``); overridable per-repo or via ``$PROTONFS_ON_CONFLICT``.
     :ivar low_io: Default for skip-hashing-unchanged-files mode; overridable per-repo or
         via ``$PROTONFS_LOW_IO``.
+    :ivar event_log: Default for enabling structured event logging; overridable per-repo or
+        via ``$PROTONFS_EVENT_LOG``.
+    :ivar progress_style: Default display style for progress updates (e.g. ``"inline"``,
+        ``"lines"``); overridable per-repo or via ``$PROTONFS_PROGRESS_STYLE``.
     """
 
     on_conflict: str = "skip"
     low_io: bool = False
+    event_log: bool = False
+    progress_style: str = "inline"
 
 
 @dataclass
@@ -114,6 +122,8 @@ class Config:
             defaults=Defaults(
                 on_conflict=defaults_data.get("on_conflict", "skip"),
                 low_io=defaults_data.get("low_io", False),
+                event_log=defaults_data.get("event_log", False),
+                progress_style=defaults_data.get("progress_style", "inline"),
             ),
         )
 
@@ -303,7 +313,9 @@ def _env_layer() -> dict:
         value = os.environ.get(env_name)
         if value is None:
             continue
-        defaults_layer[key] = _parse_bool_env(value) if key == "low_io" else value
+        defaults_layer[key] = (
+            _parse_bool_env(value) if key in ("low_io", "event_log") else value
+        )
     if defaults_layer:
         layer["defaults"] = defaults_layer
     return layer

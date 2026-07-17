@@ -142,6 +142,19 @@ def test_empty_trash_with_yes_skips_prompt(tmp_path: Path, make_fake_drive) -> N
     assert ctx.drive.emptied_trash_calls == 1
 
 
+def test_empty_trash_narrates_phase(
+    tmp_path: Path, make_fake_drive, recording_reporter_cls
+) -> None:
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.drive = make_fake_drive()
+    rep = recording_reporter_cls()
+
+    empty_trash(ctx, confirmed=True, reporter=rep)
+
+    assert rep.calls == [("phase", "emptying trash")]
+
+
 def test_empty_trash_requires_typed_confirmation(
     tmp_path: Path, make_fake_drive, monkeypatch: pytest.MonkeyPatch
 ) -> None:

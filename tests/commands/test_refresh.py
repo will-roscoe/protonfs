@@ -267,3 +267,18 @@ def test_refresh_persists_seeded_entries_before_a_throttle_interruption(
     reloaded = IndexStore(tmp_path)
     assert reloaded.get("run1/a") is not None
     assert reloaded.get("run1/a").local_state == "metadata-only"
+
+
+def test_refresh_narrates(tmp_path: Path, make_fake_drive, recording_reporter_cls) -> None:
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.drive = make_fake_drive(walk_entries=[RemoteEntry("dump", is_dir=False, size=3)])
+    rep = recording_reporter_cls()
+
+    result = refresh(ctx, None, prune=False, reporter=rep)
+
+    kinds = [c[0] for c in rep.calls]
+    assert kinds[0] == "phase"
+    assert "item" in kinds
+    assert kinds[-1] == "done"
+    assert result.seeded == 1

@@ -188,3 +188,16 @@ def test_drive_error_path_exits_1(monkeypatch: pytest.MonkeyPatch) -> None:
 
     result = CliRunner().invoke(main, ["ls"])
     assert result.exit_code == 1
+
+
+def test_group_level_global_options_are_frozen() -> None:
+    """The `main` group's global flags (-v, progress style, event log) are a frozen set."""
+    opts = set()
+    for p in main.params:
+        if isinstance(p, click.Option):
+            opts.update(p.opts)
+            opts.update(p.secondary_opts)
+    assert {
+        "-v", "--verbose", "--progress-inline", "--progress-lines",
+        "--event-log", "--no-event-log",
+    } <= opts

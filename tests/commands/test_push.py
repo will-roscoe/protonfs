@@ -344,11 +344,24 @@ def test_push_hard_guard_refuses_to_upload_lfs_pointer_stub(
     assert ctx.index.get("big.bin") is None
 
 
-# --- #93: on_progress reporting --------------------------------------------------------
+# --- #93: progress reporting via the Reporter -------------------------------------------
+
+
+def test_push_narrates_phases(tmp_path: Path, make_fake_drive, recording_reporter_cls) -> None:
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    (tmp_path / "f1").write_bytes(b"data")
+    ctx.drive = make_fake_drive()
+    rep = recording_reporter_cls()
+
+    push(ctx, None, None, dry_run=False, reporter=rep)
+
+    kinds = [c[0] for c in rep.calls]
+    assert "phase" in kinds and "done" in kinds
 
 
 def test_push_reports_progress_per_batch(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, make_fake_drive
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, make_fake_drive, recording_reporter_cls
 ) -> None:
     init_config(tmp_path, "/my-files/test")
     ctx = load_context(tmp_path)
@@ -360,19 +373,35 @@ def test_push_reports_progress_per_batch(
         "protonfs.commands.push.batches", lambda items, size=1: [[i] for i in items]
     )
 
-    calls: list[tuple[int, int]] = []
-    result = push(ctx, None, None, dry_run=False, on_progress=lambda d, t: calls.append((d, t)))
+    rep = recording_reporter_cls()
+    result = push(ctx, None, None, dry_run=False, reporter=rep)
 
+    progress_calls = [c[1:] for c in rep.calls if c[0] == "progress"]
     assert result.transferred_items == 3
-    assert calls == [(1, 3), (2, 3), (3, 3)]  # monotonic, ends at done == total
+    # monotonic, ends with a forced final repeat at done == total
+    assert progress_calls == [(1, 3), (2, 3), (3, 3), (3, 3)]
 
 
-def test_push_without_progress_callback_is_unchanged(tmp_path: Path, make_fake_drive) -> None:
+def test_push_narrates_no_item_for_a_failed_upload(
+    tmp_path: Path, make_fake_drive, recording_reporter_cls
+) -> None:
+    # F5: a failed batch member must not get a "^" item line -- it never landed remotely.
+    (tmp_path / "ok").write_bytes(b"data")
+    (tmp_path / "broken").write_bytes(b"data")
     init_config(tmp_path, "/my-files/test")
     ctx = load_context(tmp_path)
-    (tmp_path / "f1").write_bytes(b"data")
-    ctx.drive = make_fake_drive()
+    ctx.drive = make_fake_drive(
+        upload_result=TransferResult(
+            transferred_items=1,
+            skipped_items=0,
+            failed_items=1,
+            failures=[{"name": "broken", "error": "boom"}],
+        )
+    )
+    rep = recording_reporter_cls()
 
-    result = push(ctx, None, None, dry_run=False)  # on_progress defaults to None
+    push(ctx, None, None, dry_run=False, reporter=rep)
 
-    assert result.transferred_items == 1
+    item_paths = [c[1] for c in rep.calls if c[0] == "item"]
+    assert "ok" in item_paths
+    assert "broken" not in item_paths

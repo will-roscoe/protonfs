@@ -74,6 +74,18 @@ Every ``protonfs`` command follows the same top-level convention:
 ``status`` and ``auth status`` layer additional meaning onto exit code ``1``/``2`` for
 unattended callers, documented in the table below.
 
+Global options (before the subcommand)
+--------------------------------------
+These flags are given before the subcommand (e.g. ``protonfs -vv --event-log pull``)
+and apply to every command. A flag, when given, overrides its config key; when unset,
+the resolved config value is used, falling back to the built-in default.
+
+* ``-v`` / ``--verbose`` -- repeatable, ``-v``..``-vvvv``; raises console detail.
+* ``--progress-inline`` / ``--progress-lines`` -- progress render style (default:
+  ``defaults.progress_style``, else inline on a TTY).
+* ``--event-log`` / ``--no-event-log`` -- write ``.protonfs/events.log`` (default:
+  ``defaults.event_log``, else off).
+
 Command surface
 -----------------
 One-line contract and exit codes for every registered command. "Options" lists every
@@ -206,7 +218,8 @@ flag/argument name; these names, not just their presence, are frozen.
        shared config yet for the repo; ``2`` usage error.
 
 Known keys for ``config get``/``config set``: ``remote_root``, ``device_id``,
-``defaults.on_conflict``, ``defaults.low_io``.
+``defaults.on_conflict``, ``defaults.low_io``, ``defaults.event_log``,
+``defaults.progress_style``.
 
 Config files and precedence
 -----------------------------
@@ -218,7 +231,8 @@ Layered configuration, highest precedence first:
 #. ``~/.config/protonfs/config.json`` -- global user defaults. ``$XDG_CONFIG_HOME``
    relocates the ``~/.config`` base; ``$PROTONFS_CONFIG`` overrides the full path
    outright.
-#. Built-in defaults (``defaults.on_conflict=skip``, ``defaults.low_io=false``).
+#. Built-in defaults (``defaults.on_conflict=skip``, ``defaults.low_io=false``,
+   ``defaults.event_log=false``, ``defaults.progress_style=inline``).
 
 ``config get`` always reports the fully resolved value across all four layers.
 ``config set`` writes to exactly one layer: the shared repo file by default, or the
@@ -243,6 +257,12 @@ Environment variables
    * - ``PROTONFS_LOW_IO``
      - Per-key override for the resolved ``defaults.low_io`` config value (boolean:
        ``1``/``true``/``yes``/``on``).
+   * - ``PROTONFS_EVENT_LOG``
+     - Per-key override for the resolved ``defaults.event_log`` config value (boolean:
+       ``1``/``true``/``yes``/``on``).
+   * - ``PROTONFS_PROGRESS_STYLE``
+     - Per-key override for the resolved ``defaults.progress_style`` config value
+       (``inline``/``lines``).
    * - ``PROTONFS_DRIVE_BIN``
      - Path/name of the ``proton-drive`` binary to invoke, in place of the default.
    * - ``PROTONFS_DRIVE_VERSION``

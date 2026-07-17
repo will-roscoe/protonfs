@@ -25,6 +25,7 @@ class FakeDrive:
         walk_by_root: dict[str, list[RemoteEntry]] | None = None,
         trash_listing: list[dict] | None = None,
         upload_result: TransferResult | None = None,
+        download_result: TransferResult | None = None,
         dropped_files: set[str] | None = None,
         remote_size_overrides: dict[str, int] | None = None,
         version: str | None = "v0.4.6",
@@ -48,6 +49,7 @@ class FakeDrive:
         self._walk_by_root = walk_by_root
         self._trash_listing = trash_listing
         self._upload_result = upload_result
+        self._download_result = download_result
         # #22 simulation: names proton-drive reports as transferred but that never land,
         # and per-name size overrides to simulate a truncated/partial upload on the remote.
         self._dropped_files = dropped_files or set()
@@ -98,10 +100,18 @@ class FakeDrive:
 
     def download(self, remote_paths, local_folder, file_strategy=None, folder_strategy=None):
         self.download_calls.append((tuple(remote_paths), str(local_folder), file_strategy))
+        result = (
+            self._download_result
+            if self._download_result is not None
+            else TransferResult(len(remote_paths), 0, 0, [])
+        )
+        failed = {f["name"] for f in result.failures}
         for remote_path in remote_paths:
             name = remote_path.rsplit("/", 1)[-1]
+            if name in failed:
+                continue
             (Path(local_folder) / name).write_bytes(b"downloaded")
-        return TransferResult(len(remote_paths), 0, 0, [])
+        return result
 
     def create_folder(self, parent_path, name):
         self.created_folders.append((parent_path, name))
@@ -171,6 +181,76 @@ def make_fake_drive():
         return FakeDrive(**kwargs)
 
     return _make
+
+
+class RecordingReporter:
+    """A fake :class:`~protonfs.reporting.Reporter` that records every call it
+    receives instead of rendering, so command-core tests can assert on narration
+    without a real stream/TTY. Use via the `recording_reporter_cls` fixture."""
+
+    def __init__(self):
+        self.calls = []
+
+    def phase(self, name, **f):
+        self.calls.append(("phase", name))
+
+    def progress(self, d, t, **f):
+        self.calls.append(("progress", d, t))
+
+    def item(self, a, p):
+        self.calls.append(("item", p))
+
+    def warn(self, m):
+        self.calls.append(("warn", m))
+
+    def done(self, m, **f):
+        self.calls.append(("done", m))
+
+    import contextlib
+
+    @contextlib.contextmanager
+    def timed(self, name):
+        self.calls.append(("phase", name))
+        yield
+        self.calls.append(("done", name))
+
+
+@pytest.fixture
+def recording_reporter_cls():
+    """Return the `RecordingReporter` class for tests to instantiate."""
+    return RecordingReporter
+
+
+@pytest.fixture(autouse=True)
+def _reset_protonfs_logger():
+    """Undo `configure_logging`'s global logger mutation after each test.
+
+    `configure_logging` (protonfs.logs) clears and replaces the ``protonfs`` logger's
+    handlers and sets ``propagate = False`` so console/event-log output doesn't leak
+    to the real root logger. Any test that invokes the CLI (and so runs the group
+    callback) leaves that mutation in place for the rest of the process, which breaks
+    unrelated tests relying on ``caplog`` (attached to the root logger) to see
+    ``protonfs.*`` records. Snapshot and restore around every test.
+    """
+    import logging
+
+    logger = logging.getLogger("protonfs")
+    handlers = list(logger.handlers)
+    level = logger.level
+    propagate = logger.propagate
+    root_level = logging.getLogger().level
+    yield
+    logger.handlers[:] = handlers
+    logger.setLevel(level)
+    logger.propagate = propagate
+    # -vvvv raises the ROOT logger to DEBUG; restore it too.
+    logging.getLogger().setLevel(root_level)
+    # And drop any Reporter a CLI test installed: it captured that test's (now dead)
+    # stderr stream, and command cores resolve get_reporter() -- a leaked live
+    # reporter would write into a closed CliRunner buffer in a later test.
+    from protonfs.reporting import null_reporter, set_reporter
+
+    set_reporter(null_reporter())
 
 
 @pytest.fixture(autouse=True)

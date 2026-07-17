@@ -42,6 +42,7 @@ def refresh(
     prune: bool,
     persist: bool = True,
     local: dict[str, ScanEntry] | None = None,
+    reporter=None,
 ) -> RefreshResult:
     """Discover remote files and seed the local index with metadata-only entries.
 
@@ -58,6 +59,8 @@ def refresh(
         no resume-state behind.
     :param local: a pre-computed local scan to reuse (e.g. from ``pull --refresh``),
         avoiding a second recursive walk + re-hash.
+    :param reporter: :class:`~protonfs.reporting.Reporter` to narrate progress through;
+        defaults to the process reporter (:func:`~protonfs.reporting.get_reporter`).
     :returns: a :class:`RefreshResult` tallying what was seeded/changed/deleted/pruned.
 
     .. note::
@@ -67,6 +70,10 @@ def refresh(
 
     .. seealso:: :mod:`protonfs.refreshstate` for the resumable-frontier persistence.
     """
+    from protonfs.reporting import get_reporter
+
+    reporter = reporter or get_reporter()
+
     remote_root = ctx.config.remote_root
     if subpath:
         remote_root = f"{remote_root}/{subpath}"
@@ -105,6 +112,7 @@ def refresh(
                 )
                 result.seeded += 1
                 seeded_here = True
+                reporter.item("seed", full_rel)
         if persist and seeded_here:
             ctx.index.save()
 
@@ -118,6 +126,7 @@ def refresh(
         if persist:
             refreshstate.save_frontier(ctx.root, remote_root, frontier)
 
+    reporter.phase("walking remote", root=remote_root)
     entries = ctx.drive.walk(
         remote_root, on_directory=_seed_directory, frontier=saved, on_progress=_save_progress
     )
@@ -132,6 +141,12 @@ def refresh(
     # against it would falsely flag every already-listed file as remote-deleted. Skip it on
     # resume: seeding still happened per-directory; detection waits for a fresh full pass.
     if result.resumed:
+        reporter.done(
+            "refreshed",
+            seeded=result.seeded,
+            changed=result.remote_changed,
+            deleted=result.remote_deleted,
+        )
         return result
 
     remote = {e.rel_path: e for e in entries if not e.is_dir}
@@ -162,4 +177,10 @@ def refresh(
 
     if persist:
         ctx.index.save()
+    reporter.done(
+        "refreshed",
+        seeded=result.seeded,
+        changed=result.remote_changed,
+        deleted=result.remote_deleted,
+    )
     return result

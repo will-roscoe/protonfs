@@ -345,8 +345,17 @@ def install_drive(
     dest_dir: Path | None = None,
     cpuinfo_text: str | None = None,
     downloader=None,
+    reporter=None,
 ) -> InstallResult:
-    """Detect, diagnose, download+verify and install the proton-drive binary."""
+    """Detect, diagnose, download+verify and install the proton-drive binary.
+
+    :param reporter: Reporter to narrate progress through; defaults to the process
+        reporter.
+    """
+    from protonfs.reporting import get_reporter
+
+    reporter = reporter or get_reporter()
+
     version = resolve_version(version)
     plat = plat or detect_platform()
 
@@ -378,6 +387,7 @@ def install_drive(
         )
     url = binary_url(version, plat.slug)
     dest = dest_dir / "proton-drive"
+    reporter.phase("downloading proton-drive", version=version)
     digest = download_and_verify(url, expected, dest, opener=downloader)
 
     mode = dest.stat().st_mode
@@ -388,4 +398,5 @@ def install_drive(
             f"{dest_dir} is not on PATH; export PROTONFS_DRIVE_BIN={dest} (or add the "
             f"directory to PATH) so protonfs can find the binary."
         )
+    reporter.done("installed", path=str(dest))
     return InstallResult(path=dest, on_path=on_path, sha512=digest, warnings=warnings)
