@@ -26,7 +26,7 @@ _QUIESCENT = frozenset({SyncState.SYNCED, SyncState.METADATA_ONLY, SyncState.LFS
 _CONFLICT = frozenset({SyncState.CONFLICT, SyncState.BOTH_MODIFIED})
 
 
-def compute_status(ctx: RepoContext, subpath: str | None) -> Counter:
+def compute_status(ctx: RepoContext, subpath: str | None, reporter=None) -> Counter:
     """Summarise sync state as a count of files per :class:`~protonfs.diff.SyncState`.
 
     Scans the working tree (scoped to ``subpath`` when given), classifies each file
@@ -35,10 +35,16 @@ def compute_status(ctx: RepoContext, subpath: str | None) -> Counter:
     :param ctx: the loaded repo context (root, config, index, drive).
     :param subpath: repo-root-relative subtree to restrict the scan to, or ``None``
         for the whole tree.
+    :param reporter: :class:`~protonfs.reporting.Reporter` to narrate progress through;
+        defaults to the process reporter (:func:`~protonfs.reporting.get_reporter`).
     :returns: a :class:`collections.Counter` keyed by ``SyncState.value``.
 
     .. seealso:: :func:`status_exit_code` maps this summary to a process exit code.
     """
+    from protonfs.reporting import get_reporter
+
+    reporter = reporter or get_reporter()
+    reporter.phase("scanning", subpath=subpath or ".")
     ignore = IgnoreMatcher.from_file(ctx.root)
     scan_root = Path(subpath) if subpath else Path(".")
     local = scan(ctx.root, scan_root, ignore, ctx.index, low_io=ctx.config.defaults.low_io)

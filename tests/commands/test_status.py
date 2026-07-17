@@ -16,6 +16,19 @@ from protonfs.diff import SyncState
 from protonfs.lfs import POINTER_SIGNATURE
 
 
+def test_compute_status_narrates_scan(tmp_path: Path, recording_reporter_cls) -> None:
+    (tmp_path / "run1").mkdir()
+    (tmp_path / "run1" / "new_dump").write_bytes(b"data")
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    rep = recording_reporter_cls()
+
+    compute_status(ctx, None, reporter=rep)
+
+    kinds = [c[0] for c in rep.calls]
+    assert kinds == ["phase"]
+
+
 def test_compute_status_counts_local_only_and_synced(tmp_path: Path) -> None:
     (tmp_path / "run1").mkdir()
     (tmp_path / "run1" / "new_dump").write_bytes(b"data")
