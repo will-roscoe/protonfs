@@ -59,6 +59,9 @@ Quick task index
      - :ref:`protonfs upgrade <cmd-upgrade>` (migrations run automatically)
    * - Change a config value
      - :ref:`protonfs config set KEY VALUE <cmd-config>`
+   * - See what protonfs is doing, or capture a debug log
+     - ``protonfs -v <command>`` (more ``v`` = more detail); ``--event-log`` writes
+       ``.protonfs/events.log`` -- see :ref:`Diagnostics & verbosity <diagnostics>`
    * - Tear protonfs out of a directory
      - :ref:`protonfs deinit <cmd-deinit>`
 

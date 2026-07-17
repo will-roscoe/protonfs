@@ -23,6 +23,73 @@ and ``shell-init``) share an error boundary: a Drive/auth failure, a locked
 keyring, or a held repo lock all surface as a clean one-line error instead of a
 Python traceback. An auth failure additionally suggests ``protonfs auth login``.
 
+.. _diagnostics:
+
+Diagnostics & verbosity
+------------------------
+Every ``protonfs`` command accepts three global options, given **before** the
+subcommand (e.g. ``protonfs -vv --event-log pull``), that control how much it narrates
+and where that narration goes. All narration goes to **stderr**; each command's result
+summary stays on **stdout**, so piping/scripting a command's output is unaffected by
+verbosity. A flag, when given, overrides its config key; when unset, the resolved
+config value is used, falling back to the built-in default (see :doc:`../stability`
+for the frozen option/config contract).
+
+Verbosity ladder (``-v``)
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+``-v`` is repeatable, from ``-v`` up to ``-vvvv``. Each level is a superset of the one
+below it.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 12 88
+
+   * - Level
+     - Console detail
+   * - (none)
+     - Warnings/errors only, plus each command's normal stdout result summary.
+   * - ``-v``
+     - Adds curated phase narration, progress updates throttled to roughly every 30s,
+       and phase durations.
+   * - ``-vv``
+     - Adds per-item paths (each file transferred/affected) and sub-steps; progress
+       throttled to roughly every 5s.
+   * - ``-vvv``
+     - Adds ``INFO``-level diagnostics; progress throttled to roughly every 1s.
+   * - ``-vvvv``
+     - ``DEBUG`` from every ``protonfs`` module, the ``proton-drive`` subprocess's
+       argv and stderr, and third-party library logging; progress updates
+       continuously (no throttle).
+
+Progress style (``--progress-inline`` / ``--progress-lines``)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Controls how progress updates are rendered on stderr:
+
+- ``--progress-inline`` — one live line, rewritten in place as progress advances. This
+  is the default when stderr is a TTY. An open inline progress line is always closed
+  (a newline written) before any other message, so nothing it printed is overwritten.
+- ``--progress-lines`` — every poll gets its own line instead of rewriting in place.
+  Used automatically when stderr is not a TTY (e.g. redirected to a file or a CI log),
+  regardless of the configured/default style.
+
+Default: the ``defaults.progress_style`` config key, else inline on a TTY.
+
+Event log (``--event-log`` / ``--no-event-log``)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+When enabled, protonfs writes a structured log to ``.protonfs/events.log``, rotating
+at roughly 5 MB with one backup file (``events.log.1``). Each line is aligned text:
+``TIMESTAMP LEVEL component message key=value``. The event log always records full
+``DEBUG``-level detail while enabled, independent of the console ``-v`` level chosen
+for the same run; the ``proton-drive`` subprocess's stderr is included in it only at
+``-vvvv``.
+
+``.protonfs/events.log`` is gitignored automatically — new repos get this from the
+``setup`` template, and existing repos pick it up via a ``protonfs upgrade``
+migration. ``protonfs deinit`` removes it along with the rest of ``.protonfs/``. It is
+never treated as sync payload: protonfs excludes ``.protonfs/`` from scans entirely.
+
+Default: the ``defaults.event_log`` config key, else off.
+
 .. _cmd-setup:
 
 ``setup``
@@ -468,7 +535,8 @@ Examples::
 **Synopsis:** ``protonfs config get KEY`` / ``protonfs config set KEY VALUE [--global | --local]``
 
 Reads or writes protonfs's layered configuration. Known keys:
-``remote_root``, ``device_id``, ``defaults.on_conflict``, ``defaults.low_io``.
+``remote_root``, ``device_id``, ``defaults.on_conflict``, ``defaults.low_io``,
+``defaults.event_log``, ``defaults.progress_style``.
 
 ``get`` always prints the fully **resolved** value across every layer (env var >
 per-device local config > shared per-repo config > global user config > built-in
