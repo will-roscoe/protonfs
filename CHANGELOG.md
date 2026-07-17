@@ -8,6 +8,16 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-07-17
+
+### Features
+
+- layered -v verbosity, progress styles, and a rotating event log (#105)
+
+### Documentation
+
+- restore 100% docstrings, correct --visual sizing wording, add task-guide rows (#104)
+
 ## [1.2.0] - 2026-07-17
 
 ### Features
@@ -352,7 +362,8 @@ the preceding development history and its first tagged release:
   line-matching, git-mutation error wrapping, `pathspec` deprecation, subpath
   prune data-loss fix.
 
-[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/will-roscoe/protonfs/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/will-roscoe/protonfs/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/will-roscoe/protonfs/compare/v1.0.3...v1.1.0
 [1.0.3]: https://github.com/will-roscoe/protonfs/compare/v1.0.2...v1.0.3
