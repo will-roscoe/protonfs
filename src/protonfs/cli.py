@@ -235,6 +235,13 @@ _STATE_CHOICES = (
     show_default=True,
     help="Output format: rich table, tab-separated lines, or JSON.",
 )
+@click.option(
+    "--visual",
+    type=click.Choice(["treemap", "waffle"]),
+    default=None,
+    help="Draw a per-directory storage-usage chart (by indexed/remote size) instead of "
+    "the listing. Implies directory aggregation; terminal-only (not for --format/--trash).",
+)
 @_drive_error_boundary
 def ls(
     path: tuple[str, ...],
@@ -243,17 +250,27 @@ def ls(
     dirs: bool,
     states: tuple[str, ...],
     fmt: str,
+    visual: str | None,
 ) -> None:
     """List tracked files with their sync state (any number of PATHs).
 
     --dirs summarizes each immediate subdirectory (counts by state, cumulative
     local/indexed sizes) instead of listing thousands of files; --state filters to
-    the states you care about; --format plain|json makes the output scriptable.
+    the states you care about; --format plain|json makes the output scriptable;
+    --visual treemap|waffle draws a storage-usage chart of those directories.
     """
     from rich.console import Console
 
     from protonfs.commands.ls import render_ls
     from protonfs.context import load_context
+
+    # A chart is an interactive terminal view -- it has no plain/json serialization and
+    # no meaning over the (untracked, size-less) trash listing. Fail fast and clearly.
+    if visual is not None:
+        if fmt != "table":
+            raise click.UsageError("--visual cannot be combined with --format plain/json.")
+        if trash:
+            raise click.UsageError("--visual has nothing to chart for --trash.")
 
     ctx = load_context()
     console = Console()
@@ -263,7 +280,7 @@ def ls(
             console.print(f"[bold]{subpath}:[/bold]")
         render_ls(
             ctx, subpath, remote, trash, console,
-            dirs=dirs, states=states, fmt=fmt, echo=click.echo,
+            dirs=dirs, states=states, fmt=fmt, visual=visual, echo=click.echo,
         )
 
 

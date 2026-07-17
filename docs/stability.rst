@@ -111,7 +111,7 @@ flag/argument name; these names, not just their presence, are frozen.
    * - ``ls``
      - List tracked files with their sync state. Argument: ``PATH...`` (optional, repeatable; e.g. from a shell glob).
        Options: ``--remote``, ``--trash``, ``--dirs``, ``--state`` (repeatable),
-       ``--format [table|plain|json]``.
+       ``--format [table|plain|json]``, ``--visual [treemap|waffle]``.
      - ``0`` success; ``1`` Drive/auth error; ``2`` usage error.
    * - ``push``
      - Upload local-only/changed files to Drive. Argument: ``PATH...`` (optional, repeatable; e.g. from a shell glob).

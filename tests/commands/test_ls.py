@@ -175,9 +175,13 @@ def test_summarize_dirs_counts_and_sizes(tmp_path: Path) -> None:
     assert summaries["run1"].files == 2
     assert summaries["run1"].local_bytes == 5  # only the materialised file
     assert summaries["run1"].indexed_bytes == 100  # only the indexed (offloaded) one
+    # apparent = per-file max(local, indexed): 5 (local-only "here") + 100 (offloaded) = 105.
+    assert summaries["run1"].apparent_bytes == 105
     assert summaries["run1"].states == {"local-only": 1, "metadata-only": 1}
     assert summaries["run2"].indexed_bytes == 40
+    assert summaries["run2"].apparent_bytes == 40  # offloaded-only: falls back to indexed
     assert summaries["."].files == 1  # rootfile groups under "."
+    assert summaries["."].apparent_bytes == 2  # local-only rootfile: falls back to local
 
 
 def test_summarize_dirs_relative_to_subpath(tmp_path: Path) -> None:

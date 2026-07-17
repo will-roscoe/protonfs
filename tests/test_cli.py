@@ -244,6 +244,64 @@ def test_cli_ls_dirs_state_and_format_flags(tmp_path: Path, monkeypatch, make_fa
             "files": 1,
             "local_bytes": 5,
             "indexed_bytes": 0,
+            "apparent_bytes": 5,  # local-only file: apparent size falls back to local
             "states": {"local-only": 1},
         }
     ]
+
+
+# --- #94: ls --visual storage charts ---------------------------------------------------
+
+
+def test_cli_ls_visual_treemap_renders(tmp_path: Path, monkeypatch, make_fake_drive) -> None:
+    (tmp_path / "big").mkdir()
+    (tmp_path / "big" / "f").write_bytes(b"x" * 500)
+    (tmp_path / "small").mkdir()
+    (tmp_path / "small" / "g").write_bytes(b"y" * 20)
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.drive = make_fake_drive()
+    monkeypatch.setattr("protonfs.context.load_context", lambda *a, **k: ctx)
+
+    result = CliRunner().invoke(main, ["ls", "--visual", "treemap"], color=True)
+
+    assert result.exit_code == 0, result.output
+    assert "big" in result.output and "small" in result.output
+
+
+def test_cli_ls_visual_waffle_renders(tmp_path: Path, monkeypatch, make_fake_drive) -> None:
+    (tmp_path / "d1").mkdir()
+    (tmp_path / "d1" / "f").write_bytes(b"x" * 100)
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.drive = make_fake_drive()
+    monkeypatch.setattr("protonfs.context.load_context", lambda *a, **k: ctx)
+
+    result = CliRunner().invoke(main, ["ls", "--visual", "waffle"], color=True)
+
+    assert result.exit_code == 0, result.output
+    assert "d1" in result.output
+
+
+def test_cli_ls_visual_rejects_json_format(tmp_path: Path, monkeypatch, make_fake_drive) -> None:
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.drive = make_fake_drive()
+    monkeypatch.setattr("protonfs.context.load_context", lambda *a, **k: ctx)
+
+    result = CliRunner().invoke(main, ["ls", "--visual", "treemap", "--format", "json"])
+
+    assert result.exit_code == 2  # usage error
+    assert "cannot be combined with --format" in result.output
+
+
+def test_cli_ls_visual_rejects_trash(tmp_path: Path, monkeypatch, make_fake_drive) -> None:
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.drive = make_fake_drive()
+    monkeypatch.setattr("protonfs.context.load_context", lambda *a, **k: ctx)
+
+    result = CliRunner().invoke(main, ["ls", "--visual", "waffle", "--trash"])
+
+    assert result.exit_code == 2
+    assert "nothing to chart" in result.output
