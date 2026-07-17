@@ -15,19 +15,14 @@
       <rect x="133.629" y="115.607" width="186.839" height="186.839" rx="29" ry="29" fill="rgb(255, 255, 255)"/>
     </mask>
   </defs>
-  <!-- Proton Drive diamond: a rounded square rotated 45deg, pink -> purple gradient.
-       The rotation's pivot (transform-origin 242.421,193.655) is baked into the
-       transform list so it renders identically in every SVG engine. The group's
-       leading matrix normalises the artwork into the 0..100 canvas; the rects and
-       their userSpaceOnUse gradients stay in their original space and scale with it. -->
+  <!-- Dark-tile variant: the dark-background counterpart to logo-white.svg. Identical
+       gradient diamond + white branch, but on a deep (slightly purple-tinted) rounded
+       tile so the mark stays contained and legible on dark surfaces. -->
+  <rect x="0" y="0" width="100" height="100" rx="20" ry="20" fill="rgb(26, 23, 33)"/>
   <g transform="matrix(0.340612, 0, 0, 0.340612, -109.419374, -11.902626)">
     <rect x="149.001" y="100.235" width="186.839" height="186.839" rx="29" ry="29" fill="url(#fill-radial)" transform="translate(242.421 193.655) matrix(0.707107, 0.707107, -0.707107, 0.707107, 225.616514, -11.915162) translate(-242.421 -193.655)"/>
     <rect x="149.001" y="100.235" width="186.839" height="186.839" rx="29" ry="29" fill="url(#highlight-radial)" mask="url(#highlight-mask)" transform="translate(242.421 193.655) matrix(0.707107, 0.707107, -0.707107, 0.707107, 225.616529, -11.915153) translate(-242.421 -193.655)"/>
   </g>
-  <!-- Git branch glyph: trunk + fork in white, with baked-in commit nodes as plain
-       circles. The original used marker elements, which GitHub strips and many
-       renderers drop, causing the inconsistent display. The top-left tip uses a
-       butt cap so its flat edge sits flush along the diamond's upper-left border. -->
   <g fill="none" stroke="rgb(255, 255, 255)" stroke-width="6.471635" stroke-linecap="round" stroke-linejoin="round">
     <path stroke-linecap="butt" d="M 36.877739 18.122091 L 49.99983 31.244181 L 67.61085 50.0"/>
     <path d="M 50.09997 31.384513 L 49.99983 71.949741"/>

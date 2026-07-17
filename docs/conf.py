@@ -38,10 +38,11 @@ master_doc = "index"
 # -- Options for HTML output --------------------------------------------------
 html_theme = "furo"
 html_static_path = ["_static"]
-# The logo is theme-neutral (white git glyph on the Proton gradient), so one asset
-# serves furo's light and dark modes and the browser-tab favicon.
+# The logo is theme-neutral (white git glyph on the Proton gradient), so it serves
+# furo's light and dark sidebars. The favicon uses the white-tile variant so it stays
+# legible on both light and dark browser chrome.
 html_logo = "_static/logo.svg"
-html_favicon = "_static/logo.svg"
+html_favicon = "_static/logo-white.svg"
 
 # -- Intersphinx --------------------------------------------------------------
 intersphinx_mapping = {
