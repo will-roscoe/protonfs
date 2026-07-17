@@ -6,7 +6,7 @@ from pathlib import Path
 from protonfs.commands.pull import pull
 from protonfs.config import init_config
 from protonfs.context import load_context
-from protonfs.drive import RemoteEntry
+from protonfs.drive import RemoteEntry, TransferResult
 from protonfs.index import IndexEntry
 
 
@@ -371,6 +371,32 @@ def test_pull_reports_progress_per_batch(
     assert result.transferred_items == 3
     assert [t for _, t in progress_calls] == [3, 3, 3, 3]  # total is the whole pull
     assert [d for d, _ in progress_calls] == [1, 2, 3, 3]  # monotonic, forced final repeat
+
+
+def test_pull_narrates_no_item_for_a_failed_download(
+    tmp_path: Path, make_fake_drive, recording_reporter_cls
+) -> None:
+    # F5: a failed batch member must not get a "v" item line -- it never landed locally.
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.index.set("ok", _metadata_only_entry("/my-files/test/ok"))
+    ctx.index.set("broken", _metadata_only_entry("/my-files/test/broken"))
+    ctx.drive = make_fake_drive(
+        download_result=TransferResult(
+            transferred_items=1,
+            skipped_items=0,
+            failed_items=1,
+            failures=[{"name": "broken", "error": "boom"}],
+        )
+    )
+    rep = recording_reporter_cls()
+
+    result = pull(ctx, None, resolve=None, dry_run=False, reporter=rep)
+
+    item_paths = [c[1] for c in rep.calls if c[0] == "item"]
+    assert "ok" in item_paths
+    assert "broken" not in item_paths
+    assert result.failed_items == 1
 
 
 def test_pull_single_file_pathspec_downloads_only_that_file(

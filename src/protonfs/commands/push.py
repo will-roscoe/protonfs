@@ -199,8 +199,10 @@ def push(
             total.failures += result.failures
             done += len(batch)
             reporter.progress(done, len(to_push))
+            failed_names = {f["name"] for f in result.failures}
             for rel in batch:
-                reporter.item("^", rel)
+                if Path(rel).name not in failed_names:
+                    reporter.item("^", rel)
 
             # D2.1: a skip is reported only as an aggregate count, so we cannot tell
             # WHICH files in the batch were skipped. Rather than falsely record an
@@ -208,7 +210,6 @@ def push(
             # them for the next push.
             if result.skipped_items > 0:
                 continue
-            failed_names = {f["name"] for f in result.failures}
             candidates += [rel for rel in batch if Path(rel).name not in failed_names]
 
         if not candidates:

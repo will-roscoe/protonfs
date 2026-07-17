@@ -25,6 +25,7 @@ class FakeDrive:
         walk_by_root: dict[str, list[RemoteEntry]] | None = None,
         trash_listing: list[dict] | None = None,
         upload_result: TransferResult | None = None,
+        download_result: TransferResult | None = None,
         dropped_files: set[str] | None = None,
         remote_size_overrides: dict[str, int] | None = None,
         version: str | None = "v0.4.6",
@@ -48,6 +49,7 @@ class FakeDrive:
         self._walk_by_root = walk_by_root
         self._trash_listing = trash_listing
         self._upload_result = upload_result
+        self._download_result = download_result
         # #22 simulation: names proton-drive reports as transferred but that never land,
         # and per-name size overrides to simulate a truncated/partial upload on the remote.
         self._dropped_files = dropped_files or set()
@@ -98,10 +100,18 @@ class FakeDrive:
 
     def download(self, remote_paths, local_folder, file_strategy=None, folder_strategy=None):
         self.download_calls.append((tuple(remote_paths), str(local_folder), file_strategy))
+        result = (
+            self._download_result
+            if self._download_result is not None
+            else TransferResult(len(remote_paths), 0, 0, [])
+        )
+        failed = {f["name"] for f in result.failures}
         for remote_path in remote_paths:
             name = remote_path.rsplit("/", 1)[-1]
+            if name in failed:
+                continue
             (Path(local_folder) / name).write_bytes(b"downloaded")
-        return TransferResult(len(remote_paths), 0, 0, [])
+        return result
 
     def create_folder(self, parent_path, name):
         self.created_folders.append((parent_path, name))

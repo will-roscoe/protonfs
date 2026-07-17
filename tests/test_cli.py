@@ -347,3 +347,18 @@ def test_cli_no_verbose_stdout_unchanged(tmp_path, monkeypatch, make_fake_drive)
     monkeypatch.setattr("protonfs.context.load_context", lambda *a, **k: ctx)
     result = CliRunner().invoke(main, ["status"])
     assert "synced: 0" in result.output
+
+
+def test_cli_survives_corrupt_repo_config(tmp_path: Path, monkeypatch) -> None:
+    """A corrupt .protonfs/config.json must not crash the group callback itself (#F2):
+    diagnostics (doctor/config set) are how you FIX a broken config, so they -- and any
+    other command whose body does not need config -- must still run."""
+    protonfs_dir = tmp_path / ".protonfs"
+    protonfs_dir.mkdir()
+    (protonfs_dir / "config.json").write_text("{corrupt")
+    monkeypatch.chdir(tmp_path)
+
+    result = CliRunner().invoke(main, ["shell-init"])
+
+    assert result.exit_code == 0
+    assert result.exception is None

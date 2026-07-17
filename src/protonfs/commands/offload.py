@@ -20,7 +20,6 @@ upload. Any file that fails this check is left untouched locally and reported as
 """
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -30,8 +29,6 @@ from protonfs.diff import within_subpath
 from protonfs.ignore import IgnoreMatcher
 from protonfs.index import IndexEntry
 from protonfs.localscan import hash_file_digests
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -123,7 +120,6 @@ def offload(
             # pass the size verify below. Compare the live local sha256 to the index's record.
             local_sha256, _ = hash_file_digests(local_path)
             if local_sha256 != entry.sha256:
-                logger.warning("offload skip: %s has unsynced local edits", rel)
                 reporter.warn(f"skip {rel}: unsynced local edits")
                 result.skipped_modified += 1
                 result.modified_paths.append(rel)
@@ -135,12 +131,6 @@ def offload(
                     ident.claimed_size is None or ident.claimed_size == local_size
                 )
                 if not verified:
-                    reason = (
-                        "absent" if ident is None else f"size {ident.claimed_size} != {local_size}"
-                    )
-                    logger.warning(
-                        "offload skip: %s not verified on remote (%s)", rel, reason
-                    )
                     reporter.warn(f"skip {rel}: not verified on remote")
                     result.skipped_unverified += 1
                     result.skipped_paths.append(rel)

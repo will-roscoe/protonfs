@@ -105,8 +105,14 @@ def main(verbose: int, progress_inline: bool | None, event_log: bool | None) -> 
     from protonfs.config import load_layered_config
     from protonfs.logs import configure_logging
 
-    # Resolve flag -> config -> built-in default for the two persisted knobs.
-    cfg = load_layered_config(Path.cwd())
+    # Resolve flag -> config -> built-in default for the two persisted knobs. A broken
+    # repo config (unparseable .protonfs/config.json) must never take down every
+    # command's group callback: `doctor`/`config set` are how you FIX a broken config,
+    # and the command itself will surface config errors where they actually matter.
+    try:
+        cfg = load_layered_config(Path.cwd())
+    except Exception:
+        cfg = None
     cfg_style = cfg.defaults.progress_style if cfg else "inline"
     cfg_event = cfg.defaults.event_log if cfg else False
     if progress_inline is None:

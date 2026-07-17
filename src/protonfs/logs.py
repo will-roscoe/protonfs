@@ -17,11 +17,29 @@ from protonfs.reporting import Reporter, set_reporter
 EVENT_LOG_NAME = "events.log"
 EVENT_LOG_MAX_BYTES = 5 * 1024 * 1024
 EVENT_LOG_BACKUPS = 1
-_ALIGNED_FMT = "%(asctime)s %(levelname)-5s %(name)-24s %(message)s"
+_ALIGNED_FMT = "%(asctime)s %(levelname)-7s %(name)-24s %(message)s"
 _DATE_FMT = "%Y-%m-%dT%H:%M:%SZ"
 
 _ROOT = "protonfs"
+_EVENTS_LOGGER_NAME = "protonfs.events"
 _backend_passthrough = False
+
+
+class _DropEventsFilter(logging.Filter):
+    """Drop ``protonfs.events`` records -- attached to the CONSOLE handler only.
+
+    :class:`~protonfs.reporting.Reporter` renders those events itself as human
+    narration; letting the console handler also render the logger's own formatted
+    line double-prints every ``warn()`` call. The event-log FILE handler does not
+    get this filter -- it must keep receiving the full event stream.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        """Keep every record except those from the ``protonfs.events`` logger tree."""
+        return not (
+            record.name == _EVENTS_LOGGER_NAME
+            or record.name.startswith(f"{_EVENTS_LOGGER_NAME}.")
+        )
 
 
 def _console_level(verbosity: int) -> int:
@@ -61,17 +79,21 @@ def configure_logging(
     _backend_passthrough = verbosity >= 4
 
     root_logger = logging.getLogger(_ROOT)
-    root_logger.setLevel(logging.DEBUG)  # handlers filter; logger passes everything
     root_logger.handlers.clear()
     root_logger.propagate = False
 
     console = logging.StreamHandler(stream)
     console.setLevel(_console_level(verbosity))
     console.setFormatter(_make_formatter())
+    console.addFilter(_DropEventsFilter())
     root_logger.addHandler(console)
 
-    if event_log:
-        (root / ".protonfs").mkdir(parents=True, exist_ok=True)
+    # Only attach the file handler when .protonfs/ already exists -- never mkdir it
+    # ourselves. Otherwise `protonfs --event-log <cmd>` run outside any repo (or in
+    # one not yet `setup`) would create a stray .protonfs/ wherever the process
+    # happens to be standing.
+    event_log_attached = False
+    if event_log and (root / ".protonfs").is_dir():
         file_handler = RotatingFileHandler(
             root / ".protonfs" / EVENT_LOG_NAME,
             maxBytes=EVENT_LOG_MAX_BYTES,
@@ -81,6 +103,15 @@ def configure_logging(
         file_handler.setLevel(logging.DEBUG)
         file_handler.setFormatter(_make_formatter())
         root_logger.addHandler(file_handler)
+        event_log_attached = True
+
+    # The logger only needs to pass DEBUG-level records through when something
+    # actually wants them (the event-log file, or -vvvv's third-party passthrough);
+    # otherwise every reporter.item()/progress() DEBUG call on a large batch would
+    # build a LogRecord that no handler ever renders.
+    root_logger.setLevel(
+        logging.DEBUG if (event_log_attached or verbosity >= 4) else _console_level(verbosity)
+    )
 
     if verbosity >= 4:
         # Ungag third-party loggers. Deliberately never re-gagged on a later, lower-

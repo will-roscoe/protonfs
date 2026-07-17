@@ -380,3 +380,28 @@ def test_push_reports_progress_per_batch(
     assert result.transferred_items == 3
     # monotonic, ends with a forced final repeat at done == total
     assert progress_calls == [(1, 3), (2, 3), (3, 3), (3, 3)]
+
+
+def test_push_narrates_no_item_for_a_failed_upload(
+    tmp_path: Path, make_fake_drive, recording_reporter_cls
+) -> None:
+    # F5: a failed batch member must not get a "^" item line -- it never landed remotely.
+    (tmp_path / "ok").write_bytes(b"data")
+    (tmp_path / "broken").write_bytes(b"data")
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.drive = make_fake_drive(
+        upload_result=TransferResult(
+            transferred_items=1,
+            skipped_items=0,
+            failed_items=1,
+            failures=[{"name": "broken", "error": "boom"}],
+        )
+    )
+    rep = recording_reporter_cls()
+
+    push(ctx, None, None, dry_run=False, reporter=rep)
+
+    item_paths = [c[1] for c in rep.calls if c[0] == "item"]
+    assert "ok" in item_paths
+    assert "broken" not in item_paths

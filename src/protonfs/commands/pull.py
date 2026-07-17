@@ -78,10 +78,11 @@ def _download_and_index(
             total.failures += result.failures
             done += len(batch)
             reporter.progress(done, progress_total or len(rels))
-            for rel in batch:
-                reporter.item("v", rel)
-
             failed_names = {f["name"] for f in result.failures}
+            for rel in batch:
+                if Path(rel).name not in failed_names:
+                    reporter.item("v", rel)
+
             for rel in batch:
                 if Path(rel).name in failed_names:
                     continue
