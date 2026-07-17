@@ -100,7 +100,7 @@ def push(
     subpath: str | None,
     resolve: str | None,
     dry_run: bool,
-    on_progress=None,
+    reporter=None,
 ) -> TransferResult:
     """Upload local-only and locally-changed files to Drive.
 
@@ -114,13 +114,17 @@ def push(
         for files that diverged on both sides, or ``None`` to surface them unresolved.
     :param dry_run: when true, report what would upload without transferring or
         persisting anything.
-    :param on_progress: optional ``(done, total)`` callback invoked after each uploaded
-        batch (#93), so a long push can render progress; ``None`` disables it.
+    :param reporter: :class:`~protonfs.reporting.Reporter` to narrate progress through;
+        defaults to the process reporter (:func:`~protonfs.reporting.get_reporter`).
     :returns: a :class:`~protonfs.drive.TransferResult` of what was uploaded/skipped.
     :raises protonfs.drive.DriveError: on a Drive or lock failure.
 
     .. seealso:: :func:`protonfs.commands.pull.pull` for the download direction.
     """
+    from protonfs.reporting import get_reporter
+
+    reporter = reporter or get_reporter()
+    reporter.phase("scanning local", subpath=subpath or ".")
     ignore = IgnoreMatcher.from_file(ctx.root)
     scan_root = Path(subpath) if subpath else Path(".")
     local = scan(ctx.root, scan_root, ignore, ctx.index, low_io=ctx.config.defaults.low_io)
@@ -144,6 +148,8 @@ def push(
     if dry_run or not to_push:
         return TransferResult(len(to_push), 0, 0, [])
 
+    reporter.phase("uploading", files=len(to_push))
+
     # #17: make sure remote_root itself exists (and is a valid path) before uploading, so a
     # first push to a brand-new Drive location works instead of failing on every file.
     ensure_remote_root(ctx)
@@ -154,7 +160,7 @@ def push(
     strategy = resolve
     groups = group_by_parent(to_push)
     total = TransferResult(0, 0, 0, [])
-    done = 0  # files handed to proton-drive so far, for on_progress (#93)
+    done = 0  # files handed to proton-drive so far, for reporter.progress (#93)
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
     for parent, rels in groups.items():
@@ -176,6 +182,8 @@ def push(
             )
         # #93: refused stubs still count as processed, so progress never stalls short.
         done += len(pointer_rels)
+        if pointer_rels:
+            reporter.progress(done, len(to_push))
         rels = [rel for rel in rels if rel not in pointer_rels]
         if not rels:
             continue
@@ -190,8 +198,9 @@ def push(
             total.failed_items += result.failed_items
             total.failures += result.failures
             done += len(batch)
-            if on_progress is not None:
-                on_progress(done, len(to_push))
+            reporter.progress(done, len(to_push))
+            for rel in batch:
+                reporter.item("^", rel)
 
             # D2.1: a skip is reported only as an aggregate count, so we cannot tell
             # WHICH files in the batch were skipped. Rather than falsely record an
@@ -246,4 +255,6 @@ def push(
         # Composed with #1's atomic writes, each of these saves is crash-safe.
         ctx.index.save()
     ctx.index.save()
+    reporter.progress(len(to_push), len(to_push), force=True)
+    reporter.done("uploaded", transferred=total.transferred_items, failed=total.failed_items)
     return total
