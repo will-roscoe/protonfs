@@ -79,6 +79,10 @@ class DirSummary:
     :ivar local_bytes: cumulative size of the files' local copies (0 when offloaded).
     :ivar indexed_bytes: cumulative size the index records for them -- the remote-side
         size for synced/metadata-only files (#94).
+    :ivar apparent_bytes: the directory's true footprint: per file, whichever of the
+        local/indexed size is known (they agree when synced; local for a not-yet-pushed
+        file, indexed for an offloaded one). This is the size the ``--visual`` charts
+        use, so a fresh local-only tree and an all-offloaded tree both chart correctly.
     :ivar states: per-:class:`~protonfs.diff.SyncState` file counts.
     """
 
@@ -86,6 +90,7 @@ class DirSummary:
     files: int
     local_bytes: int
     indexed_bytes: int
+    apparent_bytes: int
     states: dict[str, int]
 
 
@@ -115,21 +120,27 @@ def summarize_dirs(
         states: Counter = Counter()
         local_bytes = 0
         indexed_bytes = 0
+        apparent_bytes = 0
         for entry in members:
             states[entry.state.value] += 1
             try:
-                local_bytes += (ctx.root / entry.rel_path).stat().st_size
+                local_size = (ctx.root / entry.rel_path).stat().st_size
             except OSError:
-                pass  # offloaded / metadata-only / vanished: no local bytes
+                local_size = 0  # offloaded / metadata-only / vanished: no local bytes
             indexed = ctx.index.get(entry.rel_path)
-            if indexed is not None:
-                indexed_bytes += indexed.size
+            indexed_size = indexed.size if indexed is not None else 0
+            local_bytes += local_size
+            indexed_bytes += indexed_size
+            # Per-file real footprint: the two agree when synced; take the known one
+            # when the file is only local (not yet pushed) or only remote (offloaded).
+            apparent_bytes += max(local_size, indexed_size)
         summaries.append(
             DirSummary(
                 path=child,
                 files=len(members),
                 local_bytes=local_bytes,
                 indexed_bytes=indexed_bytes,
+                apparent_bytes=apparent_bytes,
                 states=dict(states),
             )
         )
@@ -160,6 +171,7 @@ def render_ls(
     dirs: bool = False,
     states: tuple[str, ...] = (),
     fmt: str = "table",
+    visual: str | None = None,
     echo=print,
 ) -> None:
     """Print tracked files (or ``--dirs`` aggregates, or a trash listing).
@@ -175,9 +187,13 @@ def render_ls(
         listing every file (#97/#94).
     :param states: sync-state filter; empty means all states (#97).
     :param fmt: ``table`` (rich, default) | ``plain`` (tab-separated) | ``json`` (#97).
+    :param visual: ``"treemap"`` | ``"waffle"`` to draw a per-directory storage-usage
+        chart (by indexed/remote size) instead of the table; ``None`` for no chart.
+        Implies directory aggregation (#94).
     :param echo: sink for plain/json lines (overridable for tests).
 
-    .. seealso:: :func:`collect_entries` / :func:`summarize_dirs` for the data layer.
+    .. seealso:: :func:`collect_entries` / :func:`summarize_dirs` for the data layer,
+        and :mod:`protonfs.commands.storage_viz` for the chart renderers.
     """
     if trash:
         rows = [
@@ -199,6 +215,18 @@ def render_ls(
 
     entries = collect_entries(ctx, subpath, remote, states)
 
+    if visual is not None:
+        # A chart is inherently a per-directory, terminal-only view: aggregate and draw
+        # by indexed (remote/full) size, which counts offloaded files that local size
+        # would miss.
+        from protonfs.commands.storage_viz import render_storage_visual
+
+        summaries = summarize_dirs(ctx, entries, subpath)
+        render_storage_visual(
+            visual, [(s.path, s.apparent_bytes) for s in summaries], console
+        )
+        return
+
     if dirs:
         summaries = summarize_dirs(ctx, entries, subpath)
         if fmt == "json":
@@ -210,6 +238,7 @@ def render_ls(
                             "files": s.files,
                             "local_bytes": s.local_bytes,
                             "indexed_bytes": s.indexed_bytes,
+                            "apparent_bytes": s.apparent_bytes,
                             "states": s.states,
                         }
                         for s in summaries

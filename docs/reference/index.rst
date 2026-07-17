@@ -102,7 +102,7 @@ Examples::
 ``ls``
 ------
 **Synopsis:** ``protonfs ls [PATH]... [--remote] [--trash] [--dirs] [--state STATE]...
-[--format {table,plain,json}]``
+[--format {table,plain,json}] [--visual {treemap,waffle}]``
 
 Lists tracked files with their sync state, as a table of ``path`` / ``state``.
 
@@ -122,7 +122,17 @@ Lists tracked files with their sync state, as a table of ``path`` / ``state``.
   (``--state remote-only --state local-only``). Applies before ``--dirs``
   aggregation, so the two compose.
 - ``--format`` — ``table`` (rich, default), ``plain`` (tab-separated lines for
-  shell pipelines), or ``json`` (one JSON document per listed PATH).
+  shell pipelines), or ``json`` (one JSON document per listed PATH). The ``--dirs``
+  JSON/columns also carry an ``apparent_bytes`` field: each directory's true
+  footprint, taking per file whichever of the local/indexed size is known (they
+  agree when synced, local for a not-yet-pushed file, indexed for an offloaded one).
+- ``--visual {treemap,waffle}`` — draw a per-directory storage-usage chart instead
+  of the listing, sized by that ``apparent_bytes`` footprint so a fresh local-only
+  tree and a fully-offloaded tree both chart correctly. ``treemap`` gives nested
+  rectangles whose areas are proportional to size (squarified for readability);
+  ``waffle`` gives a proportional grid of cells. Both print a colour legend with each
+  directory's size and percentage. This is a terminal-only view — it cannot be
+  combined with ``--format plain/json`` or ``--trash`` (both raise a usage error).
 
 Examples::
 
@@ -132,6 +142,8 @@ Examples::
     protonfs ls --dirs                       # per-directory storage breakdown
     protonfs ls --state remote-only --format plain | cut -f1
     protonfs ls sim/ --dirs --format json    # scriptable per-dir sizes/counts
+    protonfs ls --visual treemap             # squarified storage treemap
+    protonfs ls sim/ --visual waffle         # proportional waffle chart of sim/
 
 .. _cmd-push:
 
