@@ -173,6 +173,44 @@ def make_fake_drive():
     return _make
 
 
+class RecordingReporter:
+    """A fake :class:`~protonfs.reporting.Reporter` that records every call it
+    receives instead of rendering, so command-core tests can assert on narration
+    without a real stream/TTY. Use via the `recording_reporter_cls` fixture."""
+
+    def __init__(self):
+        self.calls = []
+
+    def phase(self, name, **f):
+        self.calls.append(("phase", name))
+
+    def progress(self, d, t, **f):
+        self.calls.append(("progress", d, t))
+
+    def item(self, a, p):
+        self.calls.append(("item", p))
+
+    def warn(self, m):
+        self.calls.append(("warn", m))
+
+    def done(self, m, **f):
+        self.calls.append(("done", m))
+
+    import contextlib
+
+    @contextlib.contextmanager
+    def timed(self, name):
+        self.calls.append(("phase", name))
+        yield
+        self.calls.append(("done", name))
+
+
+@pytest.fixture
+def recording_reporter_cls():
+    """Return the `RecordingReporter` class for tests to instantiate."""
+    return RecordingReporter
+
+
 @pytest.fixture(autouse=True)
 def _reset_protonfs_logger():
     """Undo `configure_logging`'s global logger mutation after each test.

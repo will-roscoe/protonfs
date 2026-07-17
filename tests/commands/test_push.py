@@ -347,40 +347,12 @@ def test_push_hard_guard_refuses_to_upload_lfs_pointer_stub(
 # --- #93: progress reporting via the Reporter -------------------------------------------
 
 
-class _RecordingReporter:
-    def __init__(self):
-        self.calls = []
-
-    def phase(self, name, **f):
-        self.calls.append(("phase", name))
-
-    def progress(self, d, t, **f):
-        self.calls.append(("progress", d, t))
-
-    def item(self, a, p):
-        self.calls.append(("item", p))
-
-    def warn(self, m):
-        self.calls.append(("warn", m))
-
-    def done(self, m, **f):
-        self.calls.append(("done", m))
-
-    import contextlib
-
-    @contextlib.contextmanager
-    def timed(self, name):
-        self.calls.append(("phase", name))
-        yield
-        self.calls.append(("done", name))
-
-
-def test_push_narrates_phases(tmp_path: Path, make_fake_drive) -> None:
+def test_push_narrates_phases(tmp_path: Path, make_fake_drive, recording_reporter_cls) -> None:
     init_config(tmp_path, "/my-files/test")
     ctx = load_context(tmp_path)
     (tmp_path / "f1").write_bytes(b"data")
     ctx.drive = make_fake_drive()
-    rep = _RecordingReporter()
+    rep = recording_reporter_cls()
 
     push(ctx, None, None, dry_run=False, reporter=rep)
 
@@ -389,7 +361,7 @@ def test_push_narrates_phases(tmp_path: Path, make_fake_drive) -> None:
 
 
 def test_push_reports_progress_per_batch(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, make_fake_drive
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, make_fake_drive, recording_reporter_cls
 ) -> None:
     init_config(tmp_path, "/my-files/test")
     ctx = load_context(tmp_path)
@@ -401,7 +373,7 @@ def test_push_reports_progress_per_batch(
         "protonfs.commands.push.batches", lambda items, size=1: [[i] for i in items]
     )
 
-    rep = _RecordingReporter()
+    rep = recording_reporter_cls()
     result = push(ctx, None, None, dry_run=False, reporter=rep)
 
     progress_calls = [c[1:] for c in rep.calls if c[0] == "progress"]
