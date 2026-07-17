@@ -31,7 +31,14 @@ from protonfs.context import RepoContext
 from protonfs.drive import decrypted_name
 
 
-def rm(ctx: RepoContext, rel_path: str, recursive: bool, force: bool, confirmed: bool) -> None:
+def rm(
+    ctx: RepoContext,
+    rel_path: str,
+    recursive: bool,
+    force: bool,
+    confirmed: bool,
+    reporter=None,
+) -> None:
     """Remove ``rel_path`` from Drive: trash it (recoverable) or, with ``force``,
     permanently delete it (trash then delete).
 
@@ -40,9 +47,14 @@ def rm(ctx: RepoContext, rel_path: str, recursive: bool, force: bool, confirmed:
     :param recursive: required to remove a directory; without it a directory is refused.
     :param force: permanently delete instead of leaving the item in Drive's trash.
     :param confirmed: skip the interactive confirmation (the ``--yes`` flag).
+    :param reporter: :class:`~protonfs.reporting.Reporter` to narrate progress through;
+        defaults to the process reporter (:func:`~protonfs.reporting.get_reporter`).
     :raises click.ClickException: on a directory without ``recursive``, or a Drive error
         (including a same-basename trash ambiguity that blocks a safe permanent delete).
     """
+    from protonfs.reporting import get_reporter
+
+    reporter = reporter or get_reporter()
     local_target = ctx.root / rel_path
     if local_target.is_dir() and not recursive:
         raise click.ClickException(
@@ -56,6 +68,7 @@ def rm(ctx: RepoContext, rel_path: str, recursive: bool, force: bool, confirmed:
     entry = ctx.index.get(rel_path)
     remote_path = entry.remote_path if entry else f"{ctx.config.remote_root}/{rel_path}"
 
+    reporter.item("trash", rel_path)
     ctx.drive.trash([remote_path])
     if force:
         # D2.2: permanent delete works only against /trash/<basename>, and with
@@ -65,6 +78,7 @@ def rm(ctx: RepoContext, rel_path: str, recursive: bool, force: bool, confirmed:
         name = PurePosixPath(remote_path).name
         matches = [entry for entry in ctx.drive.list("/trash") if decrypted_name(entry) == name]
         if len(matches) == 1:
+            reporter.item("delete", rel_path)
             ctx.drive.delete([f"/trash/{name}"])
         elif len(matches) > 1:
             click.echo(
