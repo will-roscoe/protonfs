@@ -81,30 +81,42 @@ def _accumulate_transfer(total, part) -> None:
     total.failures += part.failures
 
 
-def _progress_printer(verb: str):
-    """A per-batch ``(done, total)`` progress renderer for long transfers (#93).
-
-    Returns ``None`` when stderr is not a TTY, so scripts, CI logs, and the test
-    runner see exactly the frozen 1.0 output -- progress is an interactive-only
-    overlay on stderr, never part of the stdout contract.
-    """
-    import sys
-
-    if not sys.stderr.isatty():
-        return None
-
-    def _render(done: int, total: int) -> None:
-        click.echo(f"\r{verb}: {done}/{total} file(s)", nl=False, err=True)
-        if done >= total:
-            click.echo(err=True)  # finish the line after the last batch
-
-    return _render
-
-
 @click.group()
 @click.version_option(__version__, prog_name="protonfs")
-def main() -> None:
+@click.option("-v", "--verbose", count=True, help="Increase console detail (-v..-vvvv).")
+@click.option(
+    "--progress-inline/--progress-lines",
+    "progress_inline",
+    default=None,
+    help="Update progress in place (inline) vs. print each poll on a new line. "
+    "Default: config (defaults.progress_style), else inline on a TTY.",
+)
+@click.option(
+    "--event-log/--no-event-log",
+    "event_log",
+    default=None,
+    help="Write a full debug event log to .protonfs/events.log. "
+    "Default: config (defaults.event_log), else off.",
+)
+def main(verbose: int, progress_inline: bool | None, event_log: bool | None) -> None:
     """Sync a local directory tree with Proton Drive."""
+    from pathlib import Path
+
+    from protonfs.config import load_layered_config
+    from protonfs.logs import configure_logging
+
+    # Resolve flag -> config -> built-in default for the two persisted knobs.
+    cfg = load_layered_config(Path.cwd())
+    cfg_style = cfg.defaults.progress_style if cfg else "inline"
+    cfg_event = cfg.defaults.event_log if cfg else False
+    if progress_inline is None:
+        style = cfg_style
+    else:
+        style = "inline" if progress_inline else "lines"
+    use_event_log = cfg_event if event_log is None else event_log
+    configure_logging(
+        verbose, progress_style=style, event_log=use_event_log, root=Path.cwd()
+    )
 
 
 @main.command()
@@ -306,12 +318,9 @@ def push(path: tuple[str, ...], resolve: str | None, dry_run: bool) -> None:
 
     ctx = load_context()
     result = TransferResult(0, 0, 0, [])
-    progress = _progress_printer("push")
     with repo_lock(ctx.root):
         for subpath in _normalize_paths(path):
-            _accumulate_transfer(
-                result, push_files(ctx, subpath, resolve, dry_run, on_progress=progress)
-            )
+            _accumulate_transfer(result, push_files(ctx, subpath, resolve, dry_run))
     click.echo(
         f"transferred={result.transferred_items} skipped={result.skipped_items} "
         f"failed={result.failed_items}"
@@ -369,14 +378,11 @@ def pull(path: tuple[str, ...], resolve: str | None, dry_run: bool, refresh: boo
         click.echo("index empty; run `protonfs refresh` first (or `pull --refresh`)")
         return
     result = TransferResult(0, 0, 0, [])
-    progress = _progress_printer("pull")
     with repo_lock(ctx.root):
         for subpath in _normalize_paths(path):
             _accumulate_transfer(
                 result,
-                pull_files(
-                    ctx, subpath, resolve, dry_run, refresh=refresh, on_progress=progress
-                ),
+                pull_files(ctx, subpath, resolve, dry_run, refresh=refresh),
             )
     click.echo(
         f"transferred={result.transferred_items} skipped={result.skipped_items} "

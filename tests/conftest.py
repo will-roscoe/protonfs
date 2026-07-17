@@ -174,6 +174,38 @@ def make_fake_drive():
 
 
 @pytest.fixture(autouse=True)
+def _reset_protonfs_logger():
+    """Undo `configure_logging`'s global logger mutation after each test.
+
+    `configure_logging` (protonfs.logs) clears and replaces the ``protonfs`` logger's
+    handlers and sets ``propagate = False`` so console/event-log output doesn't leak
+    to the real root logger. Any test that invokes the CLI (and so runs the group
+    callback) leaves that mutation in place for the rest of the process, which breaks
+    unrelated tests relying on ``caplog`` (attached to the root logger) to see
+    ``protonfs.*`` records. Snapshot and restore around every test.
+    """
+    import logging
+
+    logger = logging.getLogger("protonfs")
+    handlers = list(logger.handlers)
+    level = logger.level
+    propagate = logger.propagate
+    root_level = logging.getLogger().level
+    yield
+    logger.handlers[:] = handlers
+    logger.setLevel(level)
+    logger.propagate = propagate
+    # -vvvv raises the ROOT logger to DEBUG; restore it too.
+    logging.getLogger().setLevel(root_level)
+    # And drop any Reporter a CLI test installed: it captured that test's (now dead)
+    # stderr stream, and command cores resolve get_reporter() -- a leaked live
+    # reporter would write into a closed CliRunner buffer in a later test.
+    from protonfs.reporting import null_reporter, set_reporter
+
+    set_reporter(null_reporter())
+
+
+@pytest.fixture(autouse=True)
 def no_keyring_bootstrap(monkeypatch):
     """Keep the keyring bootstrap out of every test that does not target it.
 
