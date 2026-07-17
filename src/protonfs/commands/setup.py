@@ -128,6 +128,8 @@ _PROTONFS_GITIGNORE = (
     "index.json\n"
     "refresh-state.json\n"
     "config.local.json\n"
+    "events.log\n"
+    "events.log.1\n"
 )
 
 

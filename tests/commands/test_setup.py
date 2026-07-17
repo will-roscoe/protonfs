@@ -676,3 +676,10 @@ def test_run_setup_narrates_steps_through_reporter(
         "git-LFS migration",
     ]
     assert ("done", "setup complete") in reporter.calls
+
+
+def test_git_control_files_ignore_event_log(tmp_path: Path) -> None:
+    write_git_control_files(tmp_path)
+    ignore = (tmp_path / ".protonfs" / ".gitignore").read_text()
+    assert "events.log" in ignore
+    assert "events.log.1" in ignore

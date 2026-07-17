@@ -205,6 +205,29 @@ def _refresh_state_apply(root: Path) -> None:
     pass  # no legacy format exists; nothing to do
 
 
+# --- event-log gitignore (#XXX) --------------------------------------------------------
+
+
+def _event_log_gitignored(root: Path) -> bool:
+    """is_applied: whether .protonfs/.gitignore already excludes the event log.
+
+    :param root: the protonfs root.
+    :returns: ``False`` if the gitignore file is missing or lacks the event-log lines.
+    """
+    gitignore = root / ".protonfs" / ".gitignore"
+    if not gitignore.exists():
+        return False
+    return "events.log" in gitignore.read_text()
+
+
+def _event_log_gitignore_apply(root: Path) -> None:
+    """apply: append the event-log gitignore lines (idempotent via write_git_control_files).
+
+    :param root: the protonfs root.
+    """
+    write_git_control_files(root)
+
+
 MIGRATIONS: list[Migration] = [
     Migration(
         id="index-schema-current",
@@ -233,6 +256,13 @@ MIGRATIONS: list[Migration] = [
         description="refresh-state.json format (no legacy format; placeholder for future changes)",
         is_applied=_refresh_state_is_current,
         apply=_refresh_state_apply,
+    ),
+    Migration(
+        id="event-log-gitignore",
+        version=5,
+        description="gitignore .protonfs/events.log(.1) (verbosity/event-log feature)",
+        is_applied=_event_log_gitignored,
+        apply=_event_log_gitignore_apply,
     ),
 ]
 

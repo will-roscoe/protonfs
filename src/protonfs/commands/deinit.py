@@ -36,6 +36,8 @@ LOCAL_ONLY_FILES = (
     LOCAL_CONFIG_FILE_NAME,
     INDEX_FILE_NAME,
     REFRESH_STATE_FILE,
+    "events.log",
+    "events.log.1",
 )
 # Deliberately excludes `.protonfs/lock`: it is not something `setup` writes, and
 # `deinit` itself holds it open for the duration of the teardown (see cli.py), so it
