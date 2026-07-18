@@ -17,6 +17,7 @@ extensions = [
     "sphinx.ext.intersphinx",
     "sphinx.ext.viewcode",
     "sphinx.ext.napoleon",  # NumPy/Google docstring styles
+    "sphinx.ext.coverage",  # report undocumented Python objects (CI gate)
     # Python
     "sphinx.ext.autodoc",
     "sphinx.ext.autosummary",  # generated module/API overview tables
@@ -41,6 +42,11 @@ master_doc = "index"
 # The API overview table links to the existing apidoc pages rather than generating
 # duplicate stub pages, so no autosummary stub generation is needed.
 autosummary_generate = False
+
+# Doc-coverage report (sphinx-build -b coverage): list undocumented objects and fail
+# CI on any. Skips imported names so only objects defined in protonfs count.
+coverage_show_missing_items = True
+coverage_ignore_pyobjects = []
 
 # -- Options for HTML output --------------------------------------------------
 html_theme = "furo"

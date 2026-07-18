@@ -47,6 +47,17 @@ jobs:
         # collects them all in one run rather than stopping at the first.
         run: sphinx-build -W --keep-going -b html docs/ docs/_build/html
 
+      - name: Doc coverage gate
+        # Fail if any documented Python object lacks a docstring, complementing the
+        # interrogate docstring-coverage badge. Undocumented items appear as ' * name'
+        # lines in python.txt; none means full coverage.
+        run: |
+          sphinx-build -b coverage docs/ docs/_build/coverage
+          if grep -q '^ \* ' docs/_build/coverage/python.txt; then
+            echo "Undocumented objects found:"; cat docs/_build/coverage/python.txt; exit 1
+          fi
+          echo "Doc coverage: no undocumented objects."
+
       - name: Upload built docs
         if: github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@v4
