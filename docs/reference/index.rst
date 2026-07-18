@@ -9,6 +9,12 @@ does, and worked examples. This page describes *behavior*; for the frozen contra
 (exact exit codes, option names, config keys, env vars that will not change without
 a major version bump) see :doc:`../stability`.
 
+.. toctree::
+   :hidden:
+
+   commands
+   config
+
 Global behavior
 ----------------
 Every command that mutates a repo's index (``push``, ``pull``, ``rm``, ``restore``,

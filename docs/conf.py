@@ -20,6 +20,7 @@ extensions = [
     # Python
     "sphinx.ext.autodoc",
     "sphinx_autodoc_typehints",
+    "sphinx_click",  # autodoc for the Click CLI (command/option/envvar directives)
     "sphinx_copybutton",
     # Hover previews on cross-references. Rendered client-side at build time (unlike
     # sphinx-hoverxref, which needs the Read the Docs Embed API), so tooltips work on
