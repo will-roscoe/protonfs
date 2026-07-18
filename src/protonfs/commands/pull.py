@@ -1,5 +1,8 @@
 # src/protonfs/commands/pull.py
-"""``protonfs pull``: download remote-only/changed files from Drive into the working tree."""
+"""``protonfs pull``: download remote-only/changed files from Drive into the working tree.
+
+.. versionadded:: 1.0.0
+"""
 from __future__ import annotations
 
 import datetime

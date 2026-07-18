@@ -5,6 +5,8 @@ Commands call a :class:`Reporter` at phase boundaries (``phase``/``progress``/``
 throttled so ``-v`` stays readable, and mirrors every call to the ``protonfs.events``
 logger so the event-log file captures the narration even when the console is quiet.
 See ``.claude`` spec 2026-07-17-verbosity-and-event-log.
+
+.. versionadded:: 1.3.0
 """
 from __future__ import annotations
 
@@ -33,6 +35,8 @@ class Reporter:
     :param stream: where human lines go (defaults to real stderr).
     :param isatty: force TTY-ness for the inline/lines decision (defaults to the
         stream's own ``isatty()``); a non-TTY always uses ``"lines"``.
+
+    .. versionadded:: 1.3.0
     """
 
     def __init__(self, level, *, progress_style="inline", stream=None, isatty=None):

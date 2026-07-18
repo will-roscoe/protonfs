@@ -6,6 +6,8 @@ on a desktop quietly stops working: no session bus, no Secret Service, or a Secr
 Service whose default collection is sealed with a password from a graphical login
 that this user will never perform. Each check reports what it found; `--fix`
 additionally bootstraps the keyring rather than only describing the problem.
+
+.. versionadded:: 1.0.0
 """
 from __future__ import annotations
 

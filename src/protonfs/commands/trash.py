@@ -12,6 +12,8 @@ Deliberately out of scope: selective/per-item permanent deletion from trash by U
 -- proton-drive does not accept UIDs for `/trash` paths (see #56's analysis and the
 duplicate-basename guard in `commands/rm.py`), so there is no safe way to target a
 single item there yet.
+
+.. versionadded:: 1.0.0
 """
 
 from __future__ import annotations

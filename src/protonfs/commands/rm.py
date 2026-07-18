@@ -19,6 +19,8 @@ tell which one is the user's, so ``rm -f`` refuses to permanently delete and
 leaves the item **trashed (still reversible)**. The instructive fallback is to
 empty that item from trash via the Proton Drive app/web, or simply leave it
 trashed — trash is reversible, so nothing is lost.
+
+.. versionadded:: 1.0.0
 """
 
 from __future__ import annotations

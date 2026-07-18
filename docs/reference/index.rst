@@ -33,9 +33,17 @@ Python traceback. An auth failure additionally suggests ``protonfs auth login``.
 
 Diagnostics & verbosity
 ------------------------
-Every ``protonfs`` command accepts three global options, given **before** the
-subcommand (e.g. ``protonfs -vv --event-log pull``), that control how much it narrates
-and where that narration goes. All narration goes to **stderr**; each command's result
+
+.. versionadded:: 1.3.0
+   Layered ``-v`` verbosity, the progress-style flag, and the rotating event log.
+
+.. versionchanged:: 1.4.0
+   Global options became position-independent — they may appear before or after the
+   subcommand (see :func:`~protonfs.argv.reorder_argv`).
+
+Every ``protonfs`` command accepts three global options, which may appear before or
+after the subcommand (e.g. ``protonfs -vv --event-log pull`` or ``protonfs pull -vv``),
+that control how much it narrates and where that narration goes. All narration goes to **stderr**; each command's result
 summary stays on **stdout**, so piping/scripting a command's output is unaffected by
 verbosity. A flag, when given, overrides its config key; when unset, the resolved
 config value is used, falling back to the built-in default (see :doc:`../stability`
@@ -149,6 +157,9 @@ Examples::
 ----------
 **Synopsis:** ``protonfs status [PATH]... [--format {plain,json}]``
 
+.. versionchanged:: 1.1.0
+   Added ``--format`` (``plain``/``json``) and multiple ``PATH`` pathspecs.
+
 Scans the local tree (optionally scoped to ``PATH``), compares it against the
 local index, and prints a count per sync state (``synced``, ``local-only``,
 ``remote-only``, ``metadata-only``, ``conflict``, ``local-modified``,
@@ -178,6 +189,13 @@ Examples::
 [--format {table,plain,json}] [--visual {treemap,waffle}]``
 
 Lists tracked files with their sync state, as a table of ``path`` / ``state``.
+
+.. versionadded:: 1.1.0
+   ``--dirs`` per-directory aggregation with sizes, the ``--state`` filter, and
+   ``--format`` on ``ls``/``status``.
+
+.. versionchanged:: 1.2.0
+   ``--visual`` treemap/waffle storage charts.
 
 - ``--remote`` — force a live Drive listing to compute state, instead of relying on
   the local index alone (slower, but catches remote changes ``refresh`` hasn't seen
@@ -224,6 +242,9 @@ Examples::
 --------
 **Synopsis:** ``protonfs push [PATH]... [--resolve {merge,keep-both,replace,skip}] [--dry-run]``
 
+.. versionchanged:: 1.1.0
+   Interactive batch progress on stderr; accepts multiple ``PATH`` pathspecs.
+
 Uploads local-only and locally-modified files under ``PATH`` (or the whole repo)
 to Drive. When run interactively (stderr is a terminal), a running
 ``push: N/M file(s)`` progress line is shown on stderr after each uploaded batch;
@@ -256,6 +277,9 @@ Examples::
 ``pull``
 --------
 **Synopsis:** ``protonfs pull [PATH]... [--resolve {remote,local,both}] [--dry-run] [--refresh]``
+
+.. versionchanged:: 1.1.0
+   Interactive batch progress on stderr; accepts multiple ``PATH`` pathspecs.
 
 Downloads remote-only and (with ``--resolve``) remote-modified files under
 ``PATH`` (or the whole repo). When run interactively (stderr is a terminal), a

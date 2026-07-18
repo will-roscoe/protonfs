@@ -11,6 +11,8 @@ Layers, highest wins::
 
 `get` always reports the fully RESOLVED value. `set` writes to exactly one layer:
 the shared repo file by default, or the global/local file with `--global`/`--local`.
+
+.. versionadded:: 1.0.0
 """
 from __future__ import annotations
 

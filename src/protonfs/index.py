@@ -5,6 +5,8 @@ content digests, remote path, sync state). It is the source of truth every comma
 diffs the working tree and the remote against. On-disk it is schema-versioned and
 migrated forward transparently on load; it is written atomically so a crash never
 leaves a torn manifest.
+
+.. versionadded:: 1.0.0
 """
 from __future__ import annotations
 

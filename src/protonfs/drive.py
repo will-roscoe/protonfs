@@ -7,6 +7,8 @@ output into typed exceptions (auth vs keyring vs throttle vs generic), rides out
 throttling with bounded exponential backoff on both listing and transfers, and models
 remote files with their *plaintext* identity (``claimedSize``/``claimedDigests``) so
 local-vs-remote comparisons never trip over Proton's encryption-size overhead.
+
+.. versionadded:: 1.0.0
 """
 from __future__ import annotations
 

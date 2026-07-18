@@ -3,6 +3,8 @@
 Bundles together the resolved repo root, layered :class:`~protonfs.config.Config`, the
 local :class:`~protonfs.index.IndexStore`, and a :class:`~protonfs.drive.DriveClient`, so
 each CLI command can call :func:`load_context` once and get everything it needs.
+
+.. versionadded:: 1.0.0
 """
 
 from __future__ import annotations

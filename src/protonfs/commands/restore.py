@@ -1,4 +1,7 @@
-"""``protonfs restore``: bring a trashed Drive file back to its original location."""
+"""``protonfs restore``: bring a trashed Drive file back to its original location.
+
+.. versionadded:: 1.0.0
+"""
 from __future__ import annotations
 
 from protonfs.context import RepoContext

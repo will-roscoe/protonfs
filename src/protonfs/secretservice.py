@@ -29,6 +29,8 @@ store, exactly like the session file `proton-drive` would otherwise write, and t
 alternative (no session at all on this host) is strictly worse. Set
 PROTONFS_KEYRING_PASSWORD to supply your own instead, or PROTONFS_NO_KEYRING_BOOTSTRAP=1
 to opt out of all of this and manage the environment yourself.
+
+.. versionadded:: 1.0.0
 """
 from __future__ import annotations
 

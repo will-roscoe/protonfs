@@ -18,6 +18,8 @@ Design notes / accepted deviations from the roadmap decision text:
 - The no-AVX2 path emits precise build-from-source instructions rather than
   automating a Bun-baseline source build. That path is defensive only (no current
   target machine lacks AVX2), so automating it is deferred as YAGNI.
+
+.. versionadded:: 1.0.0
 """
 from __future__ import annotations
 

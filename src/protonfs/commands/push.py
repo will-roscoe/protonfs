@@ -1,4 +1,7 @@
-"""``protonfs push``: upload local-only/changed files to Drive, creating remote dirs."""
+"""``protonfs push``: upload local-only/changed files to Drive, creating remote dirs.
+
+.. versionadded:: 1.0.0
+"""
 from __future__ import annotations
 
 import datetime

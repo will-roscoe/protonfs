@@ -14,6 +14,8 @@ collection`, having thrown the session away.
 
 `status` is implemented locally by calling DriveClient.is_authenticated(), which checks for
 a valid session without invoking proton-drive (which only implements login/logout).
+
+.. versionadded:: 1.0.0
 """
 from __future__ import annotations
 
