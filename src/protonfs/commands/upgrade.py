@@ -13,6 +13,7 @@ failed download or checksum mismatch never leaves a broken `proton-drive` behind
 
 .. versionadded:: 1.0.0
 """
+
 from __future__ import annotations
 
 import json
@@ -170,5 +171,19 @@ def run_upgrade(
             + ("everything is current." if not actions_available else "upgrade available.")
         )
         return 1 if actions_available else 0
+
+    refreshed = refresh_completions_step()
+    if refreshed:
+        click.echo(f"shell completion: refreshed {', '.join(refreshed)}.")
     reporter.done("upgrade complete")
     return 0
+
+
+def refresh_completions_step() -> list[str]:
+    """Rewrite any installed shell-completion scripts so they track new commands.
+
+    :returns: the shells whose completion scripts were refreshed (empty if none installed).
+    """
+    from protonfs.commands.completions import refresh_installed
+
+    return refresh_installed()

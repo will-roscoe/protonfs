@@ -8,6 +8,7 @@ flags typed after a subcommand are not offered, because Click completes in canon
 
 .. versionadded:: 1.5.0
 """
+
 from __future__ import annotations
 
 import re
@@ -30,7 +31,9 @@ def completion_script(shell: str) -> str:
     :raises ValueError: for an unsupported shell.
     """
     if shell not in SUPPORTED_SHELLS:
-        raise ValueError(f"unsupported shell: {shell!r} (choose from {', '.join(SUPPORTED_SHELLS)})")
+        raise ValueError(
+            f"unsupported shell: {shell!r} (choose from {', '.join(SUPPORTED_SHELLS)})"
+        )
     comp_cls = get_completion_class(shell)
     if comp_cls is None:
         raise ValueError(f"Click has no completion class for shell: {shell!r}")

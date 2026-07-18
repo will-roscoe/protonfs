@@ -7,6 +7,7 @@ surface these commands expose is documented in ``docs/stability.rst``.
 
 .. versionadded:: 1.0.0
 """
+
 from __future__ import annotations
 
 import functools
@@ -91,8 +92,7 @@ def _drive_error_boundary(func):
             raise click.ClickException(str(exc)) from exc
         except DriveAuthError as exc:
             raise click.ClickException(
-                f"{exc}\nRun `protonfs auth login` to re-authenticate, "
-                "then retry this command."
+                f"{exc}\nRun `protonfs auth login` to re-authenticate, then retry this command."
             ) from exc
         except DriveError as exc:
             raise click.ClickException(str(exc)) from exc
@@ -118,11 +118,7 @@ def _normalize_paths(paths: tuple[str, ...]) -> list[str | None]:
             stripped.append(p)
     if not stripped:
         return [None]
-    return [
-        p
-        for p in stripped
-        if not any(r != p and p.startswith(f"{r}/") for r in stripped)
-    ]
+    return [p for p in stripped if not any(r != p and p.startswith(f"{r}/") for r in stripped)]
 
 
 def _accumulate_transfer(total, part) -> None:
@@ -172,9 +168,7 @@ def main(verbose: int, progress_inline: bool | None, event_log: bool | None) -> 
     else:
         style = "inline" if progress_inline else "lines"
     use_event_log = cfg_event if event_log is None else event_log
-    configure_logging(
-        verbose, progress_style=style, event_log=use_event_log, root=Path.cwd()
-    )
+    configure_logging(verbose, progress_style=style, event_log=use_event_log, root=Path.cwd())
 
 
 @main.command()
@@ -357,8 +351,16 @@ def ls(
         if len(subpaths) > 1 and fmt == "table":
             console.print(f"[bold]{subpath}:[/bold]")
         render_ls(
-            ctx, subpath, remote, trash, console,
-            dirs=dirs, states=states, fmt=fmt, visual=visual, echo=click.echo,
+            ctx,
+            subpath,
+            remote,
+            trash,
+            console,
+            dirs=dirs,
+            states=states,
+            fmt=fmt,
+            visual=visual,
+            echo=click.echo,
         )
 
 
@@ -689,6 +691,35 @@ def shell_init() -> None:
         click.echo(f"export {line}")
 
 
+@main.command("completions")
+@click.argument("shell", type=click.Choice(("bash", "zsh", "fish")))
+@click.option("--install", is_flag=True, help="Install the completion script (idempotent).")
+@click.option("--uninstall", is_flag=True, help="Remove the installed completion script.")
+def completions(shell: str, install: bool, uninstall: bool) -> None:
+    """Print or install shell completion (bash|zsh|fish).
+
+    Global flags typed *after* a subcommand are not offered (Click completes in canonical
+    order); command names and per-subcommand options complete normally.
+    """
+    from protonfs.commands.completions import (
+        completion_script,
+        install_completion,
+        uninstall_completion,
+    )
+
+    if install and uninstall:
+        raise click.UsageError("--install and --uninstall are mutually exclusive.")
+    if install:
+        path = install_completion(shell)
+        click.echo(f"Installed {shell} completion -> {path}")
+        click.echo("Start a new shell (or source your rc) to activate it.")
+    elif uninstall:
+        removed = uninstall_completion(shell)
+        click.echo("Removed completion." if removed else "No completion was installed.")
+    else:
+        click.echo(completion_script(shell))
+
+
 @main.command()
 @click.argument("action", type=click.Choice(["login", "logout", "status"]))
 @_drive_error_boundary
@@ -761,12 +792,8 @@ def config_get_cmd(key: str) -> None:
 @config.command("set")
 @click.argument("key")
 @click.argument("value")
-@click.option(
-    "--global", "scope_global", is_flag=True, help="Write to the global user config."
-)
-@click.option(
-    "--local", "scope_local", is_flag=True, help="Write to the per-device local config."
-)
+@click.option("--global", "scope_global", is_flag=True, help="Write to the global user config.")
+@click.option("--local", "scope_local", is_flag=True, help="Write to the per-device local config.")
 def config_set_cmd(key: str, value: str, scope_global: bool, scope_local: bool) -> None:
     """Set KEY = VALUE. Default scope is the shared per-repo config (committed)."""
     from pathlib import Path
