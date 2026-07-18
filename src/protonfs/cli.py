@@ -4,6 +4,8 @@ Each command is a thin wrapper that lazily imports and calls its
 :mod:`protonfs.commands` implementation, so ``--help`` and shell completion stay
 fast (no Drive/keyring imports until a command actually runs). The frozen 1.0
 surface these commands expose is documented in ``docs/stability.rst``.
+
+.. versionadded:: 1.0.0
 """
 from __future__ import annotations
 
@@ -52,6 +54,8 @@ class PositionalFlagGroup(click.Group):
     """The top-level group: rewrites argv so global flags and subcommand flags may
     appear in any position (see :func:`~protonfs.argv.reorder_argv`), and hands its
     subcommands/subgroups the global-options epilog classes.
+
+    .. versionadded:: 1.4.0
     """
 
     command_class = _EpilogCommand

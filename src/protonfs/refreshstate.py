@@ -10,6 +10,8 @@ continues from where it stopped. The seeded index entries themselves persist sep
 
 The state is scoped to the pass's remote `root`: a saved frontier for a different root (e.g.
 a previous `refresh <other-subpath>`) is stale for this pass and ignored.
+
+.. versionadded:: 1.0.0
 """
 from __future__ import annotations
 

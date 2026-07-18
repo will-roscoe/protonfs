@@ -3,6 +3,8 @@
 :func:`scan` rglobs a repo (or subpath), skipping ignored files and the ``.protonfs``
 control directory, hashing each remaining file into a :class:`ScanEntry`. Its output
 feeds :func:`~protonfs.diff.classify` as the ``local`` argument.
+
+.. versionadded:: 1.0.0
 """
 
 from __future__ import annotations

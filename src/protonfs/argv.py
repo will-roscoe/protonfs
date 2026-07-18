@@ -10,6 +10,8 @@ unchanged and remains what the docs show.
 The global flags are a fixed set and -- critically -- none of them take a value, which is
 what makes the rewrite unambiguous: any recognised global token can be hoisted to the
 front, and the first remaining token that names a subcommand becomes the subcommand.
+
+.. versionadded:: 1.4.0
 """
 from __future__ import annotations
 
@@ -40,6 +42,8 @@ def reorder_argv(args: list[str], command_names: frozenset[str]) -> list[str]:
     :param command_names: the registered top-level subcommand names.
     :returns: a reordered copy; unchanged when there is no subcommand present (e.g.
         ``--help`` or a bare invocation) so Click's own handling is untouched.
+
+    .. versionadded:: 1.4.0
     """
     hoisted = [t for t in args if is_global_flag(t)]
     non_global = [t for t in args if not is_global_flag(t)]

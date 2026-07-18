@@ -4,6 +4,8 @@ Console verbosity and the event-log file are independent sinks (spec): ``-v`` se
 console threshold, while the event log -- when enabled -- always records the full
 ``protonfs`` logger tree at DEBUG. Level 4 additionally ungags third-party loggers and
 turns on proton-drive subprocess passthrough (read via :func:`backend_passthrough_enabled`).
+
+.. versionadded:: 1.3.0
 """
 from __future__ import annotations
 

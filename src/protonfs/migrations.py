@@ -25,6 +25,8 @@ Public API for `protonfs upgrade` (#66, a separate task) to call:
     pending_migrations(root) -> list[Migration]
     run_migrations(root, dry_run=False) -> MigrationResult
     layout_version(root) -> int
+
+.. versionadded:: 1.0.0
 """
 from __future__ import annotations
 

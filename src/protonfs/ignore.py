@@ -5,6 +5,8 @@ syntax via the :mod:`pathspec` library: ``ignore`` (a denylist, matches
 :data:`DEFAULT_IGNORE_TEMPLATE`'s defaults unless customized) and ``include`` (an
 optional allowlist, off by default). :class:`IgnoreMatcher` combines the two -- ignore
 always wins over include (#18).
+
+.. versionadded:: 1.0.0
 """
 
 from __future__ import annotations

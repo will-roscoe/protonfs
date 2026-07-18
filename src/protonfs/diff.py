@@ -7,6 +7,8 @@ last recorded, and (optionally) what the remote currently lists, it decides a
 "local has it" / "index has it" / neither; with a remote view it can additionally tell
 local deletions, remote deletions, and remote-side changes apart (see
 :func:`_classify_absent` and :func:`_classify_present`).
+
+.. versionadded:: 1.0.0
 """
 
 from __future__ import annotations

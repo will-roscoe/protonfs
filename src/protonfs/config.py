@@ -10,6 +10,8 @@ a new repo's layers are populated (#21).
 All writes go through :func:`_atomic_write_json`, which writes a temp file in the target
 directory and ``os.replace`` moves it into place, so a reader (or a crash mid-write) never
 observes a torn or truncated config file.
+
+.. versionadded:: 1.0.0
 """
 
 from __future__ import annotations
@@ -53,6 +55,9 @@ class Defaults:
         via ``$PROTONFS_EVENT_LOG``.
     :ivar progress_style: Default display style for progress updates (e.g. ``"inline"``,
         ``"lines"``); overridable per-repo or via ``$PROTONFS_PROGRESS_STYLE``.
+
+    .. versionchanged:: 1.3.0
+       Added the ``event_log`` and ``progress_style`` defaults.
     """
 
     on_conflict: str = "skip"

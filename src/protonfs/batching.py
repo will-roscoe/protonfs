@@ -4,6 +4,8 @@ Used to shape work before sending it to the Proton Drive API: :func:`group_by_pa
 clusters relative paths by their containing directory (so per-directory remote listings
 can be reused across siblings), and :func:`batches` chunks any list into fixed-size
 pages to keep individual API calls bounded.
+
+.. versionadded:: 1.0.0
 """
 
 from __future__ import annotations

@@ -4,6 +4,8 @@
 protonfs must never hash or upload a 130-byte git-LFS pointer stub as if it were real
 content (#32) -- doing so would clobber the real object on Drive. These helpers let
 setup/scan recognise LFS-managed repos and their un-materialised stubs.
+
+.. versionadded:: 1.0.0
 """
 from __future__ import annotations
 

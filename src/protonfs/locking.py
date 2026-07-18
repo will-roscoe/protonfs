@@ -5,6 +5,8 @@
 manifest. `repo_lock` takes a non-blocking exclusive POSIX `flock` on `.protonfs/lock`, so
 a second process fails fast with an instructive message rather than silently blocking or
 racing.
+
+.. versionadded:: 1.0.0
 """
 
 from __future__ import annotations
