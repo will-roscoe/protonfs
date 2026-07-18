@@ -60,7 +60,7 @@ class _EpilogCommand(_GlobalsEpilog, click.Command):
             seen = {item.value for item in results}
             root = ctx.find_root().command
             for param in root.get_params(ctx):
-                if not isinstance(param, click.Option):
+                if not isinstance(param, click.Option):  # pragma: no cover - group has no args
                     continue
                 for opt in (*param.opts, *param.secondary_opts):
                     if opt in GLOBAL_FLAG_NAMES and opt.startswith(incomplete) and opt not in seen:

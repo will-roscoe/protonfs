@@ -63,6 +63,26 @@ def test_refresh_only_touches_installed(tmp_path):
     assert C.refresh_installed(home=tmp_path) == ["zsh"]
 
 
+def test_targets_rejects_unknown_shell():
+    with pytest.raises(ValueError):
+        C._targets("tcsh", None)
+
+
+def test_install_preserves_rc_without_trailing_newline(tmp_path):
+    rc = tmp_path / ".bashrc"
+    rc.write_text("export FOO=1")  # no trailing newline
+    C.install_completion("bash", home=tmp_path)
+    text = rc.read_text()
+    assert "export FOO=1\n" in text  # a newline was inserted before the marker block
+    assert text.count(C.MARKER_BEGIN) == 1
+
+
+def test_is_installed_true_for_fish(tmp_path):
+    C.install_completion("fish", home=tmp_path)
+    assert C.is_installed("fish", home=tmp_path) is True
+    assert C.is_installed("bash", home=tmp_path) is False
+
+
 # --- CLI wiring (Task 3) ---
 
 
@@ -87,6 +107,17 @@ def test_cli_completions_install_and_uninstall_mutually_exclusive():
 def test_cli_completions_rejects_unknown_shell():
     r = CliRunner().invoke(main, ["completions", "tcsh"])
     assert r.exit_code != 0
+
+
+def test_cli_completions_uninstall(tmp_path, monkeypatch):
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    CliRunner().invoke(main, ["completions", "bash", "--install"])
+    r = CliRunner().invoke(main, ["completions", "bash", "--uninstall"])
+    assert r.exit_code == 0
+    assert "Removed completion." in r.output
+    # uninstalling again reports nothing was installed
+    r2 = CliRunner().invoke(main, ["completions", "bash", "--uninstall"])
+    assert "No completion was installed." in r2.output
 
 
 # --- upgrade refresh (Task 4) ---

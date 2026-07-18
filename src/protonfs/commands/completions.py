@@ -36,7 +36,7 @@ def completion_script(shell: str) -> str:
             f"unsupported shell: {shell!r} (choose from {', '.join(SUPPORTED_SHELLS)})"
         )
     comp_cls = get_completion_class(shell)
-    if comp_cls is None:
+    if comp_cls is None:  # pragma: no cover - defensive: every supported shell has a class
         raise ValueError(f"Click has no completion class for shell: {shell!r}")
     from protonfs.cli import main  # lazy: avoid circular import at module load
 
