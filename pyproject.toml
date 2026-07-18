@@ -42,9 +42,12 @@ dev = [
     "pre-commit>=3",
 ]
 docs = [
-    "sphinx",
+    # sphinx-click 6.2.0 (latest) is incompatible with Sphinx 9 (its `mock()` call hits a
+    # module, not a callable), so pin to Sphinx 8.x. Native `.. confval::` needs >= 8.1.
+    # sphinx-autodoc-typehints must track the same range (its latest requires Sphinx >= 9.1).
+    "sphinx>=8.1,<9",
     "sphinx-autobuild",
-    "sphinx-autodoc-typehints",
+    "sphinx-autodoc-typehints<3.2",
     "sphinx-copybutton",
     "sphinx-tippy",  # client-side hover previews on cross-references (works on GitHub Pages)
     "sphinx-click",  # autodoc for the Click CLI (command/option/envvar directives)
