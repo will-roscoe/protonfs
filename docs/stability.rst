@@ -264,34 +264,34 @@ Environment variables
    * - :envvar:`PROTONFS_PROGRESS_STYLE`
      - Per-key override for the resolved :confval:`defaults.progress_style` config value
        (``inline``/``lines``).
-   * - ``PROTONFS_DRIVE_BIN``
+   * - :envvar:`PROTONFS_DRIVE_BIN`
      - Path/name of the ``proton-drive`` binary to invoke, in place of the default.
-   * - ``PROTONFS_DRIVE_VERSION``
+   * - :envvar:`PROTONFS_DRIVE_VERSION`
      - Overrides the ``proton-drive`` version ``install-drive`` installs when
        ``--version`` is not passed.
-   * - ``PROTONFS_DRIVE_SHA512``
+   * - :envvar:`PROTONFS_DRIVE_SHA512`
      - Explicit SHA-512 to verify a ``proton-drive`` download against, required for
        versions/platforms without a built-in checksum pin.
-   * - ``PROTONFS_LIST_TIMEOUT``
+   * - :envvar:`PROTONFS_LIST_TIMEOUT`
      - Timeout in seconds for a Drive listing call (default ``45``).
-   * - ``PROTONFS_LIST_RETRIES``
+   * - :envvar:`PROTONFS_LIST_RETRIES`
      - Max retries for a Drive listing call (default ``4``).
-   * - ``PROTONFS_LIST_BACKOFF``
+   * - :envvar:`PROTONFS_LIST_BACKOFF`
      - Base backoff in seconds between Drive listing retries (default ``2``).
-   * - ``PROTONFS_LIST_BACKOFF_CAP``
+   * - :envvar:`PROTONFS_LIST_BACKOFF_CAP`
      - Cap in seconds on the Drive listing retry backoff (default ``60``).
-   * - ``PROTONFS_TRANSFER_TIMEOUT``
+   * - :envvar:`PROTONFS_TRANSFER_TIMEOUT`
      - Timeout in seconds for a Drive upload/download call (default ``300``).
-   * - ``PROTONFS_TRANSFER_RETRIES``
+   * - :envvar:`PROTONFS_TRANSFER_RETRIES`
      - Max retries for a Drive upload/download call (default ``4``).
-   * - ``PROTONFS_TRANSFER_BACKOFF``
+   * - :envvar:`PROTONFS_TRANSFER_BACKOFF`
      - Base backoff in seconds between Drive upload/download retries (default ``2``).
-   * - ``PROTONFS_TRANSFER_BACKOFF_CAP``
+   * - :envvar:`PROTONFS_TRANSFER_BACKOFF_CAP`
      - Cap in seconds on the Drive upload/download retry backoff (default ``60``).
-   * - ``PROTONFS_KEYRING_PASSWORD``
+   * - :envvar:`PROTONFS_KEYRING_PASSWORD`
      - Supplies the password for the protonfs-owned keyring bootstrap, instead of
        generating one.
-   * - ``PROTONFS_NO_KEYRING_BOOTSTRAP``
+   * - :envvar:`PROTONFS_NO_KEYRING_BOOTSTRAP`
      - Set (to any truthy value) to disable protonfs's Secret Service/keyring
        bootstrap entirely; the caller is responsible for providing one.
 
