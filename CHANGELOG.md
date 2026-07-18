@@ -8,6 +8,16 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-07-18
+
+### Features
+
+- protonfs completions command (shell completion for bash/zsh/fish) (#111)
+
+### Documentation
+
+- **config**: define operational/tuning env vars as envvar targets (#110)
+
 ## [1.4.1] - 2026-07-18
 
 ### Bug fixes
@@ -380,7 +390,8 @@ the preceding development history and its first tagged release:
   line-matching, git-mutation error wrapping, `pathspec` deprecation, subpath
   prune data-loss fix.
 
-[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v1.4.1...HEAD
+[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v1.5.0...HEAD
+[1.5.0]: https://github.com/will-roscoe/protonfs/compare/v1.4.1...v1.5.0
 [1.4.1]: https://github.com/will-roscoe/protonfs/compare/v1.4.0...v1.4.1
 [1.4.0]: https://github.com/will-roscoe/protonfs/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/will-roscoe/protonfs/compare/v1.2.0...v1.3.0
