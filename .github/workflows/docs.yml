@@ -31,6 +31,10 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Install Graphviz
+        # Required by sphinx.ext.inheritance_diagram to render the class-hierarchy graphs.
+        run: sudo apt-get update && sudo apt-get install -y graphviz
+
       - name: Install dependencies
         run: pip install -e ".[docs]"
 

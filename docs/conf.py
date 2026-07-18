@@ -20,6 +20,7 @@ extensions = [
     # Python
     "sphinx.ext.autodoc",
     "sphinx.ext.autosummary",  # generated module/API overview tables
+    "sphinx.ext.inheritance_diagram",  # class-hierarchy graphs (needs Graphviz)
     "sphinx_autodoc_typehints",
     "sphinx_click",  # autodoc for the Click CLI (command/option/envvar directives)
     "sphinx_copybutton",
