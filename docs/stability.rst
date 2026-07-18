@@ -197,6 +197,11 @@ flag/argument name; these names, not just their presence, are frozen.
    * - ``shell-init``
      - Print shell exports so ``proton-drive`` run by hand sees the same keyring.
      - ``0`` always (nothing to fail on; prints zero or more ``export`` lines).
+   * - ``completions``
+     - Print, ``--install``, or ``--uninstall`` shell completion. Argument: ``SHELL``
+       (choice: ``bash``/``zsh``/``fish``). Added in 1.5.0.
+     - ``0`` success; ``2`` usage error (unknown shell, or both ``--install`` and
+       ``--uninstall``).
    * - ``auth login`` / ``auth logout``
      - Passthrough to ``proton-drive auth <action>`` with inherited stdio. Argument:
        ``ACTION`` (choice: ``login``/``logout``/``status``).

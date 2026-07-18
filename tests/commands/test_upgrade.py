@@ -1,5 +1,6 @@
 # tests/commands/test_upgrade.py
 """`protonfs upgrade` (#66): policy around install_drive + migrations (#67)."""
+
 from __future__ import annotations
 
 import io
@@ -38,9 +39,7 @@ class FakeInstaller:
 
     def __call__(self, version: str | None = None) -> InstallResult:
         self.calls.append(version)
-        return InstallResult(
-            path=Path("/fake/proton-drive"), on_path=True, sha512="0" * 128
-        )
+        return InstallResult(path=Path("/fake/proton-drive"), on_path=True, sha512="0" * 128)
 
 
 def _run(root: Path, capsys, **kwargs) -> tuple[int, str]:
@@ -64,9 +63,7 @@ def test_check_exit_0_when_fully_current(tmp_path: Path, capsys) -> None:
     assert "proton-drive is current" in out
 
 
-def test_check_exit_1_when_binary_outdated_and_nothing_installed(
-    tmp_path: Path, capsys
-) -> None:
+def test_check_exit_1_when_binary_outdated_and_nothing_installed(tmp_path: Path, capsys) -> None:
     installer = FakeInstaller()
     code, out = _run(
         tmp_path,
@@ -185,8 +182,7 @@ def test_upstream_stable_version_parses_manifest() -> None:
             return False
 
     assert (
-        upstream_stable_version(opener=lambda url: _Resp(json.dumps(manifest).encode()))
-        == "0.5.0"
+        upstream_stable_version(opener=lambda url: _Resp(json.dumps(manifest).encode())) == "0.5.0"
     )
 
 
@@ -314,3 +310,23 @@ def test_run_upgrade_narrates_steps_through_reporter(
     phases = [name for kind, name in reporter.calls if kind == "phase"]
     assert phases == ["checking proton-drive version", "running repo migrations"]
     assert ("done", "upgrade complete") in reporter.calls
+
+
+def test_upgrade_refreshes_installed_completions_output(tmp_path, capsys, monkeypatch):
+    """An installed completion script is refreshed (and reported) during a full upgrade."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr("pathlib.Path.home", lambda: home)
+    from protonfs.commands.completions import install_completion
+
+    install_completion("bash", home=home)
+    code, out = _run(
+        tmp_path,
+        capsys,
+        check=False,
+        client=FakeVersionClient(HIGHEST),
+        installer=FakeInstaller(),
+        upstream_fetch=lambda: HIGHEST,
+    )
+    assert code == 0
+    assert "shell completion: refreshed bash" in out

@@ -7,6 +7,7 @@ surface these commands expose is documented in ``docs/stability.rst``.
 
 .. versionadded:: 1.0.0
 """
+
 from __future__ import annotations
 
 import functools
@@ -40,7 +41,32 @@ class _GlobalsEpilog:
 
 
 class _EpilogCommand(_GlobalsEpilog, click.Command):
-    """A leaf command whose ``--help`` documents the global options."""
+    """A leaf command whose ``--help`` documents the global options.
+
+    Its ``shell_complete`` also offers the position-independent global flags (those
+    :data:`~protonfs.argv.GLOBAL_FLAG_NAMES` that :func:`~protonfs.argv.reorder_argv`
+    hoists) when completing an option after the subcommand, so completion matches what
+    the parser actually accepts.
+    """
+
+    def shell_complete(self, ctx, incomplete):
+        """Complete this command's own options plus the global flags accepted anywhere."""
+        results = super().shell_complete(ctx, incomplete)
+        if incomplete[:1] == "-":
+            from click.shell_completion import CompletionItem
+
+            from protonfs.argv import GLOBAL_FLAG_NAMES
+
+            seen = {item.value for item in results}
+            root = ctx.find_root().command
+            for param in root.get_params(ctx):
+                if not isinstance(param, click.Option):  # pragma: no cover - group has no args
+                    continue
+                for opt in (*param.opts, *param.secondary_opts):
+                    if opt in GLOBAL_FLAG_NAMES and opt.startswith(incomplete) and opt not in seen:
+                        results.append(CompletionItem(opt, help=param.help or ""))
+                        seen.add(opt)
+        return results
 
 
 class _EpilogGroup(_GlobalsEpilog, click.Group):
@@ -91,8 +117,7 @@ def _drive_error_boundary(func):
             raise click.ClickException(str(exc)) from exc
         except DriveAuthError as exc:
             raise click.ClickException(
-                f"{exc}\nRun `protonfs auth login` to re-authenticate, "
-                "then retry this command."
+                f"{exc}\nRun `protonfs auth login` to re-authenticate, then retry this command."
             ) from exc
         except DriveError as exc:
             raise click.ClickException(str(exc)) from exc
@@ -118,11 +143,7 @@ def _normalize_paths(paths: tuple[str, ...]) -> list[str | None]:
             stripped.append(p)
     if not stripped:
         return [None]
-    return [
-        p
-        for p in stripped
-        if not any(r != p and p.startswith(f"{r}/") for r in stripped)
-    ]
+    return [p for p in stripped if not any(r != p and p.startswith(f"{r}/") for r in stripped)]
 
 
 def _accumulate_transfer(total, part) -> None:
@@ -172,9 +193,7 @@ def main(verbose: int, progress_inline: bool | None, event_log: bool | None) -> 
     else:
         style = "inline" if progress_inline else "lines"
     use_event_log = cfg_event if event_log is None else event_log
-    configure_logging(
-        verbose, progress_style=style, event_log=use_event_log, root=Path.cwd()
-    )
+    configure_logging(verbose, progress_style=style, event_log=use_event_log, root=Path.cwd())
 
 
 @main.command()
@@ -357,8 +376,16 @@ def ls(
         if len(subpaths) > 1 and fmt == "table":
             console.print(f"[bold]{subpath}:[/bold]")
         render_ls(
-            ctx, subpath, remote, trash, console,
-            dirs=dirs, states=states, fmt=fmt, visual=visual, echo=click.echo,
+            ctx,
+            subpath,
+            remote,
+            trash,
+            console,
+            dirs=dirs,
+            states=states,
+            fmt=fmt,
+            visual=visual,
+            echo=click.echo,
         )
 
 
@@ -689,6 +716,35 @@ def shell_init() -> None:
         click.echo(f"export {line}")
 
 
+@main.command("completions")
+@click.argument("shell", type=click.Choice(("bash", "zsh", "fish")))
+@click.option("--install", is_flag=True, help="Install the completion script (idempotent).")
+@click.option("--uninstall", is_flag=True, help="Remove the installed completion script.")
+def completions(shell: str, install: bool, uninstall: bool) -> None:
+    """Print or install shell completion (bash|zsh|fish).
+
+    Command names, per-subcommand options, and the global flags (in any position) all
+    complete.
+    """
+    from protonfs.commands.completions import (
+        completion_script,
+        install_completion,
+        uninstall_completion,
+    )
+
+    if install and uninstall:
+        raise click.UsageError("--install and --uninstall are mutually exclusive.")
+    if install:
+        path = install_completion(shell)
+        click.echo(f"Installed {shell} completion -> {path}")
+        click.echo("Start a new shell (or source your rc) to activate it.")
+    elif uninstall:
+        removed = uninstall_completion(shell)
+        click.echo("Removed completion." if removed else "No completion was installed.")
+    else:
+        click.echo(completion_script(shell))
+
+
 @main.command()
 @click.argument("action", type=click.Choice(["login", "logout", "status"]))
 @_drive_error_boundary
@@ -761,12 +817,8 @@ def config_get_cmd(key: str) -> None:
 @config.command("set")
 @click.argument("key")
 @click.argument("value")
-@click.option(
-    "--global", "scope_global", is_flag=True, help="Write to the global user config."
-)
-@click.option(
-    "--local", "scope_local", is_flag=True, help="Write to the per-device local config."
-)
+@click.option("--global", "scope_global", is_flag=True, help="Write to the global user config.")
+@click.option("--local", "scope_local", is_flag=True, help="Write to the per-device local config.")
 def config_set_cmd(key: str, value: str, scope_global: bool, scope_local: bool) -> None:
     """Set KEY = VALUE. Default scope is the shared per-repo config (committed)."""
     from pathlib import Path
