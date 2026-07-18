@@ -37,8 +37,9 @@ exclude_patterns = ["_build", "Thumbs.db", ".DS_Store", "_shared/**"]
 source_suffix = ".rst"
 master_doc = "index"
 
-# Generate autosummary stub pages at build time (docs/api/_generated/, gitignored).
-autosummary_generate = True
+# The API overview table links to the existing apidoc pages rather than generating
+# duplicate stub pages, so no autosummary stub generation is needed.
+autosummary_generate = False
 
 # -- Options for HTML output --------------------------------------------------
 html_theme = "furo"

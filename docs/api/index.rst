@@ -5,7 +5,6 @@ Module overview
 ---------------
 
 .. autosummary::
-   :toctree: _generated
 
    protonfs.argv
    protonfs.batching

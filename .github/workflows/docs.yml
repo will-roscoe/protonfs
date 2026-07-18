@@ -38,7 +38,10 @@ jobs:
         run: sphinx-apidoc -f -o docs/api/protonfs/ src/protonfs/ --separate --module-first -q
 
       - name: Build docs
-        run: sphinx-build --keep-going -b html docs/ docs/_build/html
+        # -W turns warnings into errors so dangling :option:/:confval:/:envvar:
+        # cross-references (and any other doc warning) fail the build; --keep-going
+        # collects them all in one run rather than stopping at the first.
+        run: sphinx-build -W --keep-going -b html docs/ docs/_build/html
 
       - name: Upload built docs
         if: github.ref == 'refs/heads/main'

@@ -9,6 +9,7 @@ over HTTPS and verifies the pinned SHA-512 before ever marking the binary
 executable — it never installs an unverified binary.
 
 Design notes / accepted deviations from the roadmap decision text:
+
 - The decision described a bash installer checking curl/unzip. This Python
   implementation downloads via urllib and verifies via hashlib, so those external
   tools are not prerequisites; the decision's intent (self-diagnosing,

@@ -13,6 +13,3 @@ htmlcov/
 .mypy_cache/
 docs/_build/
 .worktrees/
-
-# Sphinx autosummary generated stubs (build artifacts)
-docs/api/_generated/
