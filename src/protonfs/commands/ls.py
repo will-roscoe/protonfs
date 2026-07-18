@@ -4,6 +4,8 @@
 Beyond the flat file table, ``ls`` can aggregate per directory (``--dirs``: counts by
 state plus cumulative local/indexed sizes, #97/#94), filter to specific sync states
 (``--state``), and emit machine-readable output (``--format plain|json``) for scripts.
+
+.. versionadded:: 1.0.0
 """
 from __future__ import annotations
 

@@ -17,6 +17,8 @@ there with a plaintext ``claimed_size`` matching the local file's byte size --
 mirroring the exact verify-against-remote idiom `commands/push.py` uses after
 upload. Any file that fails this check is left untouched locally and reported as
 ``skipped_unverified``; nothing is ever deleted based on the index alone.
+
+.. versionadded:: 1.0.0
 """
 from __future__ import annotations
 

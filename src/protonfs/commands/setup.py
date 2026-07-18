@@ -4,6 +4,8 @@
 Composed of small ``ensure_*`` guards (binary, keyring, auth, config) run in a
 deliberate order, plus the optional git-LFS → Proton Drive migration and its
 control-file bookkeeping.
+
+.. versionadded:: 1.0.0
 """
 from __future__ import annotations
 

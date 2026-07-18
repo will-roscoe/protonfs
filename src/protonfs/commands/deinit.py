@@ -6,6 +6,8 @@ per-device local config, the index, the resumable-refresh state, ignore/include,
 the control `.gitattributes`/`.gitignore` -- after a summary + confirmation. Never
 touches synced payload files, local or remote: deinit only ever looks inside
 `.protonfs/`.
+
+.. versionadded:: 1.0.0
 """
 
 from __future__ import annotations

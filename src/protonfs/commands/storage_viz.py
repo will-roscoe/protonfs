@@ -13,6 +13,8 @@ aggregates:
 Everything renders with :mod:`rich`'s coloured backgrounds -- no image library and
 no new dependency. The geometry (:func:`squarify`) is a pure function so it can be
 tested without touching the terminal.
+
+.. versionadded:: 1.2.0
 """
 from __future__ import annotations
 

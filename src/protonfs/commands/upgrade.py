@@ -10,6 +10,8 @@ protonfs root.
 The binary swap is atomic and verify-first: `install_drive` stages the download via a
 `.part` file, verifies its SHA-512, and only then `replace()`s the final binary -- a
 failed download or checksum mismatch never leaves a broken `proton-drive` behind.
+
+.. versionadded:: 1.0.0
 """
 from __future__ import annotations
 

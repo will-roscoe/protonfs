@@ -1,5 +1,8 @@
 # src/protonfs/commands/refresh.py
-"""``protonfs refresh``: discover remote files and seed the local index (metadata-only)."""
+"""``protonfs refresh``: discover remote files and seed the local index (metadata-only).
+
+.. versionadded:: 1.0.0
+"""
 from __future__ import annotations
 
 import datetime

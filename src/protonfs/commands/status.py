@@ -1,4 +1,7 @@
-"""``protonfs status``: summarise sync state and map it to a script-friendly exit code."""
+"""``protonfs status``: summarise sync state and map it to a script-friendly exit code.
+
+.. versionadded:: 1.0.0
+"""
 from __future__ import annotations
 
 from collections import Counter
