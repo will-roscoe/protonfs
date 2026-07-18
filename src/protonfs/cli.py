@@ -41,7 +41,32 @@ class _GlobalsEpilog:
 
 
 class _EpilogCommand(_GlobalsEpilog, click.Command):
-    """A leaf command whose ``--help`` documents the global options."""
+    """A leaf command whose ``--help`` documents the global options.
+
+    Its ``shell_complete`` also offers the position-independent global flags (those
+    :data:`~protonfs.argv.GLOBAL_FLAG_NAMES` that :func:`~protonfs.argv.reorder_argv`
+    hoists) when completing an option after the subcommand, so completion matches what
+    the parser actually accepts.
+    """
+
+    def shell_complete(self, ctx, incomplete):
+        """Complete this command's own options plus the global flags accepted anywhere."""
+        results = super().shell_complete(ctx, incomplete)
+        if incomplete[:1] == "-":
+            from click.shell_completion import CompletionItem
+
+            from protonfs.argv import GLOBAL_FLAG_NAMES
+
+            seen = {item.value for item in results}
+            root = ctx.find_root().command
+            for param in root.get_params(ctx):
+                if not isinstance(param, click.Option):
+                    continue
+                for opt in (*param.opts, *param.secondary_opts):
+                    if opt in GLOBAL_FLAG_NAMES and opt.startswith(incomplete) and opt not in seen:
+                        results.append(CompletionItem(opt, help=param.help or ""))
+                        seen.add(opt)
+        return results
 
 
 class _EpilogGroup(_GlobalsEpilog, click.Group):
@@ -698,8 +723,8 @@ def shell_init() -> None:
 def completions(shell: str, install: bool, uninstall: bool) -> None:
     """Print or install shell completion (bash|zsh|fish).
 
-    Global flags typed *after* a subcommand are not offered (Click completes in canonical
-    order); command names and per-subcommand options complete normally.
+    Command names, per-subcommand options, and the global flags (in any position) all
+    complete.
     """
     from protonfs.commands.completions import (
         completion_script,

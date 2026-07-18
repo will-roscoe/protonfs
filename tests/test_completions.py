@@ -108,3 +108,29 @@ def test_upgrade_refresh_noop_when_none_installed(tmp_path, monkeypatch):
     from protonfs.commands.upgrade import refresh_completions_step
 
     assert refresh_completions_step() == []
+
+
+# --- position-independent global-flag completion (Task 5) ---
+
+
+def _sub_ctx(command_name):
+    import click
+
+    root = click.Context(main, info_name="protonfs")
+    cmd = main.commands[command_name]
+    return cmd, click.Context(cmd, parent=root, info_name=command_name)
+
+
+def test_global_flags_complete_after_subcommand():
+    push, ctx = _sub_ctx("push")
+    vals = {i.value for i in push.shell_complete(ctx, "--")}
+    # global flags offered in post-subcommand position...
+    assert {"--event-log", "--progress-inline"} <= vals
+    # ...alongside the command's own options
+    assert "--dry-run" in vals
+
+
+def test_global_flag_prefix_filter_after_subcommand():
+    push, ctx = _sub_ctx("push")
+    vals = {i.value for i in push.shell_complete(ctx, "--eve")}
+    assert vals == {"--event-log"}

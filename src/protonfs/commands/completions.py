@@ -3,8 +3,9 @@
 
 Drives Click's native completion engine (Click 8+); no third-party dependency. Install
 writes the generated script to a file and references it (Click's recommended pattern, so a
-new shell does not run protonfs on startup), managed idempotently with a marker block. Global
-flags typed after a subcommand are not offered, because Click completes in canonical order.
+new shell does not run protonfs on startup), managed idempotently with a marker block. The
+global flags (:data:`~protonfs.argv.GLOBAL_FLAG_NAMES`) complete after a subcommand too, matching
+``reorder_argv`` (see :class:`protonfs.cli._EpilogCommand`).
 
 .. versionadded:: 1.5.0
 """
