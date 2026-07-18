@@ -9,6 +9,12 @@ does, and worked examples. This page describes *behavior*; for the frozen contra
 (exact exit codes, option names, config keys, env vars that will not change without
 a major version bump) see :doc:`../stability`.
 
+.. toctree::
+   :hidden:
+
+   commands
+   config
+
 Global behavior
 ----------------
 Every command that mutates a repo's index (``push``, ``pull``, ``rm``, ``restore``,
@@ -72,7 +78,7 @@ Controls how progress updates are rendered on stderr:
   Used automatically when stderr is not a TTY (e.g. redirected to a file or a CI log),
   regardless of the configured/default style.
 
-Default: the ``defaults.progress_style`` config key, else inline on a TTY.
+Default: the :confval:`defaults.progress_style` config key, else inline on a TTY.
 
 Event log (``--event-log`` / ``--no-event-log``)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -88,7 +94,7 @@ for the same run; the ``proton-drive`` subprocess's stderr is included in it onl
 migration. ``protonfs deinit`` removes it along with the rest of ``.protonfs/``. It is
 never treated as sync payload: protonfs excludes ``.protonfs/`` from scans entirely.
 
-Default: the ``defaults.event_log`` config key, else off.
+Default: the :confval:`defaults.event_log` config key, else off.
 
 .. _cmd-setup:
 
@@ -100,7 +106,7 @@ Installs/verifies the ``proton-drive`` CLI, initializes ``.protonfs/`` in the
 current directory (``config.json``, ``ignore``, a ``.gitignore`` that excludes
 ``index.json``/``refresh-state.json``, and a ``.gitattributes`` that exempts those
 control files from git-LFS), and migrates the repo off git-LFS if it is tracked.
-It also creates the configured ``remote_root`` on Drive if it does not exist yet,
+It also creates the configured :confval:`remote_root` on Drive if it does not exist yet,
 so the first ``push`` has somewhere to land without hand-creating folders.
 
 - ``--dry-run`` — preview what would change without writing anything or touching Drive.
@@ -121,7 +127,7 @@ Examples::
 ----------
 **Synopsis:** ``protonfs deinit [--dry-run] [--yes]``
 
-The inverse of ``setup``: removes every file ``setup`` writes under ``.protonfs/``
+The inverse of :ref:`setup <cmd-setup>`: removes every file ``setup`` writes under ``.protonfs/``
 — the shared ``config.json``, the per-device ``config.local.json``, the index,
 the resumable-refresh state, ``ignore``/``include``, and the control
 ``.gitattributes``/``.gitignore`` — after printing a summary and asking for
@@ -148,7 +154,7 @@ local index, and prints a count per sync state (``synced``, ``local-only``,
 ``remote-only``, ``metadata-only``, ``conflict``, ``local-modified``,
 ``remote-modified``, ``both-modified``, ``local-deleted``, ``remote-changed``,
 ``remote-deleted``, ``lfs-pointer``). It does not talk to Drive beyond the index
-already on disk — run ``refresh`` first for an up-to-date picture of the remote.
+already on disk — run :ref:`refresh <cmd-refresh>` first for an up-to-date picture of the remote.
 
 - ``--format`` — ``plain`` (the classic ``state: count`` lines, default) or
   ``json`` (one object with a ``counts`` map and the ``exit_code``).
@@ -288,8 +294,8 @@ Examples::
 
 Deletes the *local* bytes of protonfs-tracked files already confirmed present on
 Drive, reclaiming disk space while leaving the index entry as
-``local_state=metadata-only`` — a later ``pull`` restores the file in full. This
-is the inverse of ``pull``; it never touches the remote copy.
+``local_state=metadata-only`` — a later :ref:`pull <cmd-pull>` restores the file in full. This
+is the inverse of :ref:`pull <cmd-pull>`; it never touches the remote copy.
 
 Before deleting anything, every candidate is (a) checked for unsynced local
 edits — a file whose live content hash differs from what the index last recorded
@@ -318,7 +324,7 @@ Examples::
 ------
 **Synopsis:** ``protonfs rm PATH... [-r/--recursive] [-f/--force] [--yes]``
 
-Trashes ``PATH`` on Drive (reversible via ``restore``). Requires ``-r``/
+Trashes ``PATH`` on Drive (reversible via :ref:`restore <cmd-restore>`). Requires ``-r``/
 ``--recursive`` for a directory. The command removes the matching index entries
 locally regardless of whether the permanent-delete step below runs.
 
@@ -381,7 +387,7 @@ Examples::
 
 Permanently empties ``/trash`` for the whole Proton Drive account by calling
 ``proton-drive filesystem empty-trash``. This is **irreversible** and **not**
-scoped to this repo's ``remote_root`` — it deletes every trashed item on the
+scoped to this repo's :confval:`remote_root` — it deletes every trashed item on the
 account, including ones unrelated to this repo. Without ``--yes``, the command
 prints that warning and requires typing an exact confirmation phrase; anything
 else aborts without emptying trash.
@@ -404,7 +410,7 @@ Examples::
 -----------
 **Synopsis:** ``protonfs refresh [PATH]... [--prune]``
 
-Walks Drive under the configured ``remote_root`` (or ``PATH`` within it) and seeds
+Walks Drive under the configured :confval:`remote_root` (or ``PATH`` within it) and seeds
 the local index with metadata-only entries for anything found there that this
 machine's index doesn't already know about. This is the cross-client primitive: a
 fresh machine (or one that missed files another client pushed) becomes aware of
@@ -535,8 +541,9 @@ Examples::
 **Synopsis:** ``protonfs config get KEY`` / ``protonfs config set KEY VALUE [--global | --local]``
 
 Reads or writes protonfs's layered configuration. Known keys:
-``remote_root``, ``device_id``, ``defaults.on_conflict``, ``defaults.low_io``,
-``defaults.event_log``, ``defaults.progress_style``.
+:confval:`remote_root`, :confval:`device_id`, :confval:`defaults.on_conflict`,
+:confval:`defaults.low_io`, :confval:`defaults.event_log`,
+:confval:`defaults.progress_style` (each defined in :doc:`config`).
 
 ``get`` always prints the fully **resolved** value across every layer (env var >
 per-device local config > shared per-repo config > global user config > built-in
@@ -550,7 +557,7 @@ environment variables that can override each key.
 - ``--local`` — the per-device file, ``.protonfs/config.local.json``
   (gitignored).
 - ``--global`` — the user-wide file, ``~/.config/protonfs/config.json``
-  (or ``$PROTONFS_CONFIG``).
+  (or :envvar:`PROTONFS_CONFIG`).
 
 ``--global`` and ``--local`` are mutually exclusive.
 
@@ -562,6 +569,10 @@ Examples::
 
 See also
 --------
+* :doc:`commands` for the autogenerated per-command synopsis, options, and
+  environment variables (the mechanical contract this page narrates).
+* :doc:`config` for every config key (:confval:`remote_root` …) and environment
+  variable (:envvar:`PROTONFS_CONFIG` …) as cross-referenceable definitions.
 * :doc:`../stability` for the frozen exit-code/option contract.
 * :doc:`../guarantees` for durability and drift-resolution guarantees.
 * :doc:`../getting-started/index` and :doc:`../getting-started/syncing` for

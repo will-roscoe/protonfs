@@ -82,9 +82,9 @@ the resolved config value is used, falling back to the built-in default.
 
 * ``-v`` / ``--verbose`` -- repeatable, ``-v``..``-vvvv``; raises console detail.
 * ``--progress-inline`` / ``--progress-lines`` -- progress render style (default:
-  ``defaults.progress_style``, else inline on a TTY).
+  :confval:`defaults.progress_style`, else inline on a TTY).
 * ``--event-log`` / ``--no-event-log`` -- write ``.protonfs/events.log`` (default:
-  ``defaults.event_log``, else off).
+  :confval:`defaults.event_log`, else off).
 
 Command surface
 -----------------
@@ -217,9 +217,10 @@ flag/argument name; these names, not just their presence, are frozen.
      - ``0`` success; ``1`` unknown key, ``--global``/``--local`` both given, or no
        shared config yet for the repo; ``2`` usage error.
 
-Known keys for ``config get``/``config set``: ``remote_root``, ``device_id``,
-``defaults.on_conflict``, ``defaults.low_io``, ``defaults.event_log``,
-``defaults.progress_style``.
+Known keys for ``config get``/``config set``: :confval:`remote_root`,
+:confval:`device_id`, :confval:`defaults.on_conflict`, :confval:`defaults.low_io`,
+:confval:`defaults.event_log`, :confval:`defaults.progress_style`. Each is defined in
+:doc:`reference/config`.
 
 Config files and precedence
 -----------------------------
@@ -246,22 +247,22 @@ Environment variables
 
    * - Variable
      - Purpose
-   * - ``PROTONFS_CONFIG``
+   * - :envvar:`PROTONFS_CONFIG`
      - Overrides the global config file path outright (points directly at the file).
-   * - ``PROTONFS_REMOTE_ROOT``
-     - Per-key override for the resolved ``remote_root`` config value.
-   * - ``PROTONFS_DEVICE_ID``
-     - Per-key override for the resolved ``device_id`` config value.
-   * - ``PROTONFS_ON_CONFLICT``
-     - Per-key override for the resolved ``defaults.on_conflict`` config value.
-   * - ``PROTONFS_LOW_IO``
-     - Per-key override for the resolved ``defaults.low_io`` config value (boolean:
+   * - :envvar:`PROTONFS_REMOTE_ROOT`
+     - Per-key override for the resolved :confval:`remote_root` config value.
+   * - :envvar:`PROTONFS_DEVICE_ID`
+     - Per-key override for the resolved :confval:`device_id` config value.
+   * - :envvar:`PROTONFS_ON_CONFLICT`
+     - Per-key override for the resolved :confval:`defaults.on_conflict` config value.
+   * - :envvar:`PROTONFS_LOW_IO`
+     - Per-key override for the resolved :confval:`defaults.low_io` config value (boolean:
        ``1``/``true``/``yes``/``on``).
-   * - ``PROTONFS_EVENT_LOG``
-     - Per-key override for the resolved ``defaults.event_log`` config value (boolean:
+   * - :envvar:`PROTONFS_EVENT_LOG`
+     - Per-key override for the resolved :confval:`defaults.event_log` config value (boolean:
        ``1``/``true``/``yes``/``on``).
-   * - ``PROTONFS_PROGRESS_STYLE``
-     - Per-key override for the resolved ``defaults.progress_style`` config value
+   * - :envvar:`PROTONFS_PROGRESS_STYLE`
+     - Per-key override for the resolved :confval:`defaults.progress_style` config value
        (``inline``/``lines``).
    * - ``PROTONFS_DRIVE_BIN``
      - Path/name of the ``proton-drive`` binary to invoke, in place of the default.

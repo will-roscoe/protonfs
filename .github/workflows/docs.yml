@@ -31,6 +31,10 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Install Graphviz
+        # Required by sphinx.ext.inheritance_diagram to render the class-hierarchy graphs.
+        run: sudo apt-get update && sudo apt-get install -y graphviz
+
       - name: Install dependencies
         run: pip install -e ".[docs]"
 
@@ -38,7 +42,21 @@ jobs:
         run: sphinx-apidoc -f -o docs/api/protonfs/ src/protonfs/ --separate --module-first -q
 
       - name: Build docs
-        run: sphinx-build --keep-going -b html docs/ docs/_build/html
+        # -W turns warnings into errors so dangling :option:/:confval:/:envvar:
+        # cross-references (and any other doc warning) fail the build; --keep-going
+        # collects them all in one run rather than stopping at the first.
+        run: sphinx-build -W --keep-going -b html docs/ docs/_build/html
+
+      - name: Doc coverage gate
+        # Fail if any documented Python object lacks a docstring, complementing the
+        # interrogate docstring-coverage badge. Undocumented items appear as ' * name'
+        # lines in python.txt; none means full coverage.
+        run: |
+          sphinx-build -b coverage docs/ docs/_build/coverage
+          if grep -q '^ \* ' docs/_build/coverage/python.txt; then
+            echo "Undocumented objects found:"; cat docs/_build/coverage/python.txt; exit 1
+          fi
+          echo "Doc coverage: no undocumented objects."
 
       - name: Upload built docs
         if: github.ref == 'refs/heads/main'

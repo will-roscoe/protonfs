@@ -47,6 +47,7 @@ docs = [
     "sphinx-autodoc-typehints",
     "sphinx-copybutton",
     "sphinx-tippy",  # client-side hover previews on cross-references (works on GitHub Pages)
+    "sphinx-click",  # autodoc for the Click CLI (command/option/envvar directives)
     "furo",
 ]
 

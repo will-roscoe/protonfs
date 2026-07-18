@@ -8,7 +8,7 @@ global user file (``~/.config/protonfs/config.json``, or ``$PROTONFS_CONFIG``). 
 a new repo's layers are populated (#21).
 
 All writes go through :func:`_atomic_write_json`, which writes a temp file in the target
-directory and ``os.replace``s it into place, so a reader (or a crash mid-write) never
+directory and ``os.replace`` moves it into place, so a reader (or a crash mid-write) never
 observes a torn or truncated config file.
 """
 
