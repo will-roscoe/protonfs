@@ -47,6 +47,13 @@ Notes:
 - **Docstrings** use Sphinx reStructuredText field lists (`:param:`, `:returns:`,
   `:raises:`, `.. seealso::`, `.. note::`), not Google/NumPy style. New public
   functions/classes need one.
+- **Version directives** — a new public module/class/function gets a
+  `.. versionadded:: <next release>` in its docstring; a behavioral change to
+  existing public API gets `.. versionchanged:: <version>`; API on a removal track
+  gets `.. deprecated:: <version>`. Config keys and env vars carry the same
+  directives in their `docs/reference/config.rst` definition, and post-1.0 CLI
+  feature changes are marked in `docs/reference/index.rst`. The baseline for API that
+  predates the first stable release is `1.0.0`; date anything newer to its release.
 - The **project overview** has a single source of truth in
   `docs/_shared/overview.rst`. Do not edit README's overview block by hand — edit
   the fragment and run `python .github/scripts/sync_readme.py --write`.
