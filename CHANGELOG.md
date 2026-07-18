@@ -8,6 +8,18 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 
 ## [Unreleased]
 
+## [1.4.1] - 2026-07-18
+
+### Bug fixes
+
+- **docs**: pin Sphinx to 8.x so the sphinx-click build passes in CI (#109)
+
+### Documentation
+
+- **logo**: normalize to 100x100 canvas and add tile/cutout/dark variants
+- CLI/API documentation semantic layer (sphinx-click, confval/envvar, cross-refs, strict build) (#107)
+- version directives across the codebase + forward rule (#108)
+
 ## [1.4.0] - 2026-07-17
 
 ### Features
@@ -368,7 +380,8 @@ the preceding development history and its first tagged release:
   line-matching, git-mutation error wrapping, `pathspec` deprecation, subpath
   prune data-loss fix.
 
-[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v1.4.0...HEAD
+[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v1.4.1...HEAD
+[1.4.1]: https://github.com/will-roscoe/protonfs/compare/v1.4.0...v1.4.1
 [1.4.0]: https://github.com/will-roscoe/protonfs/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/will-roscoe/protonfs/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/will-roscoe/protonfs/compare/v1.1.0...v1.2.0
