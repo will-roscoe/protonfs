@@ -19,6 +19,7 @@ extensions = [
     "sphinx.ext.napoleon",  # NumPy/Google docstring styles
     # Python
     "sphinx.ext.autodoc",
+    "sphinx.ext.autosummary",  # generated module/API overview tables
     "sphinx_autodoc_typehints",
     "sphinx_click",  # autodoc for the Click CLI (command/option/envvar directives)
     "sphinx_copybutton",
@@ -35,6 +36,9 @@ templates_path = ["_templates"]
 exclude_patterns = ["_build", "Thumbs.db", ".DS_Store", "_shared/**"]
 source_suffix = ".rst"
 master_doc = "index"
+
+# Generate autosummary stub pages at build time (docs/api/_generated/, gitignored).
+autosummary_generate = True
 
 # -- Options for HTML output --------------------------------------------------
 html_theme = "furo"
