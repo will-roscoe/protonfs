@@ -1,24 +1,11 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/will-roscoe/protonfs/main/docs/_static/logo.svg" width="120" alt="protonfs logo">
+  <a href="https://github.com/will-roscoe/protonfs">
+    <img
+      src="https://raw.githubusercontent.com/will-roscoe/protonfs/main/.github/status/status.svg"
+      alt="protonfs — version, links, test/coverage/lint/docs status, Python support and build matrix"
+      width="760">
+  </a>
 </p>
-
-# protonfs [![](https://raw.githubusercontent.com/will-roscoe/protonfs/main/.github/badges/version.svg)](https://github.com/will-roscoe/protonfs/releases/latest)
-
-[![](https://img.shields.io/badge/pypi-repo?logo=pypi&logoColor=%23ffd242&logoSize=auto&color=%233775a9)](https://pypi.org/project/protonfs/) 
-[![](https://img.shields.io/badge/docs-sphinx?logo=sphinx&logoSize=auto&color=%230a507a)](https://will-roscoe.github.io/protonfs) 
-[![](https://img.shields.io/badge/github-repo?&logo=github&color=%23010409)](https://github.com/will-roscoe/protonfs)
-![](https://raw.githubusercontent.com/will-roscoe/protonfs/main/.github/badges/pyversion.svg)
-
-[![](https://raw.githubusercontent.com/will-roscoe/protonfs/main/.github/badges/pytest.svg)](https://github.com/will-roscoe/protonfs/actions/workflows/ci.yml)
-[![](https://raw.githubusercontent.com/will-roscoe/protonfs/main/.github/badges/ruff.svg)](https://github.com/will-roscoe/protonfs/actions/workflows/ci.yml)
-[![](https://raw.githubusercontent.com/will-roscoe/protonfs/main/.github/badges/coverage.svg)](https://codecov.io/gh/will-roscoe/protonfs)
-![](https://raw.githubusercontent.com/will-roscoe/protonfs/main/.github/badges/interrogate-badge.svg)
-
-[![](https://raw.githubusercontent.com/will-roscoe/protonfs/main/.github/badges/proton-drive.svg)](https://proton.me/download/drive/cli/version.json)
-[![](https://raw.githubusercontent.com/will-roscoe/protonfs/main/.github/badges/build-linux-x64.svg)](https://github.com/will-roscoe/protonfs/actions/workflows/ci.yml)
-[![](https://raw.githubusercontent.com/will-roscoe/protonfs/main/.github/badges/build-linux-arm64.svg)](https://github.com/will-roscoe/protonfs/actions/workflows/ci.yml)
-[![](https://raw.githubusercontent.com/will-roscoe/protonfs/main/.github/badges/build-darwin-x64.svg)](https://github.com/will-roscoe/protonfs/actions/workflows/ci.yml)
-[![](https://raw.githubusercontent.com/will-roscoe/protonfs/main/.github/badges/build-darwin-arm64.svg)](https://github.com/will-roscoe/protonfs/actions/workflows/ci.yml)
 
 
 <!-- SYNC:overview START - generated from docs/_shared/overview.rst, do not edit here -->
