@@ -29,6 +29,12 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # contents: write so the main-push run can commit the refreshed status graphic
+    # (the DOCS card). Read-only would suffice for the PR/build path.
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -64,6 +70,20 @@ jobs:
             echo "Undocumented objects found:"; cat docs/_build/coverage/python.txt; exit 1
           fi
           echo "Doc coverage: no undocumented objects."
+
+      # Refresh the status graphic's DOCS card. Reaching this step means the strict
+      # build and the doc-coverage gate both passed, so documentation coverage is 100%
+      # (the gate fails on any undocumented object). Only commits on a push to main;
+      # update.sh is race-safe against the CI/version/proton-drive status commits.
+      - name: Update status graphic
+        if: github.ref == 'refs/heads/main'
+        env:
+          DOCS_COVERAGE: "100"
+          DOCS_RESULT: success
+          DOCS_WARNINGS: "0"
+        run: |
+          python .github/status/collect.py docs
+          bash .github/status/update.sh .github/status/data/docs.json
 
       - name: Upload built docs
         if: github.ref == 'refs/heads/main'

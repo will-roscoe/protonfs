@@ -44,24 +44,15 @@ def find_command_spans(
     ]
 
 
-from docutils import nodes
-from sphinx import addnodes
-
-# Text inside these nodes is never linkified: shell examples, already-linked spans,
-# and (during the plain-text pass) inline literals, which the literal pass handles.
-_SKIP_PARENTS = (
-    nodes.literal_block,
-    nodes.doctest_block,
-    nodes.FixedTextElement,
-    nodes.reference,
-    addnodes.pending_xref,
-    nodes.comment,
-)
+# docutils/sphinx are imported lazily inside the functions below, not at module level:
+# this module's pure helpers (build_target_map, find_command_spans) must be importable in
+# the plain test environment (the `.[dev]` extra has no docutils/sphinx), while the
+# doctree transform only ever runs inside Sphinx, where both are always present.
 
 _REFERENCE_DOCNAME = "reference/index"
 
 
-def _under(node: nodes.Node, types: tuple[type, ...]) -> bool:
+def _under(node, types: tuple[type, ...]) -> bool:
     parent = node.parent
     while parent is not None:
         if isinstance(parent, types):
@@ -70,7 +61,10 @@ def _under(node: nodes.Node, types: tuple[type, ...]) -> bool:
     return False
 
 
-def _make_xref(label: str, text: str, *, literal: bool) -> addnodes.pending_xref:
+def _make_xref(label: str, text: str, *, literal: bool):
+    from docutils import nodes
+    from sphinx import addnodes
+
     ref = addnodes.pending_xref(
         "",
         refdomain="std",
@@ -87,11 +81,24 @@ def process_command_xrefs(app, doctree) -> None:
     """Rewrite cross-page ``protonfs <subcommand>`` mentions into ``:ref:`` xrefs."""
     if app.env.docname == _REFERENCE_DOCNAME:
         return
+    from docutils import nodes
+    from sphinx import addnodes
+
+    # Text inside these nodes is never linkified: shell examples, already-linked spans,
+    # and (during the plain-text pass) inline literals, which the literal pass handles.
+    skip_parents = (
+        nodes.literal_block,
+        nodes.doctest_block,
+        nodes.FixedTextElement,
+        nodes.reference,
+        addnodes.pending_xref,
+        nodes.comment,
+    )
     target_map = build_target_map()
 
     # Pass 1: whole inline literals that are exactly a command phrase.
     for literal in list(doctree.findall(nodes.literal)):
-        if _under(literal, _SKIP_PARENTS):
+        if _under(literal, skip_parents):
             continue
         spans = find_command_spans(literal.astext(), target_map)
         if len(spans) == 1 and spans[0][0] == 0 and spans[0][1] == len(literal.astext()):
@@ -99,13 +106,13 @@ def process_command_xrefs(app, doctree) -> None:
 
     # Pass 2: plain text nodes (skip literals — handled above — and skip blocks).
     for text_node in list(doctree.findall(nodes.Text)):
-        if _under(text_node, _SKIP_PARENTS + (nodes.literal,)):
+        if _under(text_node, skip_parents + (nodes.literal,)):
             continue
         source = text_node.astext()
         spans = find_command_spans(source, target_map)
         if not spans:
             continue
-        new_nodes: list[nodes.Node] = []
+        new_nodes = []
         pos = 0
         for start, end, label in spans:
             if start > pos:

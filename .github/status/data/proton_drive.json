@@ -1,0 +1,14 @@
+{
+  "source": "proton-drive",
+  "updated": "2026-07-19T03:45:44Z",
+  "run": {
+    "run_id": "",
+    "run_attempt": "",
+    "run_url": "",
+    "commit": "",
+    "ref": ""
+  },
+  "pinned": "0.5.0",
+  "latest": "0.5.0",
+  "in_sync": true
+}

@@ -26,6 +26,10 @@ jobs:
           fetch-tags: true     # fetch-depth:0 alone does not guarantee tags in checkout@v4
           token: ${{ secrets.GITHUB_TOKEN }}
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'   # tomllib (stdlib) for reading pyproject.toml metadata
+
       - name: Resolve version and regenerate badge
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -54,3 +58,10 @@ jobs:
           git add .github/badges/version.svg
           git diff --cached --quiet || git commit -m "chore: update version badge [skip ci]"
           git push origin HEAD:main
+
+          # Refresh the status graphic's project metadata from the single sources of
+          # truth: this release version (the tag) plus name/description/links from
+          # pyproject.toml. The version badge above is unaffected. update.sh is
+          # race-safe against the CI/docs/proton-drive status commits.
+          python3 .github/status/collect.py project --version "$VERSION"
+          bash .github/status/update.sh .github/status/data/project.json

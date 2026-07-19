@@ -1,0 +1,114 @@
+"""Render ``status.svg`` from the per-source data fragments in ``data/``.
+
+Each workflow that has something to report writes its own rich JSON fragment under
+``.github/status/data/`` (``ci.json``, ``docs.json``, ``proton_drive.json`` …); the
+static project metadata lives in ``project.json``. This script is the *adapter*: it
+loads whatever fragments exist, assembles the exact variable shape ``template.svg.j2``
+expects, and renders. Fragments may carry far more detail than the template currently
+uses (run URLs, per-version test counts, durations …) — extra keys are preserved in the
+assembled model under their source name for future template extensions, but ignored by
+the current template.
+
+Design notes:
+- Missing or partial fragments never crash the render: every template variable has a
+  defensible default, so a first run (or a workflow that hasn't reported yet) still
+  produces a valid SVG.
+- The template is intentionally NOT coupled to the fragment schema — only this file is.
+  Change fragment structure freely; keep the ``build_model`` output keys stable and the
+  template needs no edits.
+"""
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any
+
+from jinja2 import Environment, FileSystemLoader
+
+ROOT = Path(__file__).parent
+DATA_DIR = ROOT / "data"
+
+
+def _load(name: str) -> dict[str, Any]:
+    """Load ``data/<name>.json``; return ``{}`` if it is absent or unreadable."""
+    path = DATA_DIR / f"{name}.json"
+    if not path.exists():
+        return {}
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return json.load(fh)
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def _latest_timestamp(*fragments: dict[str, Any]) -> str:
+    """The most recent ``updated`` across fragments (ISO-8601 strings sort correctly)."""
+    stamps = [f["updated"] for f in fragments if isinstance(f.get("updated"), str)]
+    return max(stamps) if stamps else ""
+
+
+def build_model() -> dict[str, Any]:
+    """Assemble the template variable model from the data fragments."""
+    project = _load("project")
+    ci = _load("ci")
+    docs = _load("docs")
+    proton_drive = _load("proton_drive")
+
+    tests = ci.get("tests") or {}
+    coverage = ci.get("coverage") or {}
+    ruff = ci.get("ruff") or {}
+
+    model: dict[str, Any] = {
+        "project": {
+            "name": project.get("name", "protonfs"),
+            "description": project.get("description", ""),
+            "version": project.get("version", "0.0.0"),
+        },
+        "links": {
+            "pypi": project.get("links", {}).get("pypi", ""),
+            "docs": project.get("links", {}).get("docs", ""),
+            "github": project.get("links", {}).get("github", ""),
+        },
+        "tests": {
+            "passed": tests.get("passed", 0),
+            "failed": tests.get("failed", 0),
+            "skipped": tests.get("skipped", 0),
+        },
+        # Template does ``coverage ~ "%"`` and ``coverage > 80`` — must be a number.
+        "coverage": coverage.get("line", 0),
+        "ruff": {"status": ruff.get("status", "unknown")},
+        "docs": {"coverage": docs.get("coverage", 0)},
+        # List of {version, status}; template reads only those two fields per entry.
+        "python": ci.get("python", []),
+        # {os: {arch: status}}; template iterates os then arch.
+        "builds": ci.get("builds", {}),
+        # Not consumed by the current template, but assembled so it can be added later
+        # without touching this adapter again.
+        "proton_drive": {
+            "pinned": proton_drive.get("pinned", ""),
+            "latest": proton_drive.get("latest", ""),
+        },
+        "updated": _latest_timestamp(project, ci, docs, proton_drive),
+    }
+    return model
+
+
+def render() -> str:
+    env = Environment(
+        loader=FileSystemLoader(ROOT),
+        autoescape=False,
+        trim_blocks=True,
+        lstrip_blocks=True,
+    )
+    template = env.get_template("template.svg.j2")
+    return template.render(**build_model())
+
+
+def main() -> None:
+    svg = render()
+    (ROOT / "status.svg").write_text(svg, encoding="utf-8")
+    print("Generated status.svg")
+
+
+if __name__ == "__main__":
+    main()

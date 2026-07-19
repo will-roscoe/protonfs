@@ -1,0 +1,93 @@
+{
+  "source": "ci",
+  "updated": "2026-07-19T03:59:03Z",
+  "run": {
+    "run_id": "",
+    "run_attempt": "",
+    "run_url": "",
+    "commit": "",
+    "ref": ""
+  },
+  "tests": {
+    "passed": 704,
+    "failed": 0,
+    "skipped": 9,
+    "total": 713,
+    "duration_s": 6.04
+  },
+  "coverage": {
+    "line": 98.7,
+    "target": 80
+  },
+  "ruff": {
+    "status": "passing",
+    "violations": 0
+  },
+  "python": [
+    {
+      "version": "3.9",
+      "status": "passing",
+      "tests": {
+        "passed": 704,
+        "failed": 0,
+        "skipped": 9,
+        "total": 713,
+        "duration_s": 6.0
+      }
+    },
+    {
+      "version": "3.10",
+      "status": "passing",
+      "tests": {
+        "passed": 704,
+        "failed": 0,
+        "skipped": 9,
+        "total": 713,
+        "duration_s": 6.0
+      }
+    },
+    {
+      "version": "3.11",
+      "status": "passing",
+      "tests": {
+        "passed": 704,
+        "failed": 0,
+        "skipped": 9,
+        "total": 713,
+        "duration_s": 6.0
+      }
+    },
+    {
+      "version": "3.12",
+      "status": "passing",
+      "tests": {
+        "passed": 704,
+        "failed": 0,
+        "skipped": 9,
+        "total": 713,
+        "duration_s": 6.0
+      }
+    },
+    {
+      "version": "3.13",
+      "status": "passing",
+      "tests": {
+        "passed": 704,
+        "failed": 0,
+        "skipped": 9,
+        "total": 713,
+        "duration_s": 6.0
+      }
+    }
+  ],
+  "builds": {
+    "Linux": {
+      "x86_64": "passing",
+      "arm64": "passing"
+    },
+    "macOS": {
+      "x86_64": "passing",
+      "arm64": "passing"
+    }
+  }
+}
