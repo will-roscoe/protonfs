@@ -8,6 +8,20 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 
 ## [Unreleased]
 
+## [1.5.1] - 2026-07-19
+
+### Bug fixes
+
+- **status**: inline header logo as data URI so it renders under GitHub CSP
+
+### Documentation
+
+- unify command reference + auto-link command mentions (#112)
+
+### CI
+
+- generate the status graphic from workflow results (#113)
+
 ## [1.5.0] - 2026-07-18
 
 ### Features
@@ -390,7 +404,8 @@ the preceding development history and its first tagged release:
   line-matching, git-mutation error wrapping, `pathspec` deprecation, subpath
   prune data-loss fix.
 
-[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v1.5.0...HEAD
+[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v1.5.1...HEAD
+[1.5.1]: https://github.com/will-roscoe/protonfs/compare/v1.5.0...v1.5.1
 [1.5.0]: https://github.com/will-roscoe/protonfs/compare/v1.4.1...v1.5.0
 [1.4.1]: https://github.com/will-roscoe/protonfs/compare/v1.4.0...v1.4.1
 [1.4.0]: https://github.com/will-roscoe/protonfs/compare/v1.3.0...v1.4.0
