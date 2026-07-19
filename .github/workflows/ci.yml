@@ -55,6 +55,7 @@ jobs:
       # This step GATES the workflow (issue #11): test failures or coverage below
       # the floor fail CI. Codecov uploads still run via `if: !cancelled()` below.
       - name: Test with coverage (+ junit)
+        id: pytest
         run: >
           pytest -q
           --cov=src/protonfs --cov-report=term-missing --cov-report=xml:coverage.xml
@@ -86,6 +87,25 @@ jobs:
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           flags: py${{ matrix.python-version }}
+
+      # Record this matrix leg's pass/fail + test counts for the status graphic. The
+      # `badges` job (below) collects every leg's artifact to build the per-version
+      # PYTHON SUPPORT row. `!cancelled()` so a failing leg still reports "failing".
+      - name: Record python-version status
+        if: ${{ !cancelled() }}
+        env:
+          PY_VERSION: ${{ matrix.python-version }}
+          PY_OUTCOME: ${{ steps.pytest.outcome }}
+          JUNIT: junit.xml
+        run: python .github/status/collect.py py-result --out "py-${{ matrix.python-version }}.json"
+
+      - name: Upload python-version status artifact
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: status-py-${{ matrix.python-version }}
+          path: py-${{ matrix.python-version }}.json
+          retention-days: 1
 
   # linux-arm64 run (one canonical Python): protonfs supports the linux-arm64
   # proton-drive prebuilt, so the suite is exercised on a real arm64 runner too.
@@ -226,3 +246,37 @@ jobs:
                   .github/badges/build-darwin-x64.svg .github/badges/build-darwin-arm64.svg
           git diff --cached --quiet || git commit -m "chore: update CI badges [skip ci]"
           git push
+
+      # Collect every matrix leg's per-version result (uploaded above) so the status
+      # graphic's PYTHON SUPPORT row reflects real per-version status, not just the
+      # aggregate. merge-multiple flattens all status-py-* artifacts into one dir.
+      - name: Download python-version status artifacts
+        if: ${{ !cancelled() }}
+        uses: actions/download-artifact@v4
+        with:
+          pattern: status-py-*
+          path: /tmp/py-results
+          merge-multiple: true
+
+      # Regenerate the status graphic from this run's CI data (tests, coverage, ruff,
+      # per-version python, per-arch builds). The badges above are unaffected; this only
+      # adds status.svg + the ci.json fragment. Project metadata (name/description/links/
+      # version) is owned by version-badge.yml, which has the tags this shallow checkout
+      # lacks. update.sh is race-safe against the docs/version/proton-drive status commits
+      # and only commits when the rendered graphic actually changes.
+      - name: Update status graphic
+        if: ${{ !cancelled() }}
+        env:
+          JUNIT: junit.xml
+          COVERAGE_XML: coverage.xml
+          RUFF_STATUS: ${{ steps.ruff.outputs.status }}
+          PY_RESULTS_DIR: /tmp/py-results
+          PYTHON_VERSIONS: "3.9 3.10 3.11 3.12 3.13"
+          PYTHON_RESULT: ${{ needs.test.result }}
+          BUILD_LINUX_X64: ${{ needs.test.result }}
+          BUILD_LINUX_ARM64: ${{ needs.test-arm.result }}
+          BUILD_DARWIN_ARM64: ${{ needs.test-macos-arm.result }}
+          BUILD_DARWIN_X64: ${{ needs.test-macos-intel.result }}
+        run: |
+          python .github/status/collect.py ci
+          bash .github/status/update.sh .github/status/data/ci.json

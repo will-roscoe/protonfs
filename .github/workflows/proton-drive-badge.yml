@@ -29,7 +29,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'   # for the status render (jinja2) in the update step
+
       - name: Generate pin badge
+        id: pin
         run: |
           set -euo pipefail
           PIN=$(python3 -c "
@@ -42,6 +47,8 @@ jobs:
           releases = json.load(sys.stdin)['Releases']
           print(next(r['Version'] for r in releases if r.get('CategoryName') == 'Stable'))")
           echo "pin=$PIN upstream=$LATEST"
+          echo "pin=$PIN" >> "$GITHUB_OUTPUT"
+          echo "latest=$LATEST" >> "$GITHUB_OUTPUT"
           if [ "$PIN" = "$LATEST" ]; then
             MSG="$PIN (latest)"; COLOR=brightgreen
           else
@@ -54,11 +61,28 @@ jobs:
             "https://img.shields.io/badge/proton--drive-${ENC}-${COLOR}"
 
       - name: Commit badge if changed
+        id: commit
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add .github/badges/proton-drive.svg
-          git diff --cached --quiet || {
+          if git diff --cached --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
             git commit -m "chore: update proton-drive pin badge [skip ci]"
             git push
-          }
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Persist the proton-drive pin/latest as a status fragment (for future graphic
+      # extensions) only when it actually changed, avoiding daily timestamp-only
+      # commits. The current template does not render this fragment, so status.svg
+      # stays byte-identical; update.sh still commits the refreshed data fragment.
+      - name: Update status fragment
+        if: steps.commit.outputs.changed == 'true'
+        env:
+          PIN: ${{ steps.pin.outputs.pin }}
+          LATEST: ${{ steps.pin.outputs.latest }}
+        run: |
+          python3 .github/status/collect.py proton-drive
+          bash .github/status/update.sh .github/status/data/proton_drive.json

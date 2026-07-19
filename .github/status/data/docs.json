@@ -1,0 +1,14 @@
+{
+  "source": "docs",
+  "updated": "2026-07-19T03:46:09Z",
+  "run": {
+    "run_id": "",
+    "run_attempt": "",
+    "run_url": "",
+    "commit": "",
+    "ref": ""
+  },
+  "coverage": 100.0,
+  "build": "passing",
+  "warnings": 0
+}
