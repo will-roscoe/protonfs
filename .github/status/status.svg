@@ -1,6 +1,6 @@
 <svg
 xmlns="http://www.w3.org/2000/svg"
-viewBox="0 0 1200 420"
+viewBox="0 0 900 420"
 width="100%"
 >
 
@@ -117,7 +117,7 @@ svg {
     class="background"
     x="1"
     y="1"
-    width="1198"
+    width="898"
     height="418"
     rx="14"
 />
@@ -145,13 +145,14 @@ protonfs
     x="130"
     y="90"
 >
-Sync a local directory tree with Proton Drive via the official Proton Drive CLI, with conflict-aware push/pull and a local sync manifest.
+<tspan x="130">Sync a local directory tree with Proton Drive via the official Proton</tspan>
+<tspan x="130" dy="18">Drive CLI, with conflict-aware push/pull and a local sync manifest.</tspan>
 </text>
 
 
 <text
     class="value text"
-    x="1120"
+    x="820"
     y="55"
     text-anchor="end"
 >
@@ -167,7 +168,7 @@ v1.5.1
 <text
     class="link"
     x="130"
-    y="120"
+    y="138"
     text-anchor="start"
 >
 PyPI
@@ -178,7 +179,7 @@ PyPI
 <text
     class="link"
     x="260"
-    y="120"
+    y="138"
     text-anchor="middle"
 >
 Documentation
@@ -189,7 +190,7 @@ Documentation
 <text
     class="link"
     x="430"
-    y="120"
+    y="138"
     text-anchor="end"
 >
 Repository

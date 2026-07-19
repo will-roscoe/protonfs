@@ -61,6 +61,29 @@ def _load(name: str) -> dict[str, Any]:
         return {}
 
 
+def _wrap(text: str, max_chars: int) -> list[str]:
+    """Greedy word-wrap ``text`` into lines of at most ``max_chars`` characters.
+
+    SVG ``<text>`` does not reflow, so the description must be pre-split into lines
+    that the template emits as ``<tspan>``s. A long word is kept whole (placed on its
+    own overflowing line) rather than hyphenated. Returns at least one line ([""] for
+    empty input) so the header always has something to render.
+    """
+    words = text.split()
+    if not words:
+        return [""]
+    lines: list[str] = []
+    current = words[0]
+    for word in words[1:]:
+        if len(current) + 1 + len(word) <= max_chars:
+            current = f"{current} {word}"
+        else:
+            lines.append(current)
+            current = word
+    lines.append(current)
+    return lines
+
+
 def _latest_timestamp(*fragments: dict[str, Any]) -> str:
     """The most recent ``updated`` across fragments (ISO-8601 strings sort correctly)."""
     stamps = [f["updated"] for f in fragments if isinstance(f.get("updated"), str)]
@@ -78,12 +101,23 @@ def build_model() -> dict[str, Any]:
     coverage = ci.get("coverage") or {}
     ruff = ci.get("ruff") or {}
 
+    # Wrap the header description; the links row drops one line-height per extra line so
+    # it never collides with a multi-line description. 74 chars keeps the current 137-char
+    # description to two lines within the 900-wide canvas.
+    description = project.get("description", "")
+    description_lines = _wrap(description, 74)
+    _line_height = 18
+
     model: dict[str, Any] = {
         "project": {
             "name": project.get("name", "protonfs"),
-            "description": project.get("description", ""),
+            "description": description,
             "version": project.get("version", "0.0.0"),
         },
+        "description_lines": description_lines,
+        "line_height": _line_height,
+        # Links baseline: 120 for a single-line description, pushed down one line per extra.
+        "link_y": 120 + (len(description_lines) - 1) * _line_height,
         "links": {
             "pypi": project.get("links", {}).get("pypi", ""),
             "docs": project.get("links", {}).get("docs", ""),

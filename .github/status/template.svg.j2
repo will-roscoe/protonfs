@@ -1,6 +1,6 @@
 <svg
 xmlns="http://www.w3.org/2000/svg"
-viewBox="0 0 1200 420"
+viewBox="0 0 900 420"
 width="100%"
 >
 
@@ -117,7 +117,7 @@ svg {
     class="background"
     x="1"
     y="1"
-    width="1198"
+    width="898"
     height="418"
     rx="14"
 />
@@ -145,13 +145,15 @@ href="{{ logo_href }}"
     x="130"
     y="90"
 >
-{{ project.description }}
+{% for line in description_lines %}
+<tspan x="130"{% if not loop.first %} dy="{{ line_height }}"{% endif %}>{{ line }}</tspan>
+{% endfor %}
 </text>
 
 
 <text
     class="value text"
-    x="1120"
+    x="820"
     y="55"
     text-anchor="end"
 >
@@ -161,12 +163,12 @@ v{{ project.version }}
 
 <!-- Links -->
 
-{% macro link(text, url, x, anc) %}
+{% macro link(text, url, x, anc, y) %}
 <a href="{{ url }}">
 <text
     class="link"
     x="{{ x }}"
-    y="120"
+    y="{{ y }}"
     text-anchor="{{ anc }}"
 >
 {{ text }}
@@ -175,9 +177,9 @@ v{{ project.version }}
 {% endmacro %}
 
 
-{{ link("PyPI", links.pypi, 130, "start") }}
-{{ link("Documentation", links.docs, 260, "middle") }}
-{{ link("Repository", links.github, 430, "end") }}
+{{ link("PyPI", links.pypi, 130, "start", link_y) }}
+{{ link("Documentation", links.docs, 260, "middle", link_y) }}
+{{ link("Repository", links.github, 430, "end", link_y) }}
 
 
 <!-- Section title -->
