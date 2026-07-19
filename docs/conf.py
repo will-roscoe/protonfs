@@ -4,6 +4,7 @@ import sys
 
 # -- Path setup ---------------------------------------------------------------
 sys.path.insert(0, os.path.abspath("../src"))
+sys.path.insert(0, os.path.abspath("_ext"))
 
 # -- Project information ------------------------------------------------------
 project = "protonfs"
@@ -29,6 +30,8 @@ extensions = [
     # sphinx-hoverxref, which needs the Read the Docs Embed API), so tooltips work on
     # our GitHub Pages deploy with no external service.
     "sphinx_tippy",
+    # Local: auto-link cross-page `protonfs <subcommand>` mentions to their reference entry.
+    "command_xref",
 ]
 
 templates_path = ["_templates"]

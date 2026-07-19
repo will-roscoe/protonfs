@@ -38,3 +38,56 @@ def test_spans_prefer_longest_phrase():
 def test_spans_ignore_bare_program():
     m = cx.build_target_map()
     assert cx.find_command_spans("just protonfs alone", m) == []
+
+
+from docutils import nodes  # noqa: E402
+from sphinx import addnodes  # noqa: E402
+
+
+class _FakeEnv:
+    def __init__(self, docname):
+        self.docname = docname
+
+
+class _FakeApp:
+    def __init__(self, docname):
+        self.env = _FakeEnv(docname)
+
+
+def _para(*children):
+    p = nodes.paragraph()
+    for c in children:
+        p += c
+    doc = nodes.document(None, None)
+    doc += p
+    return doc
+
+
+def test_transform_links_plain_text_on_other_pages():
+    doc = _para(nodes.Text("First run protonfs --dry-run push to preview."))
+    cx.process_command_xrefs(_FakeApp("guarantees"), doc)
+    xrefs = list(doc.findall(addnodes.pending_xref))
+    assert len(xrefs) == 1
+    assert xrefs[0]["reftarget"] == "cmd-push"
+    assert xrefs[0].astext() == "protonfs --dry-run push"
+
+
+def test_transform_links_inline_literal():
+    doc = _para(nodes.literal("protonfs pull", "protonfs pull"))
+    cx.process_command_xrefs(_FakeApp("api/argv"), doc)
+    xrefs = list(doc.findall(addnodes.pending_xref))
+    assert len(xrefs) == 1 and xrefs[0]["reftarget"] == "cmd-pull"
+
+
+def test_transform_skips_literal_block():
+    block = nodes.literal_block("protonfs push", "protonfs push")
+    doc = nodes.document(None, None)
+    doc += block
+    cx.process_command_xrefs(_FakeApp("guarantees"), doc)
+    assert list(doc.findall(addnodes.pending_xref)) == []
+
+
+def test_transform_skips_reference_page_itself():
+    doc = _para(nodes.Text("protonfs push here"))
+    cx.process_command_xrefs(_FakeApp("reference/index"), doc)
+    assert list(doc.findall(addnodes.pending_xref)) == []
