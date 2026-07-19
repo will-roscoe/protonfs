@@ -1,4 +1,4 @@
-<p align="center">
+<p align="left">
   <a href="https://github.com/will-roscoe/protonfs">
     <img
       src="https://raw.githubusercontent.com/will-roscoe/protonfs/main/.github/status/status.svg"
