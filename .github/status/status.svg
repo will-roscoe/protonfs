@@ -1,6 +1,6 @@
 <svg
 xmlns="http://www.w3.org/2000/svg"
-viewBox="0 0 900 420"
+viewBox="0 0 1200 420"
 width="100%"
 >
 
@@ -46,7 +46,6 @@ svg {
 }
 .background {
     fill:var(--bgColor-default, #0d1117);
-    stroke:#d0d7de;
 }
 .text {
     fill:var(--fgColor-default,var(--color-fg-default,#f6f8fa));
@@ -118,7 +117,7 @@ svg {
     class="background"
     x="1"
     y="1"
-    width="898"
+    width="1198"
     height="418"
     rx="14"
 />
@@ -152,7 +151,7 @@ Sync a local directory tree with Proton Drive via the official Proton Drive CLI,
 
 <text
     class="value text"
-    x="820"
+    x="1120"
     y="55"
     text-anchor="end"
 >
