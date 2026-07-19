@@ -40,8 +40,25 @@ def test_spans_ignore_bare_program():
     assert cx.find_command_spans("just protonfs alone", m) == []
 
 
-from docutils import nodes  # noqa: E402
-from sphinx import addnodes  # noqa: E402
+import pytest  # noqa: E402
+
+# The transform tests below need docutils + sphinx (the ``docs`` extra); the plain
+# ``.[dev]`` CI test environment does not install them, while the pure-function tests
+# above need only the package. Guard the import and skip just the transform tests when
+# the extra is absent — the transform is additionally exercised end-to-end by the strict
+# docs build (docs.yml), which runs this extension over every page.
+try:
+    from docutils import nodes
+    from sphinx import addnodes
+
+    _HAS_SPHINX = True
+except ImportError:  # pragma: no cover - depends on the installed extra
+    nodes = addnodes = None  # type: ignore[assignment]
+    _HAS_SPHINX = False
+
+_needs_sphinx = pytest.mark.skipif(
+    not _HAS_SPHINX, reason="requires docutils+sphinx (the docs extra)"
+)
 
 
 class _FakeEnv:
@@ -63,6 +80,7 @@ def _para(*children):
     return doc
 
 
+@_needs_sphinx
 def test_transform_links_plain_text_on_other_pages():
     doc = _para(nodes.Text("First run protonfs --dry-run push to preview."))
     cx.process_command_xrefs(_FakeApp("guarantees"), doc)
@@ -72,6 +90,7 @@ def test_transform_links_plain_text_on_other_pages():
     assert xrefs[0].astext() == "protonfs --dry-run push"
 
 
+@_needs_sphinx
 def test_transform_links_inline_literal():
     doc = _para(nodes.literal("protonfs pull", "protonfs pull"))
     cx.process_command_xrefs(_FakeApp("api/argv"), doc)
@@ -79,6 +98,7 @@ def test_transform_links_inline_literal():
     assert len(xrefs) == 1 and xrefs[0]["reftarget"] == "cmd-pull"
 
 
+@_needs_sphinx
 def test_transform_skips_literal_block():
     block = nodes.literal_block("protonfs push", "protonfs push")
     doc = nodes.document(None, None)
@@ -87,6 +107,7 @@ def test_transform_skips_literal_block():
     assert list(doc.findall(addnodes.pending_xref)) == []
 
 
+@_needs_sphinx
 def test_transform_skips_reference_page_itself():
     doc = _para(nodes.Text("protonfs push here"))
     cx.process_command_xrefs(_FakeApp("reference/index"), doc)
