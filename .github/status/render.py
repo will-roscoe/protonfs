@@ -19,6 +19,7 @@ Design notes:
 """
 from __future__ import annotations
 
+import base64
 import json
 from pathlib import Path
 from typing import Any
@@ -27,6 +28,25 @@ from jinja2 import Environment, FileSystemLoader
 
 ROOT = Path(__file__).parent
 DATA_DIR = ROOT / "data"
+# The header logo, embedded (not linked) so the rendered SVG is self-contained.
+LOGO_PATH = ROOT.parent.parent / "docs" / "_static" / "logo.svg"
+
+
+def _logo_data_uri() -> str:
+    """Return the header logo as a base64 ``data:`` URI, or ``""`` if unavailable.
+
+    GitHub serves raw SVGs under ``Content-Security-Policy: default-src 'none'``,
+    which blocks every external subresource — so an ``<image href="https://…logo.svg">``
+    silently fails to load when status.svg is shown via ``<img>`` in the README. Inlining
+    the logo's bytes as a data URI removes the fetch entirely, so it renders under CSP.
+    Base64 (not raw ``utf8``) avoids having to XML-escape the logo's ``#``/``<``/quotes.
+    """
+    try:
+        raw = LOGO_PATH.read_bytes()
+    except OSError:
+        return ""
+    encoded = base64.b64encode(raw).decode("ascii")
+    return f"data:image/svg+xml;base64,{encoded}"
 
 
 def _load(name: str) -> dict[str, Any]:
@@ -89,6 +109,8 @@ def build_model() -> dict[str, Any]:
             "latest": proton_drive.get("latest", ""),
         },
         "updated": _latest_timestamp(project, ci, docs, proton_drive),
+        # Header logo inlined as a data URI so status.svg renders standalone on GitHub.
+        "logo_href": _logo_data_uri(),
     }
     return model
 
