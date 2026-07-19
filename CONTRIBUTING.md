@@ -51,7 +51,7 @@ Notes:
   `.. versionadded:: <next release>` in its docstring; a behavioral change to
   existing public API gets `.. versionchanged:: <version>`; API on a removal track
   gets `.. deprecated:: <version>`. Config keys and env vars carry the same
-  directives in their `docs/reference/config.rst` definition, and post-1.0 CLI
+  directives in their `docs/reference/index.rst` Configuration section definition, and post-1.0 CLI
   feature changes are marked in `docs/reference/index.rst`. The baseline for API that
   predates the first stable release is `1.0.0`; date anything newer to its release.
 - The **project overview** has a single source of truth in

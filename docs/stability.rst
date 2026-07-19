@@ -225,7 +225,7 @@ flag/argument name; these names, not just their presence, are frozen.
 Known keys for ``config get``/``config set``: :confval:`remote_root`,
 :confval:`device_id`, :confval:`defaults.on_conflict`, :confval:`defaults.low_io`,
 :confval:`defaults.event_log`, :confval:`defaults.progress_style`. Each is defined in
-:doc:`reference/config`.
+the Configuration section of :doc:`reference/index`.
 
 Config files and precedence
 -----------------------------
