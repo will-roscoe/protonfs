@@ -3,7 +3,7 @@
     <img
       src="https://raw.githubusercontent.com/will-roscoe/protonfs/main/.github/status/status.svg"
       alt="protonfs — version, links, test/coverage/lint/docs status, Python support and build matrix"
-      width="70%">
+      >
   </a>
 </p>
 
