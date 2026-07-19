@@ -1,0 +1,11 @@
+/* Command Reference: delimit each subcommand section (`.. _cmd-*:` -> section id). */
+section[id^="cmd-"] {
+  border-top: 1px solid var(--color-background-border);
+  padding-top: 1.25rem;
+  margin-top: 1.75rem;
+}
+/* Nested group leaves (config get / trash empty) get a lighter rule. */
+section[id^="cmd-"] section[id^="cmd-"] {
+  border-top-style: dashed;
+  margin-top: 1.25rem;
+}

@@ -54,6 +54,7 @@ coverage_ignore_pyobjects = []
 # -- Options for HTML output --------------------------------------------------
 html_theme = "furo"
 html_static_path = ["_static"]
+html_css_files = ["custom.css"]
 # The logo is theme-neutral (white git glyph on the Proton gradient), so it serves
 # furo's light and dark sidebars. The favicon uses the white-tile variant so it stays
 # legible on both light and dark browser chrome.
