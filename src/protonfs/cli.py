@@ -308,8 +308,18 @@ _STATE_CHOICES = (
 
 @main.command()
 @click.argument("path", nargs=-1)
-@click.option("--remote", is_flag=True, help="Force a live Drive listing instead of the index.")
-@click.option("--trash", is_flag=True, help="List /trash instead.")
+@click.option(
+    "--remote",
+    is_flag=True,
+    help="Force a live Drive listing to compute state instead of relying on the local "
+    "index alone (slower, but catches remote changes that refresh hasn't seen yet).",
+)
+@click.option(
+    "--trash",
+    is_flag=True,
+    help="List /trash instead of the working tree (name and type only; no sync-state "
+    "column, since trashed items aren't tracked in the index).",
+)
 @click.option(
     "--dirs",
     is_flag=True,
@@ -391,8 +401,17 @@ def ls(
 
 @main.command()
 @click.argument("path", nargs=-1)
-@click.option("--resolve", type=click.Choice(["merge", "keep-both", "replace", "skip"]))
-@click.option("--dry-run", is_flag=True)
+@click.option(
+    "--resolve",
+    type=click.Choice(["merge", "keep-both", "replace", "skip"]),
+    help="Conflict strategy for files changed on both sides, passed through to "
+    "proton-drive: merge, keep-both, replace, or skip.",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Report what would be pushed without transferring anything.",
+)
 @_drive_error_boundary
 def push(path: tuple[str, ...], resolve: str | None, dry_run: bool) -> None:
     """Upload local-only/changed files to Drive (any number of PATHs)."""
@@ -440,7 +459,11 @@ def push(path: tuple[str, ...], resolve: str | None, dry_run: bool) -> None:
         "Without this, pull leaves diverged files untouched and reports them."
     ),
 )
-@click.option("--dry-run", is_flag=True)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Preview transfers and unresolved conflicts without downloading anything.",
+)
 @click.option(
     "--refresh",
     is_flag=True,

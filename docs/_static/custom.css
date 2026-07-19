@@ -1,0 +1,11 @@
+/* Command Reference: delimit each subcommand entry.
+   Each `.. _cmd-*:` label renders as an empty inline anchor `<span id="cmd-*">`
+   immediately before that command's heading (the section's own id is the plain
+   title slug, e.g. `push`, so it can't be targeted by a `cmd-` prefix). Styling the
+   anchor span itself as a block-level rule draws a separator above each command. */
+span[id^="cmd-"] {
+  display: block;
+  border-top: 1px solid var(--color-background-border);
+  padding-top: 1.25rem;
+  margin-top: 1.75rem;
+}

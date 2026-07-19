@@ -4,6 +4,7 @@ import sys
 
 # -- Path setup ---------------------------------------------------------------
 sys.path.insert(0, os.path.abspath("../src"))
+sys.path.insert(0, os.path.abspath("_ext"))
 
 # -- Project information ------------------------------------------------------
 project = "protonfs"
@@ -29,6 +30,8 @@ extensions = [
     # sphinx-hoverxref, which needs the Read the Docs Embed API), so tooltips work on
     # our GitHub Pages deploy with no external service.
     "sphinx_tippy",
+    # Local: auto-link cross-page `protonfs <subcommand>` mentions to their reference entry.
+    "command_xref",
 ]
 
 templates_path = ["_templates"]
@@ -51,6 +54,7 @@ coverage_ignore_pyobjects = []
 # -- Options for HTML output --------------------------------------------------
 html_theme = "furo"
 html_static_path = ["_static"]
+html_css_files = ["custom.css"]
 # The logo is theme-neutral (white git glyph on the Proton gradient), so it serves
 # furo's light and dark sidebars. The favicon uses the white-tile variant so it stays
 # legible on both light and dark browser chrome.

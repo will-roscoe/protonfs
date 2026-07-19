@@ -9,11 +9,21 @@ does, and worked examples. This page describes *behavior*; for the frozen contra
 (exact exit codes, option names, config keys, env vars that will not change without
 a major version bump) see :doc:`../stability`.
 
-.. toctree::
-   :hidden:
+Synopsis
+--------
+.. click:: protonfs.cli:main
+   :prog: protonfs
+   :nested: none
 
-   commands
-   config
+``protonfs`` is the command group; every operation is a subcommand documented under
+:ref:`Subcommands <reference-subcommands>`. The global options above (verbosity, progress
+style, event log) may appear before or after the subcommand.
+
+Examples::
+
+    protonfs setup && protonfs push        # first-time setup, then upload
+    protonfs refresh && protonfs pull       # first pull on a new machine
+    protonfs status; echo "exit=$?"         # drift check for scripts
 
 Global behavior
 ----------------
@@ -104,11 +114,207 @@ never treated as sync payload: protonfs excludes ``.protonfs/`` from scans entir
 
 Default: the :confval:`defaults.event_log` config key, else off.
 
+Configuration
+=============
+
+Environment variables
+----------------------
+
+.. envvar:: PROTONFS_CONFIG
+
+   Overrides the global config file path outright.
+
+   .. versionadded:: 1.0.0
+
+.. envvar:: PROTONFS_REMOTE_ROOT
+
+   Per-key override for :confval:`remote_root`.
+
+   .. versionadded:: 1.0.0
+
+.. envvar:: PROTONFS_DEVICE_ID
+
+   Per-key override for :confval:`device_id`.
+
+   .. versionadded:: 1.0.0
+
+.. envvar:: PROTONFS_ON_CONFLICT
+
+   Per-key override for :confval:`defaults.on_conflict`.
+
+   .. versionadded:: 1.0.0
+
+.. envvar:: PROTONFS_LOW_IO
+
+   Per-key override for :confval:`defaults.low_io`.
+
+   .. versionadded:: 1.0.0
+
+.. envvar:: PROTONFS_EVENT_LOG
+
+   Per-key override for :confval:`defaults.event_log`.
+
+   .. versionadded:: 1.3.0
+
+.. envvar:: PROTONFS_PROGRESS_STYLE
+
+   Per-key override for :confval:`defaults.progress_style`.
+
+   .. versionadded:: 1.3.0
+
+Operational & tuning environment variables
+--------------------------------------------
+
+These have no config-key equivalent; they tune how protonfs invokes and installs the
+``proton-drive`` binary and how it bootstraps the keyring. All are part of the frozen
+contract (see :doc:`../stability`).
+
+.. envvar:: PROTONFS_DRIVE_BIN
+
+   Path/name of the ``proton-drive`` binary to invoke, in place of the default.
+
+   .. versionadded:: 1.0.0
+
+.. envvar:: PROTONFS_DRIVE_VERSION
+
+   Overrides the ``proton-drive`` version ``install-drive`` installs when ``--version``
+   is not passed.
+
+   .. versionadded:: 1.0.0
+
+.. envvar:: PROTONFS_DRIVE_SHA512
+
+   Explicit SHA-512 to verify a ``proton-drive`` download against, required for
+   versions/platforms without a built-in checksum pin.
+
+   .. versionadded:: 1.0.0
+
+.. envvar:: PROTONFS_LIST_TIMEOUT
+
+   Timeout in seconds for a Drive listing call (default ``45``).
+
+   .. versionadded:: 1.0.0
+
+.. envvar:: PROTONFS_LIST_RETRIES
+
+   Max retries for a Drive listing call (default ``4``).
+
+   .. versionadded:: 1.0.0
+
+.. envvar:: PROTONFS_LIST_BACKOFF
+
+   Base backoff in seconds between Drive listing retries (default ``2``).
+
+   .. versionadded:: 1.0.0
+
+.. envvar:: PROTONFS_LIST_BACKOFF_CAP
+
+   Cap in seconds on the Drive listing retry backoff (default ``60``).
+
+   .. versionadded:: 1.0.0
+
+.. envvar:: PROTONFS_TRANSFER_TIMEOUT
+
+   Timeout in seconds for a Drive upload/download call (default ``300``).
+
+   .. versionadded:: 1.0.0
+
+.. envvar:: PROTONFS_TRANSFER_RETRIES
+
+   Max retries for a Drive upload/download call (default ``4``).
+
+   .. versionadded:: 1.0.0
+
+.. envvar:: PROTONFS_TRANSFER_BACKOFF
+
+   Base backoff in seconds between Drive upload/download retries (default ``2``).
+
+   .. versionadded:: 1.0.0
+
+.. envvar:: PROTONFS_TRANSFER_BACKOFF_CAP
+
+   Cap in seconds on the Drive upload/download retry backoff (default ``60``).
+
+   .. versionadded:: 1.0.0
+
+.. envvar:: PROTONFS_KEYRING_PASSWORD
+
+   Supplies the password for the protonfs-owned keyring bootstrap, instead of
+   generating one.
+
+   .. versionadded:: 1.0.0
+
+.. envvar:: PROTONFS_NO_KEYRING_BOOTSTRAP
+
+   Set (to any truthy value) to disable protonfs's Secret Service/keyring bootstrap
+   entirely; the caller is responsible for providing one.
+
+   .. versionadded:: 1.0.0
+
+Configuration file and keys
+-----------------------------
+
+.. confval:: remote_root
+   :type: str
+
+   Proton Drive path that maps to this repo's ProtonFS root. Overridable via
+   :envvar:`PROTONFS_REMOTE_ROOT`.
+
+   .. versionadded:: 1.0.0
+
+.. confval:: device_id
+   :type: str
+
+   Stable identifier for this client device in the index. Overridable via
+   :envvar:`PROTONFS_DEVICE_ID`.
+
+   .. versionadded:: 1.0.0
+
+.. confval:: defaults.on_conflict
+   :type: str
+   :default: "skip"
+
+   Action when a file is in :class:`~protonfs.diff.SyncState` conflict. Overridable
+   via :envvar:`PROTONFS_ON_CONFLICT`.
+
+   .. versionadded:: 1.0.0
+
+.. confval:: defaults.low_io
+   :type: bool
+   :default: false
+
+   Skip hashing unchanged files. Overridable via :envvar:`PROTONFS_LOW_IO`.
+
+   .. versionadded:: 1.0.0
+
+.. confval:: defaults.event_log
+   :type: bool
+   :default: false
+
+   Enable the structured rotating event log. Overridable via :envvar:`PROTONFS_EVENT_LOG`.
+
+   .. versionadded:: 1.3.0
+
+.. confval:: defaults.progress_style
+   :type: str
+   :default: "inline"
+
+   Progress display style, ``inline`` or ``lines``. Overridable via
+   :envvar:`PROTONFS_PROGRESS_STYLE`.
+
+   .. versionadded:: 1.3.0
+
+.. _reference-subcommands:
+
+Subcommands
+===========
+
 .. _cmd-setup:
 
-``setup``
----------
-**Synopsis:** ``protonfs setup [--dry-run] [--migrate-lfs/--no-migrate-lfs]``
+setup
+-----
+.. click:: protonfs.cli:setup
+   :prog: protonfs setup
 
 Installs/verifies the ``proton-drive`` CLI, initializes ``.protonfs/`` in the
 current directory (``config.json``, ``ignore``, a ``.gitignore`` that excludes
@@ -117,11 +323,9 @@ control files from git-LFS), and migrates the repo off git-LFS if it is tracked.
 It also creates the configured :confval:`remote_root` on Drive if it does not exist yet,
 so the first ``push`` has somewhere to land without hand-creating folders.
 
-- ``--dry-run`` — preview what would change without writing anything or touching Drive.
-- ``--migrate-lfs`` / ``--no-migrate-lfs`` — force or skip the git-LFS migration.
-  Default: migrate only when the current directory *is* the git toplevel, so running
-  ``setup`` in a subdirectory of a larger repo never migrates the enclosing repo off
-  LFS by surprise.
+Default: migrate only when the current directory *is* the git toplevel, so running
+``setup`` in a subdirectory of a larger repo never migrates the enclosing repo off
+LFS by surprise.
 
 Examples::
 
@@ -131,9 +335,10 @@ Examples::
 
 .. _cmd-deinit:
 
-``deinit``
-----------
-**Synopsis:** ``protonfs deinit [--dry-run] [--yes]``
+deinit
+------
+.. click:: protonfs.cli:deinit
+   :prog: protonfs deinit
 
 The inverse of :ref:`setup <cmd-setup>`: removes every file ``setup`` writes under ``.protonfs/``
 — the shared ``config.json``, the per-device ``config.local.json``, the index,
@@ -143,9 +348,6 @@ confirmation. It **only ever looks inside** ``.protonfs/``: synced payload files
 local or remote, are never touched, so deinit is a clean teardown of protonfs's own
 bookkeeping and nothing else.
 
-- ``--dry-run`` — list what would be removed and delete nothing.
-- ``--yes`` — skip the confirmation prompt (for scripts).
-
 Examples::
 
     protonfs deinit --dry-run    # see exactly which .protonfs/ files would go
@@ -153,9 +355,10 @@ Examples::
 
 .. _cmd-status:
 
-``status``
-----------
-**Synopsis:** ``protonfs status [PATH]... [--format {plain,json}]``
+status
+------
+.. click:: protonfs.cli:status
+   :prog: protonfs status
 
 .. versionchanged:: 1.1.0
    Added ``--format`` (``plain``/``json``) and multiple ``PATH`` pathspecs.
@@ -166,9 +369,6 @@ local index, and prints a count per sync state (``synced``, ``local-only``,
 ``remote-modified``, ``both-modified``, ``local-deleted``, ``remote-changed``,
 ``remote-deleted``, ``lfs-pointer``). It does not talk to Drive beyond the index
 already on disk — run :ref:`refresh <cmd-refresh>` first for an up-to-date picture of the remote.
-
-- ``--format`` — ``plain`` (the classic ``state: count`` lines, default) or
-  ``json`` (one object with a ``counts`` map and the ``exit_code``).
 
 Exit code: ``0`` clean, ``1`` drift present, ``2`` conflict present (conflict
 outranks drift) — identical in both formats. See :doc:`../stability` for the
@@ -183,10 +383,10 @@ Examples::
 
 .. _cmd-ls:
 
-``ls``
-------
-**Synopsis:** ``protonfs ls [PATH]... [--remote] [--trash] [--dirs] [--state STATE]...
-[--format {table,plain,json}] [--visual {treemap,waffle}]``
+ls
+--
+.. click:: protonfs.cli:ls
+   :prog: protonfs ls
 
 Lists tracked files with their sync state, as a table of ``path`` / ``state``.
 
@@ -197,33 +397,24 @@ Lists tracked files with their sync state, as a table of ``path`` / ``state``.
 .. versionchanged:: 1.2.0
    ``--visual`` treemap/waffle storage charts.
 
-- ``--remote`` — force a live Drive listing to compute state, instead of relying on
-  the local index alone (slower, but catches remote changes ``refresh`` hasn't seen
-  yet).
-- ``--trash`` — list ``/trash`` instead of the working tree (name and type only; no
-  sync-state column, since trashed items aren't tracked in the index).
-- ``--dirs`` — aggregate per immediate subdirectory instead of listing every file:
-  one row per directory with its file count, cumulative **local** size (bytes on
-  disk; ``0`` for fully offloaded dirs), cumulative **indexed** size (what the index
-  records — the remote-side size), and a per-state count summary. This is the
-  storage-breakdown view: ``protonfs ls --dirs`` on a large tree answers "which
-  directories are taking space locally vs on Drive" without printing 10,000
-  ``remote-only`` lines.
-- ``--state STATE`` — only show files in the given sync state(s); repeatable
-  (``--state remote-only --state local-only``). Applies before ``--dirs``
-  aggregation, so the two compose.
-- ``--format`` — ``table`` (rich, default), ``plain`` (tab-separated lines for
-  shell pipelines), or ``json`` (one JSON document per listed PATH). The ``--dirs``
-  JSON/columns also carry an ``apparent_bytes`` field: each directory's true
-  footprint, taking per file whichever of the local/indexed size is known (they
-  agree when synced, local for a not-yet-pushed file, indexed for an offloaded one).
-- ``--visual {treemap,waffle}`` — draw a per-directory storage-usage chart instead
-  of the listing, sized by that ``apparent_bytes`` footprint so a fresh local-only
-  tree and a fully-offloaded tree both chart correctly. ``treemap`` gives nested
-  rectangles whose areas are proportional to size (squarified for readability);
-  ``waffle`` gives a proportional grid of cells. Both print a colour legend with each
-  directory's size and percentage. This is a terminal-only view — it cannot be
-  combined with ``--format plain/json`` or ``--trash`` (both raise a usage error).
+``--dirs`` aggregates per immediate subdirectory instead of listing every file:
+one row per directory with its file count, cumulative **local** size (bytes on
+disk; ``0`` for fully offloaded dirs), cumulative **indexed** size (what the index
+records — the remote-side size), and a per-state count summary. This is the
+storage-breakdown view: ``protonfs ls --dirs`` on a large tree answers "which
+directories are taking space locally vs on Drive" without printing 10,000
+``remote-only`` lines. ``--state STATE`` applies before ``--dirs`` aggregation, so
+the two compose. The ``--dirs`` JSON/columns also carry an ``apparent_bytes``
+field: each directory's true footprint, taking per file whichever of the
+local/indexed size is known (they agree when synced, local for a not-yet-pushed
+file, indexed for an offloaded one). ``--visual {treemap,waffle}`` draws a
+per-directory storage-usage chart instead of the listing, sized by that
+``apparent_bytes`` footprint so a fresh local-only tree and a fully-offloaded tree
+both chart correctly. ``treemap`` gives nested rectangles whose areas are
+proportional to size (squarified for readability); ``waffle`` gives a
+proportional grid of cells. Both print a colour legend with each directory's size
+and percentage. This is a terminal-only view — it cannot be combined with
+``--format plain/json`` or ``--trash`` (both raise a usage error).
 
 Examples::
 
@@ -238,9 +429,10 @@ Examples::
 
 .. _cmd-push:
 
-``push``
---------
-**Synopsis:** ``protonfs push [PATH]... [--resolve {merge,keep-both,replace,skip}] [--dry-run]``
+push
+----
+.. click:: protonfs.cli:push
+   :prog: protonfs push
 
 .. versionchanged:: 1.1.0
    Interactive batch progress on stderr; accepts multiple ``PATH`` pathspecs.
@@ -259,10 +451,6 @@ A file that is an un-smudged git-LFS pointer stub is never pushed, even if
 misclassified upstream, because that would overwrite real Drive content with a
 131-byte placeholder. See :doc:`../guarantees` for the full mechanism.
 
-- ``--resolve`` — conflict strategy passed through to ``proton-drive`` for files
-  that changed on both sides: ``merge``, ``keep-both``, ``replace``, ``skip``.
-- ``--dry-run`` — report what would be pushed without transferring anything.
-
 Progress is saved after each directory group, so an interrupted push resumes
 rather than restarting.
 
@@ -274,9 +462,10 @@ Examples::
 
 .. _cmd-pull:
 
-``pull``
---------
-**Synopsis:** ``protonfs pull [PATH]... [--resolve {remote,local,both}] [--dry-run] [--refresh]``
+pull
+----
+.. click:: protonfs.cli:pull
+   :prog: protonfs pull
 
 .. versionchanged:: 1.1.0
    Interactive batch progress on stderr; accepts multiple ``PATH`` pathspecs.
@@ -300,9 +489,6 @@ only, no download) — useful on a machine whose index doesn't yet know everythi
 already on Drive. Without an index yet, plain ``pull`` refuses to run and tells
 you to run ``refresh`` first (or pass ``--refresh``).
 
-``--dry-run`` previews transfers and unresolved conflicts without downloading
-anything.
-
 Examples::
 
     protonfs refresh && protonfs pull       # typical first pull on a new machine
@@ -312,9 +498,10 @@ Examples::
 
 .. _cmd-offload:
 
-``offload``
------------
-**Synopsis:** ``protonfs offload [PATH]... [--no-verify] [--dry-run] [--yes]``
+offload
+-------
+.. click:: protonfs.cli:offload
+   :prog: protonfs offload
 
 Deletes the *local* bytes of protonfs-tracked files already confirmed present on
 Drive, reclaiming disk space while leaving the index entry as
@@ -328,13 +515,9 @@ copy of that edit — and (b) by default, re-verified against a *live* remote
 listing (not just the index), requiring the remote's plaintext ``claimedSize`` to
 match the local file's byte size. A file that fails either check is left alone
 and reported (``skipped_modified`` / ``skipped_unverified``); this is not treated
-as command failure.
-
-- ``--no-verify`` — skip the live remote re-verification (the unsynced-edit guard
-  in (a) always still applies). Unsafe if the remote could have changed since the
-  index was last updated.
-- ``--dry-run`` — preview what would be offloaded without deleting anything.
-- ``--yes`` — skip the confirmation prompt.
+as command failure. ``--no-verify`` skips the live remote re-verification (the
+unsynced-edit guard in (a) always still applies) — unsafe if the remote could
+have changed since the index was last updated.
 
 Examples::
 
@@ -344,9 +527,10 @@ Examples::
 
 .. _cmd-rm:
 
-``rm``
-------
-**Synopsis:** ``protonfs rm PATH... [-r/--recursive] [-f/--force] [--yes]``
+rm
+--
+.. click:: protonfs.cli:rm
+   :prog: protonfs rm
 
 Trashes ``PATH`` on Drive (reversible via :ref:`restore <cmd-restore>`). Requires ``-r``/
 ``--recursive`` for a directory. The command removes the matching index entries
@@ -359,8 +543,6 @@ items share a basename, protonfs cannot safely tell which is yours: it leaves
 the item trashed (still reversible) and reports the ambiguity rather than
 guessing. See :doc:`../guarantees` for the exact boundary.
 
-``--yes`` skips the confirmation prompt.
-
 Examples::
 
     protonfs rm old-dump.ev
@@ -369,9 +551,10 @@ Examples::
 
 .. _cmd-restore:
 
-``restore``
------------
-**Synopsis:** ``protonfs restore PATH...``
+restore
+-------
+.. click:: protonfs.cli:restore
+   :prog: protonfs restore
 
 Restores a previously trashed file/directory on Drive by its original path.
 On proton-drive versions that reject original-path restore (0.5.0+), protonfs
@@ -386,11 +569,162 @@ Examples::
     protonfs restore old-dump.ev
     protonfs restore stale-dir/
 
+.. _cmd-refresh:
+
+refresh
+-------
+.. click:: protonfs.cli:refresh
+   :prog: protonfs refresh
+
+Walks Drive under the configured :confval:`remote_root` (or ``PATH`` within it) and seeds
+the local index with metadata-only entries for anything found there that this
+machine's index doesn't already know about. This is the cross-client primitive: a
+fresh machine (or one that missed files another client pushed) becomes aware of
+everything already on Drive without downloading any content, so it will not
+re-upload what's already there. It also reports files that changed or were
+deleted on the remote since they were last seen.
+
+The walk is resumable: progress (both the seeded entries and the walk's own
+frontier) is saved incrementally, so a run interrupted by an API throttle picks
+up where it left off on the next invocation instead of restarting from the root.
+Change/deletion detection only runs after a *complete* pass, though — a resumed
+partial pass seeds but does not yet report changes/deletions.
+
+Examples::
+
+    protonfs refresh                      # seed everything not yet known
+    protonfs refresh subdir/ --prune       # scope to a subtree, drop remote-deleted entries
+
+.. _cmd-install-drive:
+
+install-drive
+-------------
+.. click:: protonfs.cli:install_drive_cmd
+   :prog: protonfs install-drive
+
+Downloads the official ``proton-drive`` CLI binary for the current platform
+(linux-x64 requires AVX2, linux-arm64, macOS x64/arm64), verifies its SHA-512
+against a pinned checksum before installing it (never installs an unverified
+binary), and by default also prepares the OS keyring proton-drive will use to
+store its session — done here, not at first login, so a keyring failure surfaces
+before a browser sign-in is thrown away.
+
+Examples::
+
+    protonfs install-drive
+    protonfs install-drive --version 0.5.0
+    protonfs install-drive --skip-keyring
+
+.. _cmd-upgrade:
+
+upgrade
+-------
+.. click:: protonfs.cli:upgrade
+   :prog: protonfs upgrade
+
+Upgrades the installed ``proton-drive`` binary to the highest version this
+protonfs release supports (SHA-512-verified before an atomic swap; a newer
+upstream release is reported but never installed), verifies the session survived
+the swap, and -- inside a protonfs root -- runs any pending repo-state
+migrations. See :doc:`../upgrading` for the full upgrade story.
+
+Examples::
+
+    protonfs upgrade --check     # what would happen?
+    protonfs upgrade             # binary + migrations
+    protonfs upgrade --repo-only # just bring .protonfs/ current
+
+.. _cmd-doctor:
+
+doctor
+------
+.. click:: protonfs.cli:doctor
+   :prog: protonfs doctor
+
+Checks that this host can actually run ``proton-drive``: the binary is present
+and runnable, and on Linux, that a D-Bus session bus and a usable (unlocked)
+Secret Service keyring are reachable. Written for headless hosts (SSH, no
+desktop), where a graphical login's sealed ``login.keyring`` is the most common
+silent failure.
+
+Examples::
+
+    protonfs doctor
+    protonfs doctor --fix
+
+.. _cmd-shell-init:
+
+shell-init
+----------
+.. click:: protonfs.cli:shell_init
+   :prog: protonfs shell-init
+
+Prints ``export VAR=value`` lines so that running the ``proton-drive`` binary by
+hand (outside of ``protonfs``) sees the same session bus/keyring environment
+protonfs sets up for itself. Every ``protonfs`` command does this internally;
+this is only needed for manual ``proton-drive`` invocations.
+
+Example::
+
+    eval "$(protonfs shell-init)"
+    proton-drive filesystem list /my-files
+
+.. _cmd-completions:
+
+completions
+-----------
+.. click:: protonfs.cli:completions
+   :prog: protonfs completions
+
+Prints, installs, or removes shell completion for bash, zsh, or fish. With
+``--install`` it writes the generated script and wires it into your shell config
+(idempotent, marker-delimited); ``--uninstall`` removes it. Installed completions are
+refreshed automatically by :ref:`protonfs upgrade <cmd-upgrade>`. Global flags
+complete after a subcommand too, matching the position-independent argv handling.
+
+.. versionadded:: 1.5.0
+
+Examples::
+
+    protonfs completions bash              # print the script to stdout
+    protonfs completions zsh --install     # install + wire into ~/.zshrc
+    protonfs completions fish --uninstall
+
+.. _cmd-auth:
+
+auth
+----
+.. click:: protonfs.cli:auth
+   :prog: protonfs auth
+
+- ``login`` / ``logout`` — passthrough to ``proton-drive auth <action>`` with
+  inherited stdio, so an interactive login URL/prompt reaches your terminal
+  directly. Exit code is whatever ``proton-drive`` returns.
+- ``status`` — checks for a valid session directly (without invoking
+  ``proton-drive``), printing ``authenticated`` or a reminder to log in. Exit
+  ``0`` if authenticated, ``1`` otherwise.
+
+Examples::
+
+    protonfs auth login
+    protonfs auth status
+    protonfs auth logout
+
+.. _cmd-trash:
+
+trash
+-----
+.. click:: protonfs.cli:trash
+   :prog: protonfs trash
+
+Groups the ``/trash`` inspection and account-wide emptying operations.
+
 .. _cmd-trash-list:
 
-``trash list``
----------------
-**Synopsis:** ``protonfs trash list``
+trash list
+~~~~~~~~~~
+.. click:: protonfs.cli:trash_list_cmd
+   :prog: protonfs trash list
 
 Lists every item currently in ``/trash``: its name, its original parent (resolved
 on a best-effort basis — shown as ``?`` when proton-drive can't resolve it), and
@@ -405,9 +739,10 @@ Examples::
 
 .. _cmd-trash-empty:
 
-``trash empty``
------------------
-**Synopsis:** ``protonfs trash empty [--yes]``
+trash empty
+~~~~~~~~~~~
+.. click:: protonfs.cli:trash_empty_cmd
+   :prog: protonfs trash empty
 
 Permanently empties ``/trash`` for the whole Proton Drive account by calling
 ``proton-drive filesystem empty-trash``. This is **irreversible** and **not**
@@ -428,153 +763,42 @@ Examples::
     protonfs trash empty                    # prompts for typed confirmation
     protonfs trash empty --yes              # scripts / non-interactive use
 
-.. _cmd-refresh:
-
-``refresh``
------------
-**Synopsis:** ``protonfs refresh [PATH]... [--prune]``
-
-Walks Drive under the configured :confval:`remote_root` (or ``PATH`` within it) and seeds
-the local index with metadata-only entries for anything found there that this
-machine's index doesn't already know about. This is the cross-client primitive: a
-fresh machine (or one that missed files another client pushed) becomes aware of
-everything already on Drive without downloading any content, so it will not
-re-upload what's already there. It also reports files that changed or were
-deleted on the remote since they were last seen.
-
-- ``--prune`` — drop index entries for files that were deleted on the remote
-  (without it, they are reported but kept, so a later push doesn't lose track
-  of them by accident).
-
-The walk is resumable: progress (both the seeded entries and the walk's own
-frontier) is saved incrementally, so a run interrupted by an API throttle picks
-up where it left off on the next invocation instead of restarting from the root.
-Change/deletion detection only runs after a *complete* pass, though — a resumed
-partial pass seeds but does not yet report changes/deletions.
-
-Examples::
-
-    protonfs refresh                      # seed everything not yet known
-    protonfs refresh subdir/ --prune       # scope to a subtree, drop remote-deleted entries
-
-.. _cmd-install-drive:
-
-``install-drive``
-------------------
-**Synopsis:** ``protonfs install-drive [--version VERSION] [--skip-keyring]``
-
-Downloads the official ``proton-drive`` CLI binary for the current platform
-(linux-x64 requires AVX2, linux-arm64, macOS x64/arm64), verifies its SHA-512
-against a pinned checksum before installing it (never installs an unverified
-binary), and by default also prepares the OS keyring proton-drive will use to
-store its session — done here, not at first login, so a keyring failure surfaces
-before a browser sign-in is thrown away.
-
-- ``--version`` — install a specific ``proton-drive`` version instead of the
-  pinned default.
-- ``--skip-keyring`` — skip the keyring bootstrap step.
-
-Examples::
-
-    protonfs install-drive
-    protonfs install-drive --version 0.5.0
-    protonfs install-drive --skip-keyring
-
-.. _cmd-upgrade:
-
-``upgrade``
-------------
-**Synopsis:** ``protonfs upgrade [--check] [--drive-only | --repo-only]``
-
-Upgrades the installed ``proton-drive`` binary to the highest version this
-protonfs release supports (SHA-512-verified before an atomic swap; a newer
-upstream release is reported but never installed), verifies the session survived
-the swap, and -- inside a protonfs root -- runs any pending repo-state
-migrations. See :doc:`../upgrading` for the full upgrade story.
-
-- ``--check`` — preview everything, change nothing; exits ``0`` when fully
-  current, ``1`` when an upgrade or migration is available.
-- ``--drive-only`` — only the binary; skip migrations.
-- ``--repo-only`` — only the migrations; skip the binary.
-
-Examples::
-
-    protonfs upgrade --check     # what would happen?
-    protonfs upgrade             # binary + migrations
-    protonfs upgrade --repo-only # just bring .protonfs/ current
-
-.. _cmd-doctor:
-
-``doctor``
-----------
-**Synopsis:** ``protonfs doctor [--fix]``
-
-Checks that this host can actually run ``proton-drive``: the binary is present
-and runnable, and on Linux, that a D-Bus session bus and a usable (unlocked)
-Secret Service keyring are reachable. Written for headless hosts (SSH, no
-desktop), where a graphical login's sealed ``login.keyring`` is the most common
-silent failure.
-
-- ``--fix`` — additionally bootstrap a protonfs-owned session bus and keyring
-  rather than only reporting the problem.
-
-Examples::
-
-    protonfs doctor
-    protonfs doctor --fix
-
-.. _cmd-shell-init:
-
-``shell-init``
---------------
-**Synopsis:** ``protonfs shell-init``
-
-Prints ``export VAR=value`` lines so that running the ``proton-drive`` binary by
-hand (outside of ``protonfs``) sees the same session bus/keyring environment
-protonfs sets up for itself. Every ``protonfs`` command does this internally;
-this is only needed for manual ``proton-drive`` invocations.
-
-Example::
-
-    eval "$(protonfs shell-init)"
-    proton-drive filesystem list /my-files
-
-.. _cmd-auth:
-
-``auth``
---------
-**Synopsis:** ``protonfs auth {login,logout,status}``
-
-- ``login`` / ``logout`` — passthrough to ``proton-drive auth <action>`` with
-  inherited stdio, so an interactive login URL/prompt reaches your terminal
-  directly. Exit code is whatever ``proton-drive`` returns.
-- ``status`` — checks for a valid session directly (without invoking
-  ``proton-drive``), printing ``authenticated`` or a reminder to log in. Exit
-  ``0`` if authenticated, ``1`` otherwise.
-
-Examples::
-
-    protonfs auth login
-    protonfs auth status
-    protonfs auth logout
-
 .. _cmd-config:
 
-``config``
-----------
-**Synopsis:** ``protonfs config get KEY`` / ``protonfs config set KEY VALUE [--global | --local]``
+config
+------
+.. click:: protonfs.cli:config
+   :prog: protonfs config
 
 Reads or writes protonfs's layered configuration. Known keys:
 :confval:`remote_root`, :confval:`device_id`, :confval:`defaults.on_conflict`,
 :confval:`defaults.low_io`, :confval:`defaults.event_log`,
-:confval:`defaults.progress_style` (each defined in :doc:`config`).
+:confval:`defaults.progress_style` (each defined in the `Configuration`_ section above).
 
-``get`` always prints the fully **resolved** value across every layer (env var >
+.. _cmd-config-get:
+
+config get
+~~~~~~~~~~
+.. click:: protonfs.cli:config_get_cmd
+   :prog: protonfs config get
+
+Always prints the fully **resolved** value across every layer (env var >
 per-device local config > shared per-repo config > global user config > built-in
 default) — see :doc:`../stability` for the complete precedence list and the
 environment variables that can override each key.
 
-``set`` writes to exactly one layer:
+Examples::
+
+    protonfs config get remote_root
+
+.. _cmd-config-set:
+
+config set
+~~~~~~~~~~
+.. click:: protonfs.cli:config_set_cmd
+   :prog: protonfs config set
+
+Writes to exactly one layer:
 
 - default (no flag) — the shared per-repo file, ``.protonfs/config.json``
   (the file you commit, so every clone syncs to the same place).
@@ -587,16 +811,14 @@ environment variables that can override each key.
 
 Examples::
 
-    protonfs config get remote_root
     protonfs config set defaults.low_io true --local
     protonfs config set remote_root /my-files/sim-data --global
 
 See also
 --------
-* :doc:`commands` for the autogenerated per-command synopsis, options, and
-  environment variables (the mechanical contract this page narrates).
-* :doc:`config` for every config key (:confval:`remote_root` …) and environment
-  variable (:envvar:`PROTONFS_CONFIG` …) as cross-referenceable definitions.
+* The `Configuration`_ section above for every config key (:confval:`remote_root` …)
+  and environment variable (:envvar:`PROTONFS_CONFIG` …) as cross-referenceable
+  definitions.
 * :doc:`../stability` for the frozen exit-code/option contract.
 * :doc:`../guarantees` for durability and drift-resolution guarantees.
 * :doc:`../getting-started/index` and :doc:`../getting-started/syncing` for
