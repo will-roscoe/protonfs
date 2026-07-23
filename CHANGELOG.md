@@ -8,6 +8,8 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-07-23
+
 ### Features
 
 - **push**: `defaults.batch_size` config (env `PROTONFS_BATCH_SIZE`) sets the number of
@@ -21,6 +23,10 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
   throttle-resilient `list_with_backoff` instead of an unbounded `list`, so a throttled
   Drive is retried with bounded backoff (and fails cleanly past the retry budget) rather
   than hanging indefinitely on the post-upload verify step.
+
+### Features
+
+- **push**: configurable batch size + throttle-resilient verify listing (#115)
 
 ## [1.5.2] - 2026-07-23
 
@@ -429,7 +435,8 @@ the preceding development history and its first tagged release:
   line-matching, git-mutation error wrapping, `pathspec` deprecation, subpath
   prune data-loss fix.
 
-[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v1.5.2...HEAD
+[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v1.6.0...HEAD
+[1.6.0]: https://github.com/will-roscoe/protonfs/compare/v1.5.2...v1.6.0
 [1.5.2]: https://github.com/will-roscoe/protonfs/compare/v1.5.1...v1.5.2
 [1.5.1]: https://github.com/will-roscoe/protonfs/compare/v1.5.0...v1.5.1
 [1.5.0]: https://github.com/will-roscoe/protonfs/compare/v1.4.1...v1.5.0
