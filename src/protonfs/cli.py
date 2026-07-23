@@ -414,17 +414,46 @@ def ls(
 )
 @_drive_error_boundary
 def push(path: tuple[str, ...], resolve: str | None, dry_run: bool) -> None:
-    """Upload local-only/changed files to Drive (any number of PATHs)."""
+    """Upload local-only/changed files to Drive (any number of PATHs).
+
+    Each PATH may be a directory, a single file, or a shell glob (which the shell
+    expands to concrete paths before protonfs sees them). A PATH that does not exist
+    locally is a usage error (exit 2): push uploads local files, so a missing path can
+    only be a typo -- this is distinct from the exit 1 used for transfer failures.
+
+    .. versionchanged:: 1.5.2
+       PATH may now name a single file (previously only directories were scanned, so a
+       file/glob pathspec silently uploaded nothing). A nonexistent PATH is now a usage
+       error instead of a silent no-op, and an empty push prints ``nothing to push``.
+    """
     from protonfs.commands.push import push as push_files
     from protonfs.context import load_context
     from protonfs.drive import TransferResult
     from protonfs.locking import repo_lock
 
     ctx = load_context()
+    subpaths = _normalize_paths(path)
+    # Validate BEFORE taking the lock or hashing anything: a nonexistent local pathspec
+    # can only be a typo (a shell glob expands to existing paths only), so fail fast and
+    # loud rather than scan it to nothing and report a misleading success. Report every
+    # bad path at once so the user fixes them in a single round trip.
+    missing = [s for s in subpaths if s is not None and not (ctx.root / s).exists()]
+    if missing:
+        listed = ", ".join(map(repr, missing))
+        raise click.UsageError(
+            f"no such local path(s): {listed} "
+            "(push uploads local files -- check the path or your shell glob)"
+        )
     result = TransferResult(0, 0, 0, [])
     with repo_lock(ctx.root):
-        for subpath in _normalize_paths(path):
+        for subpath in subpaths:
             _accumulate_transfer(result, push_files(ctx, subpath, resolve, dry_run))
+    if result.transferred_items + result.skipped_items + result.failed_items == 0:
+        # An existing path that yields no candidates (nothing changed, or everything under
+        # it is excluded by the ignore rules) would otherwise print only the bare zero
+        # summary. Say so in plain language -- and at DEFAULT verbosity, which the Reporter
+        # cannot do (reporter.done() renders only at -v and above).
+        click.echo("nothing to push")
     click.echo(
         f"transferred={result.transferred_items} skipped={result.skipped_items} "
         f"failed={result.failed_items}"

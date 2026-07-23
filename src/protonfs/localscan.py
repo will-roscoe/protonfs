@@ -98,10 +98,20 @@ def scan(
         control directory and any path matched by ``ignore`` are excluded.
 
     .. seealso:: :func:`~protonfs.diff.classify`, which consumes this as its ``local`` arg.
+
+    .. versionchanged:: 1.5.2
+       ``subpath`` may now name a single file, not just a directory or ``.``; a file
+       subpath scans exactly that file. A nonexistent subpath still returns ``{}``.
     """
     entries: dict[str, ScanEntry] = {}
     base = root / subpath if subpath != Path(".") else root
-    for file_path in sorted(base.rglob("*")):
+    # A subpath may name a single file, a directory, or `.` (the whole repo). rglob on a
+    # file (or a nonexistent path) yields nothing, so a file pathspec would otherwise scan
+    # to {} -- treat a file `base` as the one candidate. A nonexistent `base` is not a file
+    # and rglobs to nothing, so scan() still returns {} for it (pull/status/ls rely on
+    # that; push validates existence at the CLI layer).
+    candidates = [base] if base.is_file() else sorted(base.rglob("*"))
+    for file_path in candidates:
         if not file_path.is_file():
             continue
         rel_path = str(file_path.relative_to(root))

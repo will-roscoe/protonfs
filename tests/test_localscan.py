@@ -159,3 +159,74 @@ def test_scan_large_file_starting_with_signature_line_follows_size_heuristic(
     result = scan(tmp_path, Path("."), ignore, index, low_io=False)
 
     assert result["large.bin"].is_lfs_pointer is False
+
+
+# --- file pathspecs: a subpath that resolves to a single file, not a directory --------
+# Regression: `scan()` used base.rglob("*"), which yields nothing for a file (and nothing
+# for a nonexistent path), so `push mload002/mload002_00134` silently scanned zero files.
+
+
+def test_scan_file_subpath_returns_just_that_one_file(tmp_path: Path) -> None:
+    (tmp_path / "run1").mkdir()
+    (tmp_path / "run1" / "dump_0001").write_bytes(b"data")
+    (tmp_path / "run1" / "dump_0002").write_bytes(b"other")
+    index = IndexStore(tmp_path)
+    ignore = IgnoreMatcher([])
+
+    result = scan(tmp_path, Path("run1/dump_0001"), ignore, index, low_io=False)
+
+    assert set(result) == {"run1/dump_0001"}
+    assert result["run1/dump_0001"].sha256 == hashlib.sha256(b"data").hexdigest()
+
+
+def test_scan_file_subpath_that_is_ignored_returns_empty(tmp_path: Path) -> None:
+    # Naming an ignored file explicitly still honours the ignore contract (it is not on
+    # the sync allowlist); the CLI surfaces this as "nothing to push", not an upload.
+    (tmp_path / "run1").mkdir()
+    (tmp_path / "run1" / "scratch.tmp").write_bytes(b"y")
+    index = IndexStore(tmp_path)
+    ignore = IgnoreMatcher(["*.tmp"])
+
+    result = scan(tmp_path, Path("run1/scratch.tmp"), ignore, index, low_io=False)
+
+    assert result == {}
+
+
+def test_scan_nonexistent_subpath_returns_empty(tmp_path: Path) -> None:
+    # Load-bearing for pull/status/ls: a subpath absent locally (remote-only content,
+    # offloaded data) must scan to {} rather than raise -- those commands fetch/report
+    # from the index. push validates existence separately, at the CLI layer.
+    index = IndexStore(tmp_path)
+    ignore = IgnoreMatcher([])
+
+    result = scan(tmp_path, Path("no/such/path"), ignore, index, low_io=False)
+
+    assert result == {}
+
+
+def test_scan_file_subpath_inside_protonfs_returns_empty(tmp_path: Path) -> None:
+    # The single-file branch bypasses the rglob walk, so it must still apply the
+    # .protonfs control-dir skip that the walk applied implicitly.
+    (tmp_path / ".protonfs").mkdir()
+    (tmp_path / ".protonfs" / "index.json").write_bytes(b"{}")
+    index = IndexStore(tmp_path)
+    ignore = IgnoreMatcher([])
+
+    result = scan(tmp_path, Path(".protonfs/index.json"), ignore, index, low_io=False)
+
+    assert result == {}
+
+
+def test_scan_file_subpath_that_is_lfs_pointer_stub_is_flagged(tmp_path: Path) -> None:
+    f = tmp_path / "big.bin"
+    f.write_text(
+        f"{POINTER_SIGNATURE}\n"
+        "oid sha256:9e5f00000000000000000000000000000000000000000000000000000000\n"
+        "size 171008\n"
+    )
+    index = IndexStore(tmp_path)
+    ignore = IgnoreMatcher([])
+
+    result = scan(tmp_path, Path("big.bin"), ignore, index, low_io=False)
+
+    assert result["big.bin"].is_lfs_pointer is True
