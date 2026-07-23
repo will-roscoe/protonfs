@@ -8,6 +8,8 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 
 ## [Unreleased]
 
+## [1.5.2] - 2026-07-23
+
 ### Bug fixes
 
 - **push**: accept a single-file or shell-glob PATH, not just directories. A file
@@ -15,6 +17,15 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
   scanned nothing and reported a misleading `transferred=0` success. A PATH that does
   not exist locally is now a usage error (exit 2) instead of a silent no-op, and an
   empty push prints `nothing to push` at default verbosity.
+
+### Bug fixes
+
+- **push**: accept file and glob pathspecs, error on missing paths (#114)
+
+### Style
+
+- **status**: remove background border, widen canvas to 1200, repin version
+- **status**: wrap description, revert canvas to 900, cap README img at 900px
 
 ## [1.5.1] - 2026-07-19
 
@@ -412,7 +423,8 @@ the preceding development history and its first tagged release:
   line-matching, git-mutation error wrapping, `pathspec` deprecation, subpath
   prune data-loss fix.
 
-[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v1.5.1...HEAD
+[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v1.5.2...HEAD
+[1.5.2]: https://github.com/will-roscoe/protonfs/compare/v1.5.1...v1.5.2
 [1.5.1]: https://github.com/will-roscoe/protonfs/compare/v1.5.0...v1.5.1
 [1.5.0]: https://github.com/will-roscoe/protonfs/compare/v1.4.1...v1.5.0
 [1.4.1]: https://github.com/will-roscoe/protonfs/compare/v1.4.0...v1.4.1
