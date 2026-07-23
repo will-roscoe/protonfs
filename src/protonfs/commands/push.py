@@ -161,6 +161,7 @@ def push(
     # named per-file failures (never a silent skip that we'd falsely index). A strategy
     # is used only when the user explicitly asks via --resolve.
     strategy = resolve
+    batch_size = ctx.config.defaults.batch_size
     groups = group_by_parent(to_push)
     total = TransferResult(0, 0, 0, [])
     done = 0  # files handed to proton-drive so far, for reporter.progress (#93)
@@ -194,7 +195,7 @@ def push(
         # Files proton-drive did not report as failed/skipped -- candidates to VERIFY
         # against the remote before we trust them as delivered (#22).
         candidates: list[str] = []
-        for batch in batches(rels):
+        for batch in batches(rels, batch_size):
             local_paths = [ctx.root / rel for rel in batch]
             result = ctx.drive.upload(local_paths, remote_parent, file_strategy=strategy)
             total.skipped_items += result.skipped_items
