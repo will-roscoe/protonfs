@@ -128,6 +128,45 @@ def test_remote_identities_parses_claimed_fields_and_skips_folders(
     assert identities["f2"].sha1 is None
 
 
+def test_remote_identities_is_throttle_resilient(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The verify-after-push path routes through list_with_backoff, so a throttled
+    # `filesystem list` (the degrade-then-timeout signature) is retried rather than
+    # left to hang on an unbounded single call. Without the fix this would surface the
+    # first TimeoutExpired instead of retrying.
+    client = _client(monkeypatch)
+    calls = {"n": 0}
+
+    def flaky(path, timeout=None):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise subprocess.TimeoutExpired(cmd="proton-drive", timeout=timeout)
+        return [
+            {"name": {"ok": True, "value": "f1"}, "type": "file", "claimedSize": 100,
+             "claimedDigests": {"sha1": "aa"}},
+        ]
+
+    monkeypatch.setattr(client, "list", flaky)
+    identities = client.remote_identities("/my-files/test", sleep=lambda _: None)
+
+    assert calls["n"] == 3  # retried through the throttle, did not hang or surface attempt 1
+    assert identities["f1"].claimed_size == 100
+
+
+def test_remote_identities_raises_throttle_error_after_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A verify list that stays throttled past the retry budget fails cleanly with
+    # DriveThrottleError (bounded), instead of hanging forever on an unbounded call.
+    client = _client(monkeypatch)
+
+    def always_timeout(path, timeout=None):
+        raise subprocess.TimeoutExpired(cmd="proton-drive", timeout=timeout)
+
+    monkeypatch.setattr(client, "list", always_timeout)
+    with pytest.raises(DriveThrottleError):
+        client.remote_identities("/x", retries=2, base_delay=0.0, sleep=lambda _: None)
+
+
 def test_list_raises_drive_error_on_bad_json(monkeypatch: pytest.MonkeyPatch) -> None:
     client = DriveClient(binary="proton-drive")
     monkeypatch.setattr("protonfs.drive.shutil.which", lambda _: "/usr/bin/proton-drive")

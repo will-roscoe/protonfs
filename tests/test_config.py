@@ -218,3 +218,41 @@ def test_env_overrides_event_log_and_progress_style(monkeypatch, tmp_path) -> No
     cfg = load_layered_config(tmp_path)
     assert cfg.defaults.event_log is True
     assert cfg.defaults.progress_style == "lines"
+
+
+def test_defaults_batch_size_matches_batching_default() -> None:
+    from protonfs.batching import DEFAULT_BATCH_SIZE
+    from protonfs.config import Defaults
+    assert Defaults().batch_size == DEFAULT_BATCH_SIZE
+
+
+def test_from_dict_reads_batch_size(tmp_path) -> None:
+    from protonfs.config import Config
+    cfg = Config.from_dict({"remote_root": "/x", "defaults": {"batch_size": 50}})
+    assert cfg.defaults.batch_size == 50
+
+
+def test_to_dict_omits_default_batch_size_but_writes_custom(tmp_path) -> None:
+    from protonfs.batching import DEFAULT_BATCH_SIZE
+    from protonfs.config import Config
+    default = Config(remote_root="/x", device_id="d")
+    assert "batch_size" not in default.to_dict().get("defaults", {})
+    default.defaults.batch_size = DEFAULT_BATCH_SIZE + 25
+    assert default.to_dict()["defaults"]["batch_size"] == DEFAULT_BATCH_SIZE + 25
+
+
+def test_env_overrides_batch_size_as_int(monkeypatch, tmp_path) -> None:
+    from protonfs.config import init_config, load_layered_config
+    init_config(tmp_path, "/my-files/test")
+    monkeypatch.setenv("PROTONFS_BATCH_SIZE", "40")
+    cfg = load_layered_config(tmp_path)
+    assert cfg.defaults.batch_size == 40
+
+
+def test_env_batch_size_below_one_clamps_to_one(monkeypatch, tmp_path) -> None:
+    # A non-positive batch size would make batches() produce no chunks; clamp defensively.
+    from protonfs.config import init_config, load_layered_config
+    init_config(tmp_path, "/my-files/test")
+    monkeypatch.setenv("PROTONFS_BATCH_SIZE", "0")
+    cfg = load_layered_config(tmp_path)
+    assert cfg.defaults.batch_size == 1

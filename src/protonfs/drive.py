@@ -571,16 +571,38 @@ class DriveClient:
             sleep=sleep,
         )
 
-    def remote_identities(self, remote_parent: str) -> dict[str, RemoteIdentity]:
+    def remote_identities(
+        self,
+        remote_parent: str,
+        *,
+        timeout: float = LIST_TIMEOUT_SECONDS,
+        retries: int = LIST_MAX_RETRIES,
+        base_delay: float = LIST_BACKOFF_BASE_SECONDS,
+        cap: float = LIST_BACKOFF_CAP_SECONDS,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> dict[str, RemoteIdentity]:
         """Map decrypted filename -> plaintext identity for the files directly under
         `remote_parent`. Folders and entries with an undecryptable name are skipped.
 
         This is the single primitive every local-vs-remote comparison should route through
         (verify-after-push, offload-before-delete, cross-client drift): it reads the
         plaintext `claimedSize`/`claimedDigests.sha1`, never the encrypted `totalStorageSize`.
+
+        The remote listing goes through :meth:`list_with_backoff`, so a throttled Drive
+        (the degrade-then-timeout signature, #33) is retried with bounded backoff instead
+        of hanging on a single unbounded ``filesystem list``. Past the retry budget it
+        raises :class:`DriveThrottleError` rather than blocking indefinitely.
+
+        .. versionchanged:: 1.6.0
+           Verify listing is now throttle-resilient (was an unbounded ``list`` that could
+           hang forever when Drive throttled the verify-after-push step).
         """
         identities: dict[str, RemoteIdentity] = {}
-        for entry in self.list(remote_parent):
+        entries = self.list_with_backoff(
+            remote_parent, timeout=timeout, retries=retries, base_delay=base_delay,
+            cap=cap, sleep=sleep,
+        )
+        for entry in entries:
             if entry.get("type") == "folder":
                 continue
             name = decrypted_name(entry)

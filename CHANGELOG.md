@@ -8,15 +8,21 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 
 ## [Unreleased]
 
-## [1.5.2] - 2026-07-23
+### Features
+
+- **push**: `defaults.batch_size` config (env `PROTONFS_BATCH_SIZE`) sets the number of
+  files per `filesystem upload`/`download` call. Lower it on a slow or throttled link so
+  each transfer call stays under `PROTONFS_TRANSFER_TIMEOUT`; a batch that times out is
+  retried whole, so smaller batches also lose less work per retry.
 
 ### Bug fixes
 
-- **push**: accept a single-file or shell-glob PATH, not just directories. A file
-  pathspec (e.g. `push run/dump_00134` or `push run/dump_001{3,4,5}`) previously
-  scanned nothing and reported a misleading `transferred=0` success. A PATH that does
-  not exist locally is now a usage error (exit 2) instead of a silent no-op, and an
-  empty push prints `nothing to push` at default verbosity.
+- **drive**: the verify-after-push remote listing (`remote_identities`) now uses the
+  throttle-resilient `list_with_backoff` instead of an unbounded `list`, so a throttled
+  Drive is retried with bounded backoff (and fails cleanly past the retry budget) rather
+  than hanging indefinitely on the post-upload verify step.
+
+## [1.5.2] - 2026-07-23
 
 ### Bug fixes
 

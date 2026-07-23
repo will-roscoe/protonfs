@@ -360,6 +360,36 @@ def test_push_narrates_phases(tmp_path: Path, make_fake_drive, recording_reporte
     assert "phase" in kinds and "done" in kinds
 
 
+def test_push_uses_configured_batch_size(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, make_fake_drive
+) -> None:
+    # The per-batch `filesystem upload` size comes from config (defaults.batch_size), so a
+    # slow/throttled link can shrink it to keep each upload call under the transfer timeout.
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.config.defaults.batch_size = 2
+    for name in ("f1", "f2", "f3", "f4", "f5"):
+        (tmp_path / name).write_bytes(b"data")
+    ctx.drive = make_fake_drive()
+
+    seen_sizes: list[int] = []
+    import protonfs.commands.push as push_mod
+
+    real_batches = push_mod.batches
+
+    def spy_batches(items, size=200):
+        seen_sizes.append(size)
+        return real_batches(items, size)
+
+    monkeypatch.setattr("protonfs.commands.push.batches", spy_batches)
+
+    push(ctx, None, None, dry_run=False)
+
+    assert seen_sizes and all(s == 2 for s in seen_sizes)
+    # 5 files at size 2 -> upload called for 3 batches (2, 2, 1)
+    assert len(ctx.drive.upload_calls) == 3
+
+
 def test_push_reports_progress_per_batch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, make_fake_drive, recording_reporter_cls
 ) -> None:

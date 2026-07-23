@@ -23,6 +23,8 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from protonfs.batching import DEFAULT_BATCH_SIZE
+
 CONFIG_DIR_NAME = ".protonfs"
 CONFIG_FILE_NAME = "config.json"
 LOCAL_CONFIG_FILE_NAME = "config.local.json"
@@ -40,6 +42,7 @@ _ENV_DEFAULTS_OVERRIDES = {
     "low_io": "PROTONFS_LOW_IO",
     "event_log": "PROTONFS_EVENT_LOG",
     "progress_style": "PROTONFS_PROGRESS_STYLE",
+    "batch_size": "PROTONFS_BATCH_SIZE",
 }
 
 
@@ -55,15 +58,23 @@ class Defaults:
         via ``$PROTONFS_EVENT_LOG``.
     :ivar progress_style: Default display style for progress updates (e.g. ``"inline"``,
         ``"lines"``); overridable per-repo or via ``$PROTONFS_PROGRESS_STYLE``.
+    :ivar batch_size: Files per ``filesystem upload``/``download`` call; overridable
+        per-repo or via ``$PROTONFS_BATCH_SIZE``. Lower it on a slow/throttled link so each
+        transfer call stays under ``$PROTONFS_TRANSFER_TIMEOUT`` (a large batch that times
+        out is retried whole, so smaller batches also lose less work per throttle-retry).
 
     .. versionchanged:: 1.3.0
        Added the ``event_log`` and ``progress_style`` defaults.
+
+    .. versionchanged:: 1.6.0
+       Added the ``batch_size`` default.
     """
 
     on_conflict: str = "skip"
     low_io: bool = False
     event_log: bool = False
     progress_style: str = "inline"
+    batch_size: int = DEFAULT_BATCH_SIZE
 
 
 @dataclass
@@ -129,6 +140,7 @@ class Config:
                 low_io=defaults_data.get("low_io", False),
                 event_log=defaults_data.get("event_log", False),
                 progress_style=defaults_data.get("progress_style", "inline"),
+                batch_size=defaults_data.get("batch_size", DEFAULT_BATCH_SIZE),
             ),
         )
 
@@ -318,9 +330,14 @@ def _env_layer() -> dict:
         value = os.environ.get(env_name)
         if value is None:
             continue
-        defaults_layer[key] = (
-            _parse_bool_env(value) if key in ("low_io", "event_log") else value
-        )
+        if key in ("low_io", "event_log"):
+            defaults_layer[key] = _parse_bool_env(value)
+        elif key == "batch_size":
+            # A non-positive size makes batches() produce no chunks; clamp to >= 1. A
+            # non-integer value is a user error surfaced at config load.
+            defaults_layer[key] = max(1, int(value))
+        else:
+            defaults_layer[key] = value
     if defaults_layer:
         layer["defaults"] = defaults_layer
     return layer
