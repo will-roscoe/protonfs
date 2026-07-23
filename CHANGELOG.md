@@ -8,6 +8,14 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 
 ## [Unreleased]
 
+### Bug fixes
+
+- **push**: accept a single-file or shell-glob PATH, not just directories. A file
+  pathspec (e.g. `push run/dump_00134` or `push run/dump_001{3,4,5}`) previously
+  scanned nothing and reported a misleading `transferred=0` success. A PATH that does
+  not exist locally is now a usage error (exit 2) instead of a silent no-op, and an
+  empty push prints `nothing to push` at default verbosity.
+
 ## [1.5.1] - 2026-07-19
 
 ### Bug fixes

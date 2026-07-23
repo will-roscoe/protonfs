@@ -405,3 +405,194 @@ def test_push_narrates_no_item_for_a_failed_upload(
     item_paths = [c[1] for c in rep.calls if c[0] == "item"]
     assert "ok" in item_paths
     assert "broken" not in item_paths
+
+
+# --- file pathspecs at the CLI layer (#push-file-pathspecs) ------------------------------
+
+
+def _inject_ctx(monkeypatch, ctx) -> None:
+    monkeypatch.setattr("protonfs.context.load_context", lambda *a, **k: ctx)
+
+
+def test_push_cli_uploads_a_single_file_pathspec(
+    tmp_path: Path, monkeypatch, make_fake_drive
+) -> None:
+    from click.testing import CliRunner
+
+    from protonfs.cli import main
+
+    (tmp_path / "run1").mkdir()
+    (tmp_path / "run1" / "dump_0001").write_bytes(b"data")
+    (tmp_path / "run1" / "dump_0002").write_bytes(b"other")
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    fake = make_fake_drive()
+    ctx.drive = fake
+    _inject_ctx(monkeypatch, ctx)
+
+    result = CliRunner().invoke(main, ["push", "run1/dump_0001"])
+
+    assert result.exit_code == 0
+    uploaded = {name for call in fake.upload_calls for name in call[0]}
+    assert any(u.endswith("run1/dump_0001") for u in uploaded)
+    assert not any(u.endswith("run1/dump_0002") for u in uploaded)
+
+
+def test_push_cli_uploads_mixed_file_and_dir_pathspecs(
+    tmp_path: Path, monkeypatch, make_fake_drive
+) -> None:
+    # A single invocation naming one file and one directory must handle both branches
+    # (is_file -> [base] vs rglob). Simulates e.g. `push a/one_00001 b/`.
+    from click.testing import CliRunner
+
+    from protonfs.cli import main
+
+    (tmp_path / "a").mkdir()
+    (tmp_path / "a" / "one_00001").write_bytes(b"x")
+    (tmp_path / "a" / "one_00002").write_bytes(b"y")
+    (tmp_path / "b").mkdir()
+    (tmp_path / "b" / "two_00001").write_bytes(b"z")
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    fake = make_fake_drive()
+    ctx.drive = fake
+    _inject_ctx(monkeypatch, ctx)
+
+    result = CliRunner().invoke(main, ["push", "a/one_00001", "b"])
+
+    assert result.exit_code == 0
+    uploaded = {name for call in fake.upload_calls for name in call[0]}
+    assert any(u.endswith("a/one_00001") for u in uploaded)
+    assert any(u.endswith("b/two_00001") for u in uploaded)
+    # the sibling file NOT named, and not under the named dir, stays local
+    assert not any(u.endswith("a/one_00002") for u in uploaded)
+
+
+def test_push_cli_several_file_pathspecs_glob_expansion(
+    tmp_path: Path, monkeypatch, make_fake_drive
+) -> None:
+    # The shell expands `dump_000{1,2,3}` to three argv before protonfs sees them.
+    from click.testing import CliRunner
+
+    from protonfs.cli import main
+
+    for n in (1, 2, 3, 4):
+        (tmp_path / f"dump_000{n}").write_bytes(b"d")
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    fake = make_fake_drive()
+    ctx.drive = fake
+    _inject_ctx(monkeypatch, ctx)
+
+    result = CliRunner().invoke(
+        main, ["push", "dump_0001", "dump_0002", "dump_0003"]
+    )
+
+    assert result.exit_code == 0
+    uploaded = {name for call in fake.upload_calls for name in call[0]}
+    assert sum(u.endswith(f"dump_000{n}") for u in uploaded for n in (1, 2, 3)) == 3
+    assert not any(u.endswith("dump_0004") for u in uploaded)
+
+
+def test_push_cli_nonexistent_path_is_usage_error_no_drive_no_lock(
+    tmp_path: Path, monkeypatch, make_fake_drive
+) -> None:
+    # A path that does not exist locally can only be a typo (the shell emits only
+    # existing paths from a glob). Fail loudly with a usage error (exit 2), before any
+    # Drive work and before the repo lock is taken.
+    from click.testing import CliRunner
+
+    from protonfs.cli import main
+
+    (tmp_path / "real_0001").write_bytes(b"d")
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    fake = make_fake_drive()
+    ctx.drive = fake
+    _inject_ctx(monkeypatch, ctx)
+
+    lock_calls = []
+    import contextlib
+
+    @contextlib.contextmanager
+    def spy_lock(root):
+        lock_calls.append(root)
+        yield
+
+    # push imports repo_lock locally (from protonfs.locking), so patch it at the source.
+    monkeypatch.setattr("protonfs.locking.repo_lock", spy_lock)
+
+    result = CliRunner().invoke(main, ["push", "nope_9999"])
+
+    assert result.exit_code == 2
+    assert "nope_9999" in result.output
+    assert fake.upload_calls == []
+    assert lock_calls == []  # validation runs before the lock is acquired
+
+
+def test_push_cli_nonexistent_paths_are_all_listed(
+    tmp_path: Path, monkeypatch, make_fake_drive
+) -> None:
+    # Multiple bad paths are reported together, so the user fixes them in one round trip.
+    from click.testing import CliRunner
+
+    from protonfs.cli import main
+
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.drive = make_fake_drive()
+    _inject_ctx(monkeypatch, ctx)
+
+    result = CliRunner().invoke(main, ["push", "bad_a", "bad_b"])
+
+    assert result.exit_code == 2
+    assert "bad_a" in result.output
+    assert "bad_b" in result.output
+
+
+def test_push_cli_existing_but_ignored_file_is_nothing_to_push_not_error(
+    tmp_path: Path, monkeypatch, make_fake_drive
+) -> None:
+    # The B/C seam: an ignored file EXISTS on disk (so it passes the existence check)
+    # but scans to {} (ignore contract). That must be a clean exit 0 "nothing to push",
+    # never the exit-2 missing-path error.
+    from click.testing import CliRunner
+
+    from protonfs.cli import main
+
+    (tmp_path / "scratch.tmp").write_bytes(b"y")
+    init_config(tmp_path, "/my-files/test")
+    (tmp_path / ".protonfs" / "ignore").write_text("*.tmp\n")
+    ctx = load_context(tmp_path)
+    fake = make_fake_drive()
+    ctx.drive = fake
+    _inject_ctx(monkeypatch, ctx)
+
+    result = CliRunner().invoke(main, ["push", "scratch.tmp"])
+
+    assert result.exit_code == 0
+    assert "nothing to push" in result.output
+    assert fake.upload_calls == []
+
+
+def test_push_cli_empty_directory_reports_nothing_to_push(
+    tmp_path: Path, monkeypatch, make_fake_drive
+) -> None:
+    # A valid directory with no pushable candidates must say so at DEFAULT verbosity
+    # (level 0) -- the whole point of the fix, since reporter.done() is silent at level 0.
+    from click.testing import CliRunner
+
+    from protonfs.cli import main
+
+    (tmp_path / "empty").mkdir()
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    fake = make_fake_drive()
+    ctx.drive = fake
+    _inject_ctx(monkeypatch, ctx)
+
+    result = CliRunner().invoke(main, ["push", "empty"])
+
+    assert result.exit_code == 0
+    assert "nothing to push" in result.output
+    assert fake.upload_calls == []

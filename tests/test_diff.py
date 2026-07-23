@@ -1,7 +1,7 @@
 # tests/test_diff.py
 from __future__ import annotations
 
-from protonfs.diff import DiffEntry, SyncState, classify
+from protonfs.diff import DiffEntry, SyncState, classify, within_subpath
 from protonfs.drive import RemoteEntry
 from protonfs.index import IndexEntry, IndexStore
 from protonfs.localscan import ScanEntry
@@ -235,3 +235,14 @@ def test_no_remote_view_keeps_v01_behavior(tmp_path) -> None:
     index.set("a", _index_entry("h1", local_state="present"))
     result = classify({}, index, remote=None)  # index says present, no local file
     assert result[0].state == SyncState.REMOTE_ONLY
+
+
+def test_within_subpath_matches_the_subpath_itself() -> None:
+    # Load-bearing for file pathspecs: pull/status/ls/refresh scope their scan then
+    # re-filter classify() output through within_subpath. When the subpath IS a file,
+    # the scanned entry's rel_path EQUALS the subpath, so the equality branch (not just
+    # the "startswith subpath/" branch) is what keeps that entry from being dropped.
+    assert within_subpath("run1/dump_0001", "run1/dump_0001") is True
+    assert within_subpath("run1/dump_0001", "run1") is True
+    assert within_subpath("run10/dump", "run1") is False  # prefix, not a path boundary
+    assert within_subpath("anything", None) is True
