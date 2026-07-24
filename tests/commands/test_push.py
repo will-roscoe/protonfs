@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from protonfs.commands.push import LFS_POINTER_KIND, ensure_remote_root, push
+from protonfs.commands.push import CONFLICT_KIND, LFS_POINTER_KIND, ensure_remote_root, push
 from protonfs.config import init_config
 from protonfs.context import load_context
 from protonfs.diff import DiffEntry, SyncState
@@ -435,6 +435,106 @@ def test_push_narrates_no_item_for_a_failed_upload(
     item_paths = [c[1] for c in rep.calls if c[0] == "item"]
     assert "ok" in item_paths
     assert "broken" not in item_paths
+
+
+# --- self-heal: adopt files already on the remote (upload name-conflict) -----------------
+
+
+def _conflict_upload_result(name: str) -> TransferResult:
+    """An upload result where `name` failed because it already exists on the remote."""
+    return TransferResult(
+        transferred_items=0,
+        skipped_items=0,
+        failed_items=1,
+        failures=[{
+            "name": name,
+            "error": f'ValidationError: Name conflict on "{name}" (file) already exists',
+        }],
+    )
+
+
+def test_push_adopts_already_existing_file_that_matches_remote(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    # Self-heal: a file already on Drive but absent from the index (an earlier push
+    # uploaded it but never saved the index) fails upload with a name-conflict. push must
+    # verify the remote copy matches and ADOPT it into the index rather than fail forever.
+    (tmp_path / "dump_0001").write_bytes(b"data")  # size 4
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    fake = make_fake_drive(upload_result=_conflict_upload_result("dump_0001"))
+    # The file already exists on the remote at the matching plaintext size.
+    fake._remote_files["/my-files/test"] = {"dump_0001": 4}
+    ctx.drive = fake
+
+    result = push(ctx, None, None, dry_run=False)
+
+    assert result.adopted_items == 1
+    assert result.failed_items == 0
+    assert result.failures == []
+    entry = ctx.index.get("dump_0001")
+    assert entry is not None and entry.local_state == "present"
+
+
+def test_push_does_not_adopt_conflict_when_remote_size_differs(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    # A name-conflict where the remote copy does NOT match the local file is a real
+    # conflict: never adopt (that would falsely mark diverged content as synced).
+    (tmp_path / "dump_0001").write_bytes(b"data")  # size 4
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    fake = make_fake_drive(upload_result=_conflict_upload_result("dump_0001"))
+    fake._remote_files["/my-files/test"] = {"dump_0001": 999}  # different size
+    ctx.drive = fake
+
+    result = push(ctx, None, None, dry_run=False)
+
+    assert result.adopted_items == 0
+    assert result.failed_items == 1
+    assert result.failures and result.failures[0]["kind"] == CONFLICT_KIND
+    assert ctx.index.get("dump_0001") is None
+
+
+def test_push_cli_reports_adopted_count(tmp_path: Path, monkeypatch, make_fake_drive) -> None:
+    # The CLI summary surfaces adopted files (only when non-zero) so the user sees that a
+    # re-push of already-uploaded content healed the index instead of failing.
+    from click.testing import CliRunner
+
+    from protonfs.cli import main
+
+    (tmp_path / "dump_0001").write_bytes(b"data")
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    fake = make_fake_drive(upload_result=_conflict_upload_result("dump_0001"))
+    fake._remote_files["/my-files/test"] = {"dump_0001": 4}
+    ctx.drive = fake
+    monkeypatch.setattr("protonfs.context.load_context", lambda *a, **k: ctx)
+
+    result = CliRunner().invoke(main, ["push"])
+
+    assert result.exit_code == 0
+    assert "adopted=1" in result.output
+    assert "failed=0" in result.output
+
+
+def test_push_does_not_adopt_conflict_absent_from_remote(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    # A name-conflict for a file the remote listing does not return is not adoptable;
+    # keep it a failure (defensive: never index something we could not confirm present).
+    (tmp_path / "dump_0001").write_bytes(b"data")
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    fake = make_fake_drive(upload_result=_conflict_upload_result("dump_0001"))
+    # remote has nothing under the parent
+    ctx.drive = fake
+
+    result = push(ctx, None, None, dry_run=False)
+
+    assert result.adopted_items == 0
+    assert result.failed_items == 1
+    assert ctx.index.get("dump_0001") is None
 
 
 # --- file pathspecs at the CLI layer (#push-file-pathspecs) ------------------------------

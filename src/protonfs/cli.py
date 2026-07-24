@@ -149,6 +149,7 @@ def _normalize_paths(paths: tuple[str, ...]) -> list[str | None]:
 def _accumulate_transfer(total, part) -> None:
     """Fold one per-path TransferResult into the running total (multi-path loops, #92)."""
     total.transferred_items += part.transferred_items
+    total.adopted_items += part.adopted_items
     total.skipped_items += part.skipped_items
     total.failed_items += part.failed_items
     total.failures += part.failures
@@ -454,9 +455,10 @@ def push(path: tuple[str, ...], resolve: str | None, dry_run: bool) -> None:
         # summary. Say so in plain language -- and at DEFAULT verbosity, which the Reporter
         # cannot do (reporter.done() renders only at -v and above).
         click.echo("nothing to push")
+    adopted = f" adopted={result.adopted_items}" if result.adopted_items else ""
     click.echo(
-        f"transferred={result.transferred_items} skipped={result.skipped_items} "
-        f"failed={result.failed_items}"
+        f"transferred={result.transferred_items}{adopted} "
+        f"skipped={result.skipped_items} failed={result.failed_items}"
     )
     for failure in result.failures:
         click.echo(f"  FAILED {failure['name']}: {failure['error']}")

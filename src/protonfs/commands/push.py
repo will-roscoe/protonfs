@@ -33,6 +33,42 @@ UNDERDELIVERED_ERROR = "claimed transferred but not verified on the remote (unde
 LFS_POINTER_KIND = "lfs-pointer"
 LFS_POINTER_ERROR = "refusing to push a git-LFS pointer stub over remote content"
 
+# Self-heal: proton-drive refuses to overwrite an existing remote file, so a file already
+# on Drive but missing from the local index (an earlier push uploaded it but never saved
+# the index -- e.g. it was interrupted before the group's verify) fails upload with a
+# name-conflict. Rather than fail that file forever, push VERIFIES the remote copy matches
+# the local one and, if so, records it in the index without re-uploading ("adopts" it). A
+# remote copy that does NOT match is a genuine conflict, reported with CONFLICT_KIND.
+CONFLICT_KIND = "conflict"
+CONFLICT_ERROR = "a different file already exists on the remote (name conflict; not adopted)"
+
+
+def _is_already_exists(failure: dict) -> bool:
+    """True if an upload failure is proton-drive's "file already exists" name-conflict.
+
+    Matched on the message text (proton-drive has no machine-readable error code here):
+    e.g. ``ValidationError: Name conflict on "dump_0001" (file) already exists``.
+    """
+    message = str(failure.get("error", "")).lower()
+    return "already exist" in message or "name conflict" in message
+
+
+def _verify_remote(ident, entry, *, strict_sha1: bool) -> bool:
+    """Whether the remote identity ``ident`` confirms the local ``entry`` is on Drive.
+
+    Size must match when the remote reports one (#22). When ``strict_sha1`` (adopting a
+    pre-existing remote file rather than one we just uploaded) and both sides expose a
+    sha1, the digests must match too -- size alone can collide, and adoption must never
+    record diverged content as synced.
+    """
+    if ident is None:
+        return False
+    if ident.claimed_size is not None and ident.claimed_size != entry.size:
+        return False
+    if strict_sha1 and ident.sha1 and entry.sha1 and ident.sha1 != entry.sha1:
+        return False
+    return True
+
 
 # Proton Drive's true root only holds special areas; user files must live under one of these
 # (in practice /my-files). `create-folder /` is rejected, so a remote_root that does not start
@@ -192,20 +228,30 @@ def push(
         if not rels:
             continue
 
-        # Files proton-drive did not report as failed/skipped -- candidates to VERIFY
-        # against the remote before we trust them as delivered (#22).
+        # Files proton-drive did not report as a (real) failure or skip -- candidates to
+        # VERIFY against the remote before we trust them as delivered (#22). A file that
+        # failed upload with an "already exists" name-conflict is ALSO a candidate, but to
+        # ADOPT: verify the remote copy matches and record it without re-uploading.
         candidates: list[str] = []
+        adopt_rels: set[str] = set()
         for batch in batches(rels, batch_size):
             local_paths = [ctx.root / rel for rel in batch]
             result = ctx.drive.upload(local_paths, remote_parent, file_strategy=strategy)
             total.skipped_items += result.skipped_items
-            total.failed_items += result.failed_items
-            total.failures += result.failures
             done += len(batch)
             reporter.progress(done, len(to_push))
-            failed_names = {f["name"] for f in result.failures}
+
+            # Partition the batch's failures: an "already exists" conflict is an adoption
+            # candidate (verified below); everything else is a real failure now.
+            conflict_names = {f["name"] for f in result.failures if _is_already_exists(f)}
+            real_failures = [f for f in result.failures if not _is_already_exists(f)]
+            total.failed_items += len(real_failures)
+            total.failures += real_failures
+            failed_names = {f["name"] for f in real_failures}
             for rel in batch:
-                if Path(rel).name not in failed_names:
+                name = Path(rel).name
+                # A conflict was not transferred (it already existed) -- no "^" upload line.
+                if name not in failed_names and name not in conflict_names:
                     reporter.item("^", rel)
 
             # D2.1: a skip is reported only as an aggregate count, so we cannot tell
@@ -214,7 +260,13 @@ def push(
             # them for the next push.
             if result.skipped_items > 0:
                 continue
-            candidates += [rel for rel in batch if Path(rel).name not in failed_names]
+            for rel in batch:
+                name = Path(rel).name
+                if name in failed_names:
+                    continue
+                candidates.append(rel)
+                if name in conflict_names:
+                    adopt_rels.add(rel)
 
         if not candidates:
             continue
@@ -224,21 +276,31 @@ def push(
         # matches). A file that was claimed-transferred but is absent/short is a silent
         # under-delivery: report it as failed and leave it unindexed so the next push
         # retries it, instead of recording false success and risking data loss on offload.
+        # Adoption candidates (#self-heal) run the same verify, stricter (sha1 too): a
+        # remote copy that matches is recorded without re-upload; one that differs is a
+        # real name-conflict, reported as such rather than silently overwritten.
         identities = ctx.drive.remote_identities(remote_parent)
         for rel in candidates:
             entry = local[rel]
             name = Path(rel).name
             ident = identities.get(name)
-            verified = ident is not None and (
-                ident.claimed_size is None or ident.claimed_size == entry.size
-            )
-            if not verified:
-                reason = "absent" if ident is None else f"size {ident.claimed_size} != {entry.size}"
-                logger.warning("push under-delivery: %s not verified on remote (%s)", rel, reason)
+            is_adopt = rel in adopt_rels
+            if not _verify_remote(ident, entry, strict_sha1=is_adopt):
                 total.failed_items += 1
-                total.failures.append(
-                    {"name": name, "error": UNDERDELIVERED_ERROR, "kind": UNDERDELIVERED_KIND}
-                )
+                if is_adopt:
+                    reason = "absent" if ident is None else "remote differs from local"
+                    logger.warning("push conflict: %s already on remote but %s", rel, reason)
+                    total.failures.append(
+                        {"name": name, "error": CONFLICT_ERROR, "kind": CONFLICT_KIND}
+                    )
+                else:
+                    reason = (
+                        "absent" if ident is None else f"size {ident.claimed_size} != {entry.size}"
+                    )
+                    logger.warning("push under-delivery: %s not verified (%s)", rel, reason)
+                    total.failures.append(
+                        {"name": name, "error": UNDERDELIVERED_ERROR, "kind": UNDERDELIVERED_KIND}
+                    )
                 continue
             ctx.index.set(
                 rel,
@@ -253,7 +315,10 @@ def push(
                     last_synced=now,
                 ),
             )
-            total.transferred_items += 1
+            if is_adopt:
+                total.adopted_items += 1
+            else:
+                total.transferred_items += 1
 
         # #3: persist after each parent group so an interruption (Ctrl-C, dropped
         # connection) resumes from here on the next run instead of re-doing everything.
@@ -261,5 +326,10 @@ def push(
         ctx.index.save()
     ctx.index.save()
     reporter.progress(len(to_push), len(to_push), force=True)
-    reporter.done("uploaded", transferred=total.transferred_items, failed=total.failed_items)
+    reporter.done(
+        "uploaded",
+        transferred=total.transferred_items,
+        adopted=total.adopted_items,
+        failed=total.failed_items,
+    )
     return total
