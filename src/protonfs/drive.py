@@ -100,12 +100,19 @@ class TransferResult:
     :ivar skipped_items: files the CLI skipped (already in sync, or excluded).
     :ivar failed_items: files that failed to transfer.
     :ivar failures: the raw per-failure dicts from the CLI, for reporting.
+    :ivar adopted_items: files already present on the remote (an upload name-conflict)
+        that push verified match the local copy and recorded in the index without
+        re-uploading (#self-heal). Not part of the CLI's JSON; populated by push.
+
+    .. versionchanged:: 1.7.0
+       Added ``adopted_items`` for the push self-heal-adopt path.
     """
 
     transferred_items: int
     skipped_items: int
     failed_items: int
     failures: list[dict]
+    adopted_items: int = 0
 
     @classmethod
     def from_json(cls, data: dict) -> TransferResult:

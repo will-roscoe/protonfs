@@ -8,6 +8,16 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 
 ## [Unreleased]
 
+### Features
+
+- **push**: self-heal by adopting files already on the remote. When a file is present on
+  Drive but missing from the local index (an earlier push uploaded it but was interrupted
+  before saving the index), proton-drive refuses to re-upload it with a name-conflict.
+  Push now verifies the remote copy matches the local file (size, and sha1 when both
+  expose one) and records it in the index without re-uploading, instead of failing it on
+  every run. A remote copy that differs is reported as a genuine conflict. New
+  `adopted=` count in the push summary.
+
 ## [1.6.0] - 2026-07-23
 
 ### Features
