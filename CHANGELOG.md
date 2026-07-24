@@ -8,6 +8,8 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-07-24
+
 ### Features
 
 - **push**: self-heal by adopting files already on the remote. When a file is present on
@@ -17,6 +19,10 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
   expose one) and records it in the index without re-uploading, instead of failing it on
   every run. A remote copy that differs is reported as a genuine conflict. New
   `adopted=` count in the push summary.
+
+### Features
+
+- **push**: self-heal by adopting files already on the remote (#116)
 
 ## [1.6.0] - 2026-07-23
 
@@ -445,7 +451,8 @@ the preceding development history and its first tagged release:
   line-matching, git-mutation error wrapping, `pathspec` deprecation, subpath
   prune data-loss fix.
 
-[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v1.6.0...HEAD
+[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v1.7.0...HEAD
+[1.7.0]: https://github.com/will-roscoe/protonfs/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/will-roscoe/protonfs/compare/v1.5.2...v1.6.0
 [1.5.2]: https://github.com/will-roscoe/protonfs/compare/v1.5.1...v1.5.2
 [1.5.1]: https://github.com/will-roscoe/protonfs/compare/v1.5.0...v1.5.1
