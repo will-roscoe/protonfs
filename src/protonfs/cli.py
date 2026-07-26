@@ -10,6 +10,7 @@ surface these commands expose is documented in ``docs/stability.rst``.
 
 from __future__ import annotations
 
+import contextlib
 import functools
 
 import click
@@ -144,6 +145,27 @@ def _normalize_paths(paths: tuple[str, ...]) -> list[str | None]:
     if not stripped:
         return [None]
     return [p for p in stripped if not any(r != p and p.startswith(f"{r}/") for r in stripped)]
+
+
+@contextlib.contextmanager
+def _resumable_on_interrupt(ctx, verb: str):
+    """Persist index progress and exit cleanly (130) when the user interrupts a transfer.
+
+    Used *inside* ``repo_lock`` so the flush happens while the lock is still held. Turns
+    Ctrl+C during a long push/pull from Click's bare ``Aborted!`` (progress that never
+    saved, no context) into a saved, resumable stop: files already uploaded-and-verified
+    are recorded, so a re-run resumes rather than restarting.
+
+    .. versionadded:: 1.8.0
+    """
+    try:
+        yield
+    except KeyboardInterrupt:
+        ctx.index.save()
+        click.echo(
+            f"\ninterrupted -- progress saved; re-run to resume the {verb}.", err=True
+        )
+        raise click.exceptions.Exit(130) from None
 
 
 def _accumulate_transfer(total, part) -> None:
@@ -446,7 +468,7 @@ def push(path: tuple[str, ...], resolve: str | None, dry_run: bool) -> None:
             "(push uploads local files -- check the path or your shell glob)"
         )
     result = TransferResult(0, 0, 0, [])
-    with repo_lock(ctx.root):
+    with repo_lock(ctx.root), _resumable_on_interrupt(ctx, "push"):
         for subpath in subpaths:
             _accumulate_transfer(result, push_files(ctx, subpath, resolve, dry_run))
     if result.transferred_items + result.skipped_items + result.failed_items == 0:
@@ -517,7 +539,7 @@ def pull(path: tuple[str, ...], resolve: str | None, dry_run: bool, refresh: boo
         click.echo("index empty; run `protonfs refresh` first (or `pull --refresh`)")
         return
     result = TransferResult(0, 0, 0, [])
-    with repo_lock(ctx.root):
+    with repo_lock(ctx.root), _resumable_on_interrupt(ctx, "pull"):
         for subpath in _normalize_paths(path):
             _accumulate_transfer(
                 result,

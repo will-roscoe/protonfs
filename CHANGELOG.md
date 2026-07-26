@@ -8,6 +8,13 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 
 ## [Unreleased]
 
+### Features
+
+- **push/pull**: Ctrl+C during a transfer now saves index progress and exits cleanly
+  (code 130) with a resumable message, instead of Click's bare `Aborted!` that discarded
+  in-flight progress. Files already uploaded-and-verified stay recorded, so a re-run
+  resumes rather than restarting.
+
 ## [1.7.0] - 2026-07-24
 
 ### Features
