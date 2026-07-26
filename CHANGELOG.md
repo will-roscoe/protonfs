@@ -8,6 +8,8 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 
 ## [Unreleased]
 
+## [1.8.0] - 2026-07-26
+
 ### Features
 
 - **schedule**: new `protonfs schedule` command to install/list/remove cron jobs that run
@@ -32,6 +34,17 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
   (code 130) with a resumable message, instead of Click's bare `Aborted!` that discarded
   in-flight progress. Files already uploaded-and-verified stay recorded, so a re-run
   resumes rather than restarting.
+
+### Features
+
+- **cli**: resumable Ctrl+C for push/pull (save progress, exit 130) (#117)
+- **scan**: per-file hashing progress at -v (#118)
+- **scan**: persistent per-file hash cache (#119)
+- **schedule**: protonfs schedule command for cron-managed push/pull (#120)
+
+### Tests
+
+- **schedule**: cover CLI command + fix --all removal flag
 
 ## [1.7.0] - 2026-07-24
 
@@ -476,7 +489,8 @@ the preceding development history and its first tagged release:
   line-matching, git-mutation error wrapping, `pathspec` deprecation, subpath
   prune data-loss fix.
 
-[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v1.7.0...HEAD
+[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v1.8.0...HEAD
+[1.8.0]: https://github.com/will-roscoe/protonfs/compare/v1.7.0...v1.8.0
 [1.7.0]: https://github.com/will-roscoe/protonfs/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/will-roscoe/protonfs/compare/v1.5.2...v1.6.0
 [1.5.2]: https://github.com/will-roscoe/protonfs/compare/v1.5.1...v1.5.2
