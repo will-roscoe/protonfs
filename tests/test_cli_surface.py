@@ -40,6 +40,7 @@ EXPECTED_TOP_LEVEL_COMMANDS = frozenset(
         "doctor",
         "shell-init",
         "completions",
+        "schedule",
         "auth",
         "config",
         "trash",
@@ -68,6 +69,12 @@ EXPECTED_OPTIONS: dict[str, frozenset[str]] = {
     "doctor": frozenset({"--fix"}),
     "shell-init": frozenset(),
     "completions": frozenset({"--install", "--uninstall"}),
+    "schedule": frozenset(
+        {
+            "--list", "--add", "--uninstall", "-U", "--all", "--every", "--cron",
+            "--at", "--command", "--path", "--resolve", "--label", "--json",
+        }
+    ),
     "auth": frozenset(),
     "config.get": frozenset(),
     "config.set": frozenset({"--global", "--local"}),
@@ -91,6 +98,7 @@ EXPECTED_ARGUMENTS: dict[str, tuple[str, ...]] = {
     "doctor": (),
     "shell-init": (),
     "completions": ("shell",),
+    "schedule": (),
     "auth": ("action",),
     "config.get": ("key",),
     "config.set": ("key", "value"),

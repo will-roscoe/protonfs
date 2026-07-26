@@ -10,6 +10,7 @@ surface these commands expose is documented in ``docs/stability.rst``.
 
 from __future__ import annotations
 
+import contextlib
 import functools
 
 import click
@@ -144,6 +145,27 @@ def _normalize_paths(paths: tuple[str, ...]) -> list[str | None]:
     if not stripped:
         return [None]
     return [p for p in stripped if not any(r != p and p.startswith(f"{r}/") for r in stripped)]
+
+
+@contextlib.contextmanager
+def _resumable_on_interrupt(ctx, verb: str):
+    """Persist index progress and exit cleanly (130) when the user interrupts a transfer.
+
+    Used *inside* ``repo_lock`` so the flush happens while the lock is still held. Turns
+    Ctrl+C during a long push/pull from Click's bare ``Aborted!`` (progress that never
+    saved, no context) into a saved, resumable stop: files already uploaded-and-verified
+    are recorded, so a re-run resumes rather than restarting.
+
+    .. versionadded:: 1.8.0
+    """
+    try:
+        yield
+    except KeyboardInterrupt:
+        ctx.index.save()
+        click.echo(
+            f"\ninterrupted -- progress saved; re-run to resume the {verb}.", err=True
+        )
+        raise click.exceptions.Exit(130) from None
 
 
 def _accumulate_transfer(total, part) -> None:
@@ -446,7 +468,7 @@ def push(path: tuple[str, ...], resolve: str | None, dry_run: bool) -> None:
             "(push uploads local files -- check the path or your shell glob)"
         )
     result = TransferResult(0, 0, 0, [])
-    with repo_lock(ctx.root):
+    with repo_lock(ctx.root), _resumable_on_interrupt(ctx, "push"):
         for subpath in subpaths:
             _accumulate_transfer(result, push_files(ctx, subpath, resolve, dry_run))
     if result.transferred_items + result.skipped_items + result.failed_items == 0:
@@ -517,7 +539,7 @@ def pull(path: tuple[str, ...], resolve: str | None, dry_run: bool, refresh: boo
         click.echo("index empty; run `protonfs refresh` first (or `pull --refresh`)")
         return
     result = TransferResult(0, 0, 0, [])
-    with repo_lock(ctx.root):
+    with repo_lock(ctx.root), _resumable_on_interrupt(ctx, "pull"):
         for subpath in _normalize_paths(path):
             _accumulate_transfer(
                 result,
@@ -797,6 +819,83 @@ def completions(shell: str, install: bool, uninstall: bool) -> None:
         click.echo("Removed completion." if removed else "No completion was installed.")
     else:
         click.echo(completion_script(shell))
+
+
+@main.command("schedule")
+@click.option("--list", "list_", is_flag=True, help="List this machine's scheduled jobs.")
+@click.option("--add", "add", is_flag=True, help="Install a new job from the options below.")
+@click.option(
+    "--uninstall", "-U", "uninstall", metavar="ID",
+    help="Remove the job with this id (or --list index). Use --all to remove every job.",
+)
+@click.option("--all", "all_", is_flag=True, help="Remove every scheduled job.")
+@click.option("--every", metavar="SPEC", help="Cadence: hourly | daily | weekly | <N>h | <N>m.")
+@click.option("--cron", "cron_expr", metavar="EXPR", help="Raw 5-field cron expression.")
+@click.option("--at", metavar="HOURS", help="Run daily at these hours (0-23, comma-separated).")
+@click.option(
+    "--command", "command", type=click.Choice(["push", "pull", "sync"]), default="push",
+    show_default=True, help="What the job runs (sync = pull then push).",
+)
+@click.option("--path", "sched_path", metavar="SUBPATH", help="Scope the job to a subtree.")
+@click.option("--resolve", "sched_resolve", help="Conflict strategy passed to push/pull.")
+@click.option("--label", default="", help="Human label shown in --list.")
+@click.option("--json", "as_json", is_flag=True, help="With --list, emit JSON.")
+def schedule(
+    list_, add, uninstall, all_, every, cron_expr, at, command, sched_path,
+    sched_resolve, label, as_json,
+) -> None:
+    """Manage scheduled push/pull cron jobs for this repo.
+
+    Bare ``protonfs schedule`` lists the jobs (it never installs implicitly). ``--add``
+    installs a job (needs a cadence: ``--every``/``--cron``/``--at``) and prints its id;
+    ``--uninstall <id>`` (or ``-U``, accepting the id or a ``--list`` index) removes one,
+    ``--uninstall --all`` removes them all. Each job runs under ``flock`` with an absolute
+    ``proton-drive`` path and tuned timeouts, logging to ``.protonfs/schedule/<id>.log``.
+
+    .. versionadded:: 1.8.0
+    """
+    import json as _json
+    from pathlib import Path
+
+    from protonfs.commands import schedule as sched
+    from protonfs.context import load_context
+
+    if sum(bool(x) for x in (add, uninstall, list_)) > 1:
+        raise click.UsageError("--add, --uninstall, and --list are mutually exclusive.")
+
+    ctx = load_context()
+    repo = Path(ctx.root)
+    try:
+        if add:
+            job = sched.add_job(
+                repo, every=every, cron=cron_expr, at=at, command=command,
+                path=sched_path, resolve=sched_resolve, label=label,
+            )
+            click.echo(f"scheduled job {job.id}: {job.cron}  {job.command}")
+            click.echo(f"  wrapper: {job.wrapper_path}")
+            click.echo(f"  log:     {job.log_path}")
+        elif uninstall or all_:
+            if all_:
+                removed = sched.remove_all(repo)
+                click.echo(f"removed {len(removed)} job(s)." if removed else "no jobs to remove.")
+            else:
+                job = sched.remove_job(repo, uninstall)
+                click.echo(f"removed job {job.id}.")
+        else:
+            jobs = sched.list_jobs(repo)
+            if as_json:
+                from dataclasses import asdict
+
+                click.echo(_json.dumps([asdict(j) for j in jobs], indent=2))
+            elif not jobs:
+                click.echo("no scheduled jobs. Add one with `protonfs schedule --add --every ...`.")
+            else:
+                for i, j in enumerate(jobs, 1):
+                    lbl = f"  {j.label}" if j.label else ""
+                    scope = f" {j.path}" if j.path else ""
+                    click.echo(f"[{i}] {j.id}  {j.cron!r}  {j.command}{scope}{lbl}")
+    except sched.ScheduleError as exc:
+        raise click.UsageError(str(exc)) from exc
 
 
 @main.command()

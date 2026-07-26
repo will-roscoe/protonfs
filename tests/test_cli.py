@@ -425,3 +425,60 @@ def test_cli_global_flag_names_match_group_options() -> None:
     assert GLOBAL_FLAG_NAMES <= group_opts
     # And the group exposes exactly these long options plus -v/--verbose and --version.
     assert group_opts == GLOBAL_FLAG_NAMES | {"-v", "--verbose", "--version"}
+
+
+def test_push_interrupt_saves_progress_and_exits_130(tmp_path, monkeypatch, make_fake_drive):
+    # Ctrl+C during a push must persist the index (files already synced stay recorded so a
+    # re-run resumes), print a resumable message, and exit 130 -- not Click's bare Aborted!.
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.drive = make_fake_drive()
+    monkeypatch.setattr("protonfs.context.load_context", lambda *a, **k: ctx)
+
+    def fake_push_files(ctx, subpath, resolve, dry_run, reporter=None):
+        # Simulate one file getting indexed, then the user interrupting mid-run.
+        ctx.index.set(
+            "dump_0001",
+            IndexEntry(
+                size=4, mtime=0.0, sha256="x", sha1="y",
+                remote_path="/my-files/test/dump_0001", origin_device="d",
+                local_state="present", last_synced="t",
+            ),
+        )
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("protonfs.commands.push.push", fake_push_files)
+
+    result = CliRunner().invoke(main, ["push"])
+
+    assert result.exit_code == 130
+    assert "interrupted" in result.output.lower()
+    # The in-memory index change was flushed to disk, so a re-run resumes.
+    from protonfs.index import IndexStore
+
+    assert IndexStore(tmp_path).get("dump_0001") is not None
+
+
+def test_pull_interrupt_exits_130(tmp_path, monkeypatch, make_fake_drive):
+    # Same resumable-interrupt contract for pull.
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.drive = make_fake_drive()
+    ctx.index.set(
+        "seed",
+        IndexEntry(
+            size=1, mtime=0.0, sha256="", sha1="", remote_path="/my-files/test/seed",
+            origin_device="d", local_state="metadata-only", last_synced="t",
+        ),
+    )
+    monkeypatch.setattr("protonfs.context.load_context", lambda *a, **k: ctx)
+
+    def fake_pull_files(ctx, subpath, resolve, dry_run, refresh=False, reporter=None):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("protonfs.commands.pull.pull", fake_pull_files)
+
+    result = CliRunner().invoke(main, ["pull"])
+
+    assert result.exit_code == 130
+    assert "interrupted" in result.output.lower()

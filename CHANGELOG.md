@@ -8,6 +8,31 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 
 ## [Unreleased]
 
+### Features
+
+- **schedule**: new `protonfs schedule` command to install/list/remove cron jobs that run
+  push/pull on a schedule. `--add --every hourly|daily|weekly|<N>h|<N>m` (or `--cron`/
+  `--at`) installs a job (with `--command push|pull|sync`, `--path`, `--resolve`, `--label`)
+  and prints a short id; `--uninstall <id>` (or a `--list` index, `-U`) removes one,
+  `--all` removes all; bare `schedule` lists them. Each job runs a generated
+  wrapper under `flock`, with an absolute `proton-drive` path (cron has no useful PATH) and
+  tuned list/transfer timeouts, logging to `.protonfs/schedule/<id>.log` — the hard-won
+  requirements for reliable unattended runs, baked in.
+
+- **push/pull**: persistent per-file hash cache (`.protonfs/hashcache.json`, gitignored).
+  Under `low_io`, a file whose size+mtime matches a cached hash is not re-hashed even when
+  it is not in the sync index — so a resumed or repeated push no longer re-hashes the whole
+  tree (the index-based reuse only covered already-synced files). The cache is written on
+  every real hash and persisted periodically, so a scan killed partway keeps most of its
+  work. A stale/corrupt/wrong-schema cache is a miss, never wrong or fatal.
+- **push/pull**: per-file hashing progress during the local scan (shown at `-v`), so the
+  otherwise-silent multi-minute pre-upload hash of a large tree shows movement instead of
+  appearing hung.
+- **push/pull**: Ctrl+C during a transfer now saves index progress and exits cleanly
+  (code 130) with a resumable message, instead of Click's bare `Aborted!` that discarded
+  in-flight progress. Files already uploaded-and-verified stay recorded, so a re-run
+  resumes rather than restarting.
+
 ## [1.7.0] - 2026-07-24
 
 ### Features

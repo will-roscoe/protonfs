@@ -690,6 +690,35 @@ Examples::
     protonfs completions zsh --install     # install + wire into ~/.zshrc
     protonfs completions fish --uninstall
 
+.. _cmd-schedule:
+
+schedule
+--------
+.. click:: protonfs.cli:schedule
+   :prog: protonfs schedule
+
+Installs, lists, and removes cron jobs that run :ref:`push <cmd-push>`/
+:ref:`pull <cmd-pull>` on a schedule. Bare ``protonfs schedule`` lists this machine's
+jobs (it never installs implicitly); ``--add`` with a cadence
+(``--every hourly|daily|weekly|<N>h|<N>m``, or a raw ``--cron`` expression, or
+``--at`` hours) installs one and prints a short id; ``--uninstall <id>`` (``-U``, also
+accepting a ``--list`` index) removes it, and ``--all`` removes them all.
+
+Each job runs a generated wrapper under ``flock`` (no overlapping runs), with an
+absolute ``proton-drive`` path (cron has no useful ``PATH``) and tuned list/transfer
+timeouts, logging to ``.protonfs/schedule/<id>.log``. Jobs are recorded per-device in
+``.protonfs/schedule.local.json`` (gitignored). ``--command sync`` runs pull then push.
+
+.. versionadded:: 1.8.0
+
+Examples::
+
+    protonfs schedule --add --every daily --at 1,3,5   # nightly at 01/03/05h
+    protonfs schedule --add --cron "0 */6 * * *" --command sync
+    protonfs schedule --list
+    protonfs schedule --uninstall a1d3ae
+    protonfs schedule --all                            # remove every job
+
 .. _cmd-auth:
 
 auth

@@ -166,7 +166,13 @@ def push(
     reporter.phase("scanning local", subpath=subpath or ".")
     ignore = IgnoreMatcher.from_file(ctx.root)
     scan_root = Path(subpath) if subpath else Path(".")
-    local = scan(ctx.root, scan_root, ignore, ctx.index, low_io=ctx.config.defaults.low_io)
+    from protonfs.hashcache import HashCache
+
+    local = scan(
+        ctx.root, scan_root, ignore, ctx.index,
+        low_io=ctx.config.defaults.low_io, reporter=reporter,
+        hash_cache=HashCache(ctx.root),
+    )
     diff_entries = classify(local, ctx.index)
 
     # Push uploads every local change. Without a remote view (classify is called with no
