@@ -10,6 +10,12 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 
 ### Features
 
+- **push/pull**: persistent per-file hash cache (`.protonfs/hashcache.json`, gitignored).
+  Under `low_io`, a file whose size+mtime matches a cached hash is not re-hashed even when
+  it is not in the sync index — so a resumed or repeated push no longer re-hashes the whole
+  tree (the index-based reuse only covered already-synced files). The cache is written on
+  every real hash and persisted periodically, so a scan killed partway keeps most of its
+  work. A stale/corrupt/wrong-schema cache is a miss, never wrong or fatal.
 - **push/pull**: per-file hashing progress during the local scan (shown at `-v`), so the
   otherwise-silent multi-minute pre-upload hash of a large tree shows movement instead of
   appearing hung.
