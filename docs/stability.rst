@@ -202,6 +202,13 @@ flag/argument name; these names, not just their presence, are frozen.
        (choice: ``bash``/``zsh``/``fish``). Added in 1.5.0.
      - ``0`` success; ``2`` usage error (unknown shell, or both ``--install`` and
        ``--uninstall``).
+   * - ``schedule``
+     - Install/list/remove cron jobs running push/pull on a schedule. ``--add`` (with
+       ``--every``/``--cron``/``--at``, ``--command``, ``--path``, ``--resolve``,
+       ``--label``); ``--uninstall <id|index>`` (``-U``), ``--uninstall --all``; bare or
+       ``--list`` lists. Added in 1.8.0.
+     - ``0`` success; ``2`` usage error (bad cadence, unknown id, not a repo, or
+       conflicting mode flags).
    * - ``auth login`` / ``auth logout``
      - Passthrough to ``proton-drive auth <action>`` with inherited stdio. Argument:
        ``ACTION`` (choice: ``login``/``logout``/``status``).
