@@ -14,7 +14,7 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
   push/pull on a schedule. `--add --every hourly|daily|weekly|<N>h|<N>m` (or `--cron`/
   `--at`) installs a job (with `--command push|pull|sync`, `--path`, `--resolve`, `--label`)
   and prints a short id; `--uninstall <id>` (or a `--list` index, `-U`) removes one,
-  `--uninstall --all` removes all; bare `schedule` lists them. Each job runs a generated
+  `--all` removes all; bare `schedule` lists them. Each job runs a generated
   wrapper under `flock`, with an absolute `proton-drive` path (cron has no useful PATH) and
   tuned list/transfer timeouts, logging to `.protonfs/schedule/<id>.log` — the hard-won
   requirements for reliable unattended runs, baked in.

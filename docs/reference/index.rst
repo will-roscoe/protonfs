@@ -702,7 +702,7 @@ Installs, lists, and removes cron jobs that run :ref:`push <cmd-push>`/
 jobs (it never installs implicitly); ``--add`` with a cadence
 (``--every hourly|daily|weekly|<N>h|<N>m``, or a raw ``--cron`` expression, or
 ``--at`` hours) installs one and prints a short id; ``--uninstall <id>`` (``-U``, also
-accepting a ``--list`` index) removes it, and ``--uninstall --all`` removes them all.
+accepting a ``--list`` index) removes it, and ``--all`` removes them all.
 
 Each job runs a generated wrapper under ``flock`` (no overlapping runs), with an
 absolute ``proton-drive`` path (cron has no useful ``PATH``) and tuned list/transfer
@@ -717,7 +717,7 @@ Examples::
     protonfs schedule --add --cron "0 */6 * * *" --command sync
     protonfs schedule --list
     protonfs schedule --uninstall a1d3ae
-    protonfs schedule --uninstall --all
+    protonfs schedule --all                            # remove every job
 
 .. _cmd-auth:
 

@@ -826,9 +826,9 @@ def completions(shell: str, install: bool, uninstall: bool) -> None:
 @click.option("--add", "add", is_flag=True, help="Install a new job from the options below.")
 @click.option(
     "--uninstall", "-U", "uninstall", metavar="ID",
-    help="Remove the job with this id (or --list index). Combine with --all for every job.",
+    help="Remove the job with this id (or --list index). Use --all to remove every job.",
 )
-@click.option("--all", "all_", is_flag=True, help="With --uninstall, remove every scheduled job.")
+@click.option("--all", "all_", is_flag=True, help="Remove every scheduled job.")
 @click.option("--every", metavar="SPEC", help="Cadence: hourly | daily | weekly | <N>h | <N>m.")
 @click.option("--cron", "cron_expr", metavar="EXPR", help="Raw 5-field cron expression.")
 @click.option("--at", metavar="HOURS", help="Run daily at these hours (0-23, comma-separated).")

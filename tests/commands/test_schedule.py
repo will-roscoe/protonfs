@@ -171,3 +171,137 @@ def test_remove_all(repo: Path) -> None:
     assert len(removed) == 2
     assert sched.list_jobs(repo) == []
     assert sched.MARKER not in cron.text
+
+
+# --- module edge cases -----------------------------------------------------------------
+
+
+def test_add_job_rejects_unknown_command(repo: Path) -> None:
+    with pytest.raises(sched.ScheduleError, match="unknown --command"):
+        sched.add_job(repo, every="daily", command="bogus", runner=FakeCrontab())
+
+
+def test_add_job_errors_when_crontab_missing(tmp_path: Path, monkeypatch) -> None:
+    from protonfs.config import init_config
+
+    init_config(tmp_path, "/my-files/test")
+    monkeypatch.setattr(
+        "protonfs.commands.schedule.shutil.which",
+        lambda name: None if name == "crontab" else f"/usr/bin/{name}",
+    )
+    with pytest.raises(sched.ScheduleError, match="crontab.*unavailable"):
+        sched.add_job(tmp_path, every="daily", runner=FakeCrontab())
+
+
+def test_crontab_write_failure_is_surfaced(repo: Path) -> None:
+    import subprocess as _sp
+
+    def failing(args, stdin=None):
+        if args == ["crontab", "-l"]:
+            return _sp.CompletedProcess(args, 1, stdout="", stderr="")
+        return _sp.CompletedProcess(args, 1, stdout="", stderr="permission denied")
+
+    with pytest.raises(sched.ScheduleError, match="crontab.*failed"):
+        sched.add_job(repo, every="daily", runner=failing)
+
+
+def test_corrupt_manifest_is_treated_as_empty(repo: Path) -> None:
+    (repo / ".protonfs" / sched.MANIFEST_FILE_NAME).write_text("{ not json")
+    assert sched.list_jobs(repo) == []
+
+
+# --- CLI wiring ------------------------------------------------------------------------
+
+
+class _FakeRun:
+    """Fake `subprocess.run` for the crontab binary, so the CLI path needs no real cron."""
+
+    def __init__(self) -> None:
+        self.text = ""
+
+    def __call__(self, args, input=None, capture_output=None, text=None, check=None):
+        import subprocess as _sp
+
+        if args == ["crontab", "-l"]:
+            return _sp.CompletedProcess(args, 0 if self.text else 1, stdout=self.text, stderr="")
+        if args == ["crontab", "-"]:
+            self.text = input or ""
+            return _sp.CompletedProcess(args, 0, stdout="", stderr="")
+        return _sp.CompletedProcess(args, 1, stdout="", stderr="unexpected")
+
+
+@pytest.fixture
+def cli_repo(tmp_path: Path, monkeypatch):
+    from protonfs.config import init_config
+    from protonfs.context import load_context
+
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    monkeypatch.setattr("protonfs.context.load_context", lambda *a, **k: ctx)
+    monkeypatch.setattr(
+        "protonfs.commands.schedule.shutil.which", lambda name: f"/usr/bin/{name}"
+    )
+    monkeypatch.setattr("protonfs.commands.schedule.subprocess.run", _FakeRun())
+    return tmp_path
+
+
+def test_cli_schedule_add_list_uninstall(cli_repo: Path) -> None:
+    from click.testing import CliRunner
+
+    from protonfs.cli import main
+
+    runner = CliRunner()
+    add = runner.invoke(main, ["schedule", "--add", "--every", "daily", "--command", "push"])
+    assert add.exit_code == 0, add.output
+    assert "scheduled job" in add.output
+    job_id = add.output.split("scheduled job", 1)[1].split(":", 1)[0].strip()
+
+    listed = runner.invoke(main, ["schedule", "--list"])
+    assert listed.exit_code == 0 and job_id in listed.output
+
+    bare = runner.invoke(main, ["schedule"])  # bare == list
+    assert bare.exit_code == 0 and job_id in bare.output
+
+    rm = runner.invoke(main, ["schedule", "-U", job_id])
+    assert rm.exit_code == 0 and "removed" in rm.output
+    assert job_id not in runner.invoke(main, ["schedule", "--list"]).output
+
+
+def test_cli_schedule_add_without_cadence_is_usage_error(cli_repo: Path) -> None:
+    from click.testing import CliRunner
+
+    from protonfs.cli import main
+
+    result = CliRunner().invoke(main, ["schedule", "--add"])
+    assert result.exit_code == 2  # no --every/--cron/--at
+
+
+def test_cli_schedule_mode_flags_are_mutually_exclusive(cli_repo: Path) -> None:
+    from click.testing import CliRunner
+
+    from protonfs.cli import main
+
+    result = CliRunner().invoke(main, ["schedule", "--add", "--list"])
+    assert result.exit_code == 2
+    assert "mutually exclusive" in result.output
+
+
+def test_cli_schedule_list_json_empty(cli_repo: Path) -> None:
+    from click.testing import CliRunner
+
+    from protonfs.cli import main
+
+    result = CliRunner().invoke(main, ["schedule", "--list", "--json"])
+    assert result.exit_code == 0 and result.output.strip() == "[]"
+
+
+def test_cli_schedule_uninstall_all(cli_repo: Path) -> None:
+    from click.testing import CliRunner
+
+    from protonfs.cli import main
+
+    runner = CliRunner()
+    runner.invoke(main, ["schedule", "--add", "--every", "hourly"])
+    runner.invoke(main, ["schedule", "--add", "--cron", "0 2 * * *"])
+    out = runner.invoke(main, ["schedule", "--all"])
+    assert out.exit_code == 0 and "removed 2" in out.output
