@@ -22,6 +22,10 @@ from protonfs.lfs import is_pointer_stub
 # heuristic `lfs.find_pointer_stubs` already uses: real pointer files are ~130 bytes).
 POINTER_STUB_MAX_SIZE = 200
 
+# Persist the hash cache every this many freshly-hashed files, so a scan killed partway
+# keeps most of its work (the whole cache is rewritten each save, so don't do it per-file).
+_HASHCACHE_SAVE_EVERY = 250
+
 
 @dataclass
 class ScanEntry:
@@ -82,6 +86,7 @@ def scan(
     index: IndexStore,
     low_io: bool = False,
     reporter=None,
+    hash_cache=None,
 ) -> dict[str, ScanEntry]:
     """Walk ``root / subpath`` and build a :class:`ScanEntry` for every synced file.
 
@@ -107,8 +112,15 @@ def scan(
        ``subpath`` may now name a single file, not just a directory or ``.``; a file
        subpath scans exactly that file. A nonexistent subpath still returns ``{}``.
 
+    :param hash_cache: optional :class:`~protonfs.hashcache.HashCache`; when set and
+        ``low_io`` is on, a file whose ``(size, mtime)`` matches a cached hash is not
+        re-hashed even if it is not in the index (so a re-run/resumed scan skips work the
+        index-based reuse misses). Freshly-computed hashes are written back to the cache
+        (regardless of ``low_io``) and the cache is persisted periodically + at the end.
+
     .. versionchanged:: 1.8.0
-       Added the optional ``reporter`` for per-file hashing progress.
+       Added the optional ``reporter`` for per-file hashing progress, and the optional
+       ``hash_cache`` for persistent, index-independent hash reuse.
     """
     entries: dict[str, ScanEntry] = {}
     base = root / subpath if subpath != Path(".") else root
@@ -141,12 +153,26 @@ def scan(
         stat = file_path.stat()
         size = stat.st_size
         mtime = stat.st_mtime
-        cached = index.get(rel_path)
-        if low_io and cached is not None and cached.size == size and cached.mtime == mtime:
-            sha256 = cached.sha256
-            sha1 = cached.sha1
-        else:
+        sha256 = sha1 = None
+        if low_io:
+            # First tier: the sync index (already-synced files). Second tier: the
+            # persistent hash cache (covers not-yet-synced files a re-run would re-hash).
+            cached = index.get(rel_path)
+            if cached is not None and cached.size == size and cached.mtime == mtime:
+                sha256, sha1 = cached.sha256, cached.sha1
+            elif hash_cache is not None:
+                hit = hash_cache.get(rel_path, size, mtime)
+                if hit is not None:
+                    sha256, sha1 = hit
+        if sha256 is None:
             sha256, sha1 = hash_file_digests(file_path)
+            # Record the fresh hash for future runs (safe regardless of low_io: it is the
+            # true current content hash). Persisted periodically below so a killed scan
+            # keeps most of its work.
+            if hash_cache is not None:
+                hash_cache.set(rel_path, size, mtime, sha256, sha1)
+                if i % _HASHCACHE_SAVE_EVERY == 0:
+                    hash_cache.save()
         # #32: a small file may be an un-smudged git-LFS pointer stub rather than real
         # content. We still hash it as today -- classify() short-circuits on the flag so
         # the stub's hash is never mistaken for the tracked file's content.
@@ -159,4 +185,6 @@ def scan(
             sha1=sha1,
             is_lfs_pointer=is_lfs_pointer,
         )
+    if hash_cache is not None:
+        hash_cache.save()
     return entries

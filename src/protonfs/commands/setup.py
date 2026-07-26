@@ -128,6 +128,7 @@ _PROTONFS_GITIGNORE = (
     "# Managed by `protonfs setup` (#20, #21). Local-only, per-device state -- never commit\n"
     "# these; config.json, ignore, and include ARE committed (the shared sync contract).\n"
     "index.json\n"
+    "hashcache.json\n"
     "refresh-state.json\n"
     "config.local.json\n"
     "events.log\n"

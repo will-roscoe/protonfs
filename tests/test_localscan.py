@@ -258,3 +258,62 @@ def test_scan_without_reporter_is_silent_and_unchanged(tmp_path: Path) -> None:
     result = scan(tmp_path, Path("."), ignore, index)
 
     assert set(result) == {"f"}
+
+
+def test_scan_reuses_hash_cache_under_low_io_for_unindexed_file(tmp_path: Path) -> None:
+    # The hash cache covers files NOT in the sync index (which low_io's index reuse
+    # misses) -- a resumed/repeated scan must not re-hash them. Seed a deliberately WRONG
+    # cached hash and prove scan trusts it (low_io) rather than recomputing.
+    from protonfs.hashcache import HashCache
+
+    f = tmp_path / "dump_0001"
+    f.write_bytes(b"data")
+    st = f.stat()
+    (tmp_path / ".protonfs").mkdir()
+    hc = HashCache(tmp_path)
+    hc.set("dump_0001", st.st_size, st.st_mtime, "CACHED256", "CACHED1")
+    index = IndexStore(tmp_path)  # empty index -> file is NOT indexed
+    ignore = IgnoreMatcher([])
+
+    result = scan(tmp_path, Path("."), ignore, index, low_io=True, hash_cache=hc)
+
+    assert result["dump_0001"].sha256 == "CACHED256"  # reused, not recomputed
+    assert result["dump_0001"].sha1 == "CACHED1"
+
+
+def test_scan_populates_hash_cache_on_a_fresh_hash(tmp_path: Path) -> None:
+    from protonfs.hashcache import HashCache
+
+    f = tmp_path / "dump_0001"
+    f.write_bytes(b"data")
+    st = f.stat()
+    (tmp_path / ".protonfs").mkdir()
+    hc = HashCache(tmp_path)
+    index = IndexStore(tmp_path)
+    ignore = IgnoreMatcher([])
+
+    scan(tmp_path, Path("."), ignore, index, low_io=True, hash_cache=hc)
+
+    # the real hash was written to the cache and persisted
+    assert hc.get("dump_0001", st.st_size, st.st_mtime) == (
+        hashlib.sha256(b"data").hexdigest(),
+        hashlib.sha1(b"data").hexdigest(),
+    )
+
+
+def test_scan_ignores_hash_cache_without_low_io(tmp_path: Path) -> None:
+    # low_io=False means paranoid full rehash: the cache is written but never read.
+    from protonfs.hashcache import HashCache
+
+    f = tmp_path / "dump_0001"
+    f.write_bytes(b"data")
+    st = f.stat()
+    (tmp_path / ".protonfs").mkdir()
+    hc = HashCache(tmp_path)
+    hc.set("dump_0001", st.st_size, st.st_mtime, "STALE", "STALE1")
+    index = IndexStore(tmp_path)
+    ignore = IgnoreMatcher([])
+
+    result = scan(tmp_path, Path("."), ignore, index, low_io=False, hash_cache=hc)
+
+    assert result["dump_0001"].sha256 == hashlib.sha256(b"data").hexdigest()  # recomputed
