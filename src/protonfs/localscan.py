@@ -81,6 +81,7 @@ def scan(
     ignore: IgnoreMatcher,
     index: IndexStore,
     low_io: bool = False,
+    reporter=None,
 ) -> dict[str, ScanEntry]:
     """Walk ``root / subpath`` and build a :class:`ScanEntry` for every synced file.
 
@@ -94,6 +95,9 @@ def scan(
         rehashing it, whenever the index has an entry with matching ``size`` and
         ``mtime``. Trades a small risk of missing a same-size/same-mtime content change
         for avoiding a full read of every file on each scan.
+    :param reporter: optional :class:`~protonfs.reporting.Reporter`; when given, per-file
+        hashing progress is narrated so a long scan (the pre-upload hash of a large tree,
+        which is otherwise silent for minutes) shows movement at ``-v``.
     :returns: Dict of :class:`ScanEntry` keyed by repo-relative path. The ``.protonfs``
         control directory and any path matched by ``ignore`` are excluded.
 
@@ -102,6 +106,9 @@ def scan(
     .. versionchanged:: 1.5.2
        ``subpath`` may now name a single file, not just a directory or ``.``; a file
        subpath scans exactly that file. A nonexistent subpath still returns ``{}``.
+
+    .. versionchanged:: 1.8.0
+       Added the optional ``reporter`` for per-file hashing progress.
     """
     entries: dict[str, ScanEntry] = {}
     base = root / subpath if subpath != Path(".") else root
@@ -111,6 +118,10 @@ def scan(
     # and rglobs to nothing, so scan() still returns {} for it (pull/status/ls rely on
     # that; push validates existence at the CLI layer).
     candidates = [base] if base.is_file() else sorted(base.rglob("*"))
+    # Filter to the files we will actually hash first (drop non-files, the .protonfs
+    # control dir, and ignored paths), computing each rel_path once. This gives an
+    # accurate denominator for hashing progress -- skipped/ignored files are not counted.
+    eligible: list[tuple[Path, str]] = []
     for file_path in candidates:
         if not file_path.is_file():
             continue
@@ -119,6 +130,14 @@ def scan(
             continue
         if ignore.matches(rel_path):
             continue
+        eligible.append((file_path, rel_path))
+    total = len(eligible)
+    for i, (file_path, rel_path) in enumerate(eligible, 1):
+        # Narrate progress as we walk the file list -- the hash pass below is the slow,
+        # otherwise-silent part of a large scan. Rendering is verbosity-gated + throttled
+        # by the Reporter, so this is quiet at default verbosity and cheap at -v.
+        if reporter is not None:
+            reporter.progress(i, total)
         stat = file_path.stat()
         size = stat.st_size
         mtime = stat.st_mtime

@@ -406,7 +406,10 @@ def test_push_reports_progress_per_batch(
     rep = recording_reporter_cls()
     result = push(ctx, None, None, dry_run=False, reporter=rep)
 
-    progress_calls = [c[1:] for c in rep.calls if c[0] == "progress"]
+    # scan() also narrates progress now, so isolate the UPLOAD cadence: progress calls
+    # after the "uploading" phase marker.
+    up = rep.calls.index(("phase", "uploading"))
+    progress_calls = [c[1:] for c in rep.calls[up:] if c[0] == "progress"]
     assert result.transferred_items == 3
     # monotonic, ends with a forced final repeat at done == total
     assert progress_calls == [(1, 3), (2, 3), (3, 3), (3, 3)]

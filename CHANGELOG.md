@@ -10,6 +10,9 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 
 ### Features
 
+- **push/pull**: per-file hashing progress during the local scan (shown at `-v`), so the
+  otherwise-silent multi-minute pre-upload hash of a large tree shows movement instead of
+  appearing hung.
 - **push/pull**: Ctrl+C during a transfer now saves index progress and exits cleanly
   (code 130) with a resumable message, instead of Click's bare `Aborted!` that discarded
   in-flight progress. Files already uploaded-and-verified stay recorded, so a re-run
