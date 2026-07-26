@@ -10,6 +10,15 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 
 ### Features
 
+- **schedule**: new `protonfs schedule` command to install/list/remove cron jobs that run
+  push/pull on a schedule. `--add --every hourly|daily|weekly|<N>h|<N>m` (or `--cron`/
+  `--at`) installs a job (with `--command push|pull|sync`, `--path`, `--resolve`, `--label`)
+  and prints a short id; `--uninstall <id>` (or a `--list` index, `-U`) removes one,
+  `--uninstall --all` removes all; bare `schedule` lists them. Each job runs a generated
+  wrapper under `flock`, with an absolute `proton-drive` path (cron has no useful PATH) and
+  tuned list/transfer timeouts, logging to `.protonfs/schedule/<id>.log` — the hard-won
+  requirements for reliable unattended runs, baked in.
+
 - **push/pull**: persistent per-file hash cache (`.protonfs/hashcache.json`, gitignored).
   Under `low_io`, a file whose size+mtime matches a cached hash is not re-hashed even when
   it is not in the sync index — so a resumed or repeated push no longer re-hashes the whole
