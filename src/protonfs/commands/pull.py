@@ -170,7 +170,10 @@ def pull(
     reporter.phase("scanning local", subpath=subpath or ".")
     ignore = IgnoreMatcher.from_file(ctx.root)
     scan_root = Path(subpath) if subpath else Path(".")
-    local = scan(ctx.root, scan_root, ignore, ctx.index, low_io=ctx.config.defaults.low_io)
+    local = scan(
+        ctx.root, scan_root, ignore, ctx.index,
+        low_io=ctx.config.defaults.low_io, reporter=reporter,
+    )
     if refresh:
         from protonfs.commands.refresh import refresh as refresh_index
 

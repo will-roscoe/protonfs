@@ -230,3 +230,31 @@ def test_scan_file_subpath_that_is_lfs_pointer_stub_is_flagged(tmp_path: Path) -
     result = scan(tmp_path, Path("big.bin"), ignore, index, low_io=False)
 
     assert result["big.bin"].is_lfs_pointer is True
+
+
+def test_scan_narrates_progress_per_file(tmp_path: Path, recording_reporter_cls) -> None:
+    # A large scan hashes for minutes with no output otherwise; scan() now narrates
+    # per-file progress through the reporter so -v shows movement.
+    (tmp_path / "run1").mkdir()
+    for n in (1, 2, 3):
+        (tmp_path / "run1" / f"dump_000{n}").write_bytes(b"data")
+    index = IndexStore(tmp_path)
+    ignore = IgnoreMatcher([])
+    rep = recording_reporter_cls()
+
+    scan(tmp_path, Path("."), ignore, index, low_io=False, reporter=rep)
+
+    progress = [c for c in rep.calls if c[0] == "progress"]
+    assert len(progress) == 3  # one per file
+    assert progress[-1] == ("progress", 3, 3)  # ends at total
+
+
+def test_scan_without_reporter_is_silent_and_unchanged(tmp_path: Path) -> None:
+    # Backward-compat: the default (no reporter) narrates nothing and returns the same set.
+    (tmp_path / "f").write_bytes(b"x")
+    index = IndexStore(tmp_path)
+    ignore = IgnoreMatcher([])
+
+    result = scan(tmp_path, Path("."), ignore, index)
+
+    assert set(result) == {"f"}
