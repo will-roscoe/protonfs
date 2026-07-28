@@ -87,11 +87,12 @@ def test_ensure_pass_store_generates_key_then_inits(home, monkeypatch):
     result = cs.ensure_pass_store(runner=fake)
     assert result.ready is True
     assert cs.pass_store_initialized() is True
-    # a second call is a no-op (store already initialized)
+    # a second call is a no-op (store already initialized): it returns before touching
+    # the runner at all, so no gpg/pass command is issued.
     fake2 = FakePass(has_key=True)
     result2 = cs.ensure_pass_store(runner=fake2)
     assert result2.ready is True
-    assert not any(c[0] == "gpg" and "--generate-key" in c for c in fake2.calls)
+    assert fake2.calls == []
 
 
 def test_ensure_pass_store_missing_tools_warns(home, monkeypatch):
