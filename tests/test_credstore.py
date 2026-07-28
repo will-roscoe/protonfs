@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import subprocess
+from dataclasses import dataclass
+
 import pytest
 
 from protonfs import credstore as cs
@@ -28,3 +31,71 @@ def test_store_choice_rejects_garbage(home):
     cs.store_choice_file().parent.mkdir(parents=True, exist_ok=True)
     cs.store_choice_file().write_text("nonsense\n")
     assert cs.read_store_choice() is None  # unknown value is treated as unset
+
+
+@dataclass
+class FakeCompleted:
+    returncode: int = 0
+    stdout: str = ""
+    stderr: str = ""
+
+
+class FakePass:
+    """Scripts gpg/pass so ensure_pass_store can be exercised without real tools.
+
+    Tracks whether a key exists and whether the store is initialized so the
+    idempotent branches (already-ready, needs-keygen, needs-init) are all reachable.
+    """
+
+    def __init__(self, *, has_key=False):
+        self.has_key = has_key
+        self.calls: list[list[str]] = []
+
+    def __call__(self, cmd, env, stdin=None):
+        self.calls.append(cmd)
+        if cmd[0] == "gpg":
+            if "--list-secret-keys" in cmd:
+                if not self.has_key:
+                    return FakeCompleted(returncode=2, stderr="no secret keys")
+                return FakeCompleted(stdout="sec:...\nfpr:::::::::ABCDEF0123456789:\n")
+            if "--quick-generate-key" in cmd or "--generate-key" in cmd or "--gen-key" in cmd:
+                self.has_key = True
+                return FakeCompleted()
+        if cmd[0] == "pass" and cmd[1] == "init":
+            # `pass init` writes .gpg-id; emulate that side effect.
+            store = env["PASSWORD_STORE_DIR"]
+            from pathlib import Path as _P
+            _P(store).mkdir(parents=True, exist_ok=True)
+            (_P(store) / ".gpg-id").write_text(cmd[2])
+            return FakeCompleted()
+        return FakeCompleted()
+
+
+def test_pass_env_fills_only_unset(home):
+    out = cs.pass_env({"PATH": "/usr/bin"})
+    assert out[cs.STORE_ENV] == "pass"
+    assert out["PASSWORD_STORE_DIR"] == str(cs.password_store_dir())
+    assert out["GNUPGHOME"] == str(cs.gnupg_home())
+    # a user-set PASSWORD_STORE_DIR is preserved
+    out2 = cs.pass_env({"PASSWORD_STORE_DIR": "/custom"})
+    assert out2["PASSWORD_STORE_DIR"] == "/custom"
+
+
+def test_ensure_pass_store_generates_key_then_inits(home, monkeypatch):
+    monkeypatch.setattr(cs.shutil, "which", lambda tool: f"/usr/bin/{tool}")
+    fake = FakePass(has_key=False)
+    result = cs.ensure_pass_store(runner=fake)
+    assert result.ready is True
+    assert cs.pass_store_initialized() is True
+    # a second call is a no-op (store already initialized)
+    fake2 = FakePass(has_key=True)
+    result2 = cs.ensure_pass_store(runner=fake2)
+    assert result2.ready is True
+    assert not any(c[0] == "gpg" and "--generate-key" in c for c in fake2.calls)
+
+
+def test_ensure_pass_store_missing_tools_warns(home, monkeypatch):
+    monkeypatch.setattr(cs.shutil, "which", lambda tool: None)
+    result = cs.ensure_pass_store(runner=FakePass())
+    assert result.ready is False
+    assert any("pass" in w or "gpg" in w for w in result.warnings)
