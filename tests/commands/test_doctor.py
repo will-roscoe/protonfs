@@ -385,3 +385,42 @@ def test_shell_exports_emits_bus_line_when_set(monkeypatch: pytest.MonkeyPatch) 
 def test_shell_exports_empty_when_no_bus(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(doctor_mod, "drive_env", lambda: {})
     assert shell_exports() == []
+
+
+# --- credentials store (pass fallback) -------------------------------------------------
+
+
+def test_doctor_reports_pass_store_when_active(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from protonfs import credstore, secretservice
+
+    monkeypatch.setattr(secretservice.Path, "home", staticmethod(lambda: tmp_path))
+    monkeypatch.setattr(credstore, "active_store", lambda env=None: ("pass", "sticky"))
+    monkeypatch.setattr(credstore, "pass_tools_present", lambda: True)
+    monkeypatch.setattr(credstore, "pass_store_initialized", lambda: True)
+    monkeypatch.setattr(credstore, "probe_pass_store", lambda runner=None: (True, "round-trip ok"))
+
+    checks = run_doctor(fix=False, root=tmp_path)
+    names = [c.name for c in checks]
+    assert "credentials store" in names
+    assert not any(c.name == "secret service" for c in checks)  # suppressed for pass
+
+
+def test_doctor_keychain_store_runs_secret_service_checks(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, stub_currency
+) -> None:
+    from protonfs import credstore, secretservice
+
+    monkeypatch.setattr(secretservice.Path, "home", staticmethod(lambda: tmp_path))
+    monkeypatch.delenv(DISABLE_ENV, raising=False)
+    monkeypatch.setattr(doctor_mod, "DriveClient", lambda: FakeDoctorDrive())
+    monkeypatch.setattr(doctor_mod, "is_linux", lambda: True)
+    monkeypatch.setattr(doctor_mod, "resolve_bus", lambda env: ("unix:abstract=/tmp/bus", "found"))
+    monkeypatch.setattr(doctor_mod, "secret_service_state", lambda env: "ready")
+    monkeypatch.setattr(doctor_mod, "probe_secret_service", lambda env: (True, "read+write ok"))
+    monkeypatch.setattr(credstore, "active_store", lambda env=None: ("keychain", "auto-default"))
+
+    checks = _checks_by_name(run_doctor(fix=False, root=tmp_path))
+    assert checks["credentials store"].ok
+    assert checks["secret service"].ok

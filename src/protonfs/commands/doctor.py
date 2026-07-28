@@ -252,6 +252,41 @@ def run_doctor(fix: bool = False, root: Path | None = None) -> list[Check]:
         checks.append(upstream_currency_check())
     checks.extend(repo_currency_checks(root))
 
+    from protonfs import credstore
+
+    store, how = credstore.active_store()
+    checks.append(Check("credentials store", True, f"{store} ({how})"))
+
+    if store == credstore.PASS:
+        tools_ok = credstore.pass_tools_present()
+        checks.append(
+            Check(
+                "tool: pass/gpg",
+                ok=tools_ok,
+                detail="present" if tools_ok else "pass/gpg not installed",
+                hint=None if tools_ok else "Install `pass` and `gnupg2`.",
+            )
+        )
+        init = credstore.pass_store_initialized()
+        checks.append(
+            Check(
+                "pass store",
+                ok=init,
+                detail=str(credstore.password_store_dir()) if init else "not initialized",
+                hint=None if init else "Run `protonfs doctor --fix` (or `protonfs auth login`).",
+            )
+        )
+        ok, detail = credstore.probe_pass_store()
+        checks.append(
+            Check(
+                "pass read/write",
+                ok=ok,
+                detail=detail,
+                hint=None if ok else "Run `protonfs doctor --fix`.",
+            )
+        )
+        return checks
+
     if not is_linux():
         checks.append(
             Check("keyring", True, "not Linux; proton-drive uses the platform keychain")

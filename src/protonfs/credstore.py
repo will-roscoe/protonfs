@@ -173,6 +173,39 @@ def ensure_pass_store(runner=_run) -> PassResult:
     return PassResult(ready=True, actions=actions)
 
 
+def active_store(env: dict[str, str] | None = None) -> tuple[str, str]:
+    """The store that would be used now and why, without bootstrapping anything."""
+    base = dict(os.environ if env is None else env)
+    if base.get(STORE_ENV) in _VALID_STORES:
+        return base[STORE_ENV], "native-env"
+    override = base.get(PROTONFS_STORE_ENV, AUTO).strip().lower()
+    if override in _VALID_STORES:
+        return override, "protonfs-env"
+    sticky = read_store_choice()
+    if sticky is not None:
+        return sticky, "sticky"
+    return KEYCHAIN, "auto-default"
+
+
+def probe_pass_store(runner=_run) -> tuple[bool, str]:
+    """Insert, read back and remove a throwaway pass entry. Returns (ok, detail)."""
+    if not pass_tools_present():
+        return False, "pass/gpg not installed"
+    env = _managed_env()
+    entry = "ch.proton.drive/drive-sdk-cli/protonfs-selftest"
+    try:
+        ins = runner(["pass", "insert", "-f", "-m", entry], env, "protonfs-selftest")
+        if ins.returncode != 0:
+            return False, ins.stderr.strip() or "pass insert failed"
+        show = runner(["pass", "show", entry], env)
+        if show.returncode != 0 or show.stdout.strip() != "protonfs-selftest":
+            return False, show.stderr.strip() or "stored secret did not read back"
+        runner(["pass", "rm", "-f", entry], env)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, str(exc)
+    return True, "inserted, read back and removed a test entry"
+
+
 def drive_env(env: dict[str, str] | None = None) -> dict[str, str]:
     """The environment every proton-drive subprocess inherits (selection only).
 
