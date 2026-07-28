@@ -142,3 +142,50 @@ def test_drive_env_preset_native_keychain_delegates(home, monkeypatch):
     monkeypatch.setattr(cs.secretservice, "drive_env", lambda e=None: {"KC": "1"})
     out = cs.drive_env({"PATH": "/x", cs.STORE_ENV: "keychain"})
     assert out == {"KC": "1"}
+
+
+def test_establish_prefers_keychain_when_secret_service_ready(home, monkeypatch):
+    monkeypatch.setattr(cs.secretservice, "is_linux", lambda: True)
+    monkeypatch.setattr(
+        cs.secretservice, "ensure_secret_service",
+        lambda e=None, runner=None: cs.secretservice.SecretsResult(env=dict(e or {}), ready=True),
+    )
+    monkeypatch.setattr(cs.secretservice, "secret_service_state", lambda e, runner=None: "ready")
+    result = cs.establish({"PATH": "/x"})
+    assert result.store == "keychain"
+    assert cs.read_store_choice() == "keychain"
+
+
+def test_establish_falls_back_to_pass_and_persists(home, monkeypatch):
+    notes = []
+    monkeypatch.setattr(cs.secretservice, "is_linux", lambda: True)
+    monkeypatch.setattr(
+        cs.secretservice, "ensure_secret_service",
+        lambda e=None, runner=None: cs.secretservice.SecretsResult(env=dict(e or {}), ready=True),
+    )
+    monkeypatch.setattr(cs.secretservice, "secret_service_state", lambda e, runner=None: "locked")
+    monkeypatch.setattr(
+        cs, "ensure_pass_store",
+        lambda runner=None: cs.PassResult(ready=True, actions=["init"]),
+    )
+    result = cs.establish({"PATH": "/x"}, notify=notes.append)
+    assert result.store == "pass"
+    assert result.env[cs.STORE_ENV] == "pass"
+    assert cs.read_store_choice() == "pass"
+    assert notes and "pass" in notes[0].lower()
+
+
+def test_establish_no_store_when_neither_available(home, monkeypatch):
+    monkeypatch.setattr(cs.secretservice, "is_linux", lambda: True)
+    monkeypatch.setattr(
+        cs.secretservice, "ensure_secret_service",
+        lambda e=None, runner=None: cs.secretservice.SecretsResult(env=dict(e or {}), ready=True),
+    )
+    monkeypatch.setattr(cs.secretservice, "secret_service_state", lambda e, runner=None: "missing")
+    monkeypatch.setattr(
+        cs, "ensure_pass_store",
+        lambda runner=None: cs.PassResult(ready=False, warnings=["no pass"]),
+    )
+    result = cs.establish({"PATH": "/x"})
+    assert result.store is None
+    assert cs.read_store_choice() is None  # nothing persisted on total failure

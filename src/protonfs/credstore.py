@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -198,3 +199,73 @@ def drive_env(env: dict[str, str] | None = None) -> dict[str, str]:
         return pass_env(base)
     # keychain sticky, or auto/unset: existing Secret Service behavior.
     return secretservice.drive_env(base)
+
+
+@dataclass
+class EstablishResult:
+    """Outcome of :func:`establish` — the env to use plus the chosen store."""
+
+    env: dict[str, str]
+    store: str | None
+    actions: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+
+
+def establish(
+    env: dict[str, str] | None = None,
+    *,
+    notify: Callable[[str], None] | None = None,
+    runner=_run,
+) -> EstablishResult:
+    """Resolve and, if needed, bootstrap the credentials store (may generate a GPG key).
+
+    Called at establishment moments (auth login, doctor --fix), never on the hot path.
+    Persists the resolved store so :func:`drive_env` reads it thereafter.
+    """
+    base = dict(os.environ if env is None else env)
+
+    preset = base.get(STORE_ENV)
+    if preset in _VALID_STORES:
+        # User configured proton-drive directly; honor without persisting our own choice.
+        chosen_env = pass_env(base) if preset == PASS else secretservice.drive_env(base)
+        return EstablishResult(env=chosen_env, store=preset)
+
+    override = base.get(PROTONFS_STORE_ENV, AUTO).strip().lower()
+    sticky = read_store_choice()
+    forced = override if override in _VALID_STORES else sticky
+
+    if forced == PASS:
+        result = ensure_pass_store(runner=runner)
+        if result.ready:
+            write_store_choice(PASS)
+            return EstablishResult(pass_env(base), PASS, result.actions, result.warnings)
+        return EstablishResult(base, None, result.actions, result.warnings)
+    if forced == KEYCHAIN:
+        ss_res = secretservice.ensure_secret_service(base)
+        write_store_choice(KEYCHAIN)
+        return EstablishResult(ss_res.env, KEYCHAIN, ss_res.actions, ss_res.warnings)
+
+    # auto + unset:
+    if not secretservice.is_linux():
+        write_store_choice(KEYCHAIN)
+        return EstablishResult(base, KEYCHAIN)
+    if base.get(secretservice.DISABLE_ENV):
+        return EstablishResult(base, None)
+
+    ss_res = secretservice.ensure_secret_service(base)
+    actions = list(ss_res.actions)
+    if secretservice.secret_service_state(ss_res.env) == "ready":
+        write_store_choice(KEYCHAIN)
+        return EstablishResult(ss_res.env, KEYCHAIN, actions, ss_res.warnings)
+
+    pass_res = ensure_pass_store(runner=runner)
+    if pass_res.ready:
+        if notify is not None:
+            notify("no OS keyring available; using a protonfs-managed pass store")
+        write_store_choice(PASS)
+        return EstablishResult(
+            pass_env(base), PASS, actions + pass_res.actions, ss_res.warnings + pass_res.warnings
+        )
+    return EstablishResult(
+        base, None, actions + pass_res.actions, ss_res.warnings + pass_res.warnings
+    )
