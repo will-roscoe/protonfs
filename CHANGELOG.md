@@ -8,6 +8,16 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 
 ## [Unreleased]
 
+### Changed
+
+- **install**: bump the pinned/default `proton-drive` binary from `0.5.0` to `0.6.0`
+  (upstream stable, released 2026-07-20) and add it to the support matrix, keeping the
+  `0.5.0`/`0.4.6` pins for verifiable downgrades. SHA-512 pins were produced by
+  independently downloading and hashing each supported platform build (linux-x64,
+  linux-arm64, darwin-x64, darwin-arm64). Upstream `0.6.0` is a non-breaking release for
+  protonfs: no CLI argv or `--json` shape changes, so the wrapper is unaffected. New
+  installs and `protonfs upgrade` now fetch `0.6.0`.
+
 ## [1.8.0] - 2026-07-26
 
 ### Features
