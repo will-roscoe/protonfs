@@ -146,8 +146,22 @@ the environment, it passes straight through to ``proton-drive`` and wins over
 :envvar:`PROTONFS_CREDENTIALS_STORE`'s resolution.
 
 .. note::
-   The ``pass`` fallback needs ``pass`` and ``gnupg2`` installed on the host (on CentOS
-   7, enable EPEL first: ``yum install epel-release && yum install pass gnupg2``).
+   The ``pass`` fallback needs ``pass`` and ``gnupg2`` on the host. With root, install
+   them from your package manager (on CentOS 7, enable EPEL first:
+   ``yum install epel-release && yum install pass gnupg2``). ``gnupg2`` is already present
+   on most systems.
+
+   **Without root** (a common headless case), ``pass`` installs into your home directory —
+   it is a self-contained shell script:
+
+   .. code-block:: bash
+
+      git clone https://git.zx2c4.com/password-store
+      make -C password-store PREFIX="$HOME/.local" install   # installs ~/.local/bin/pass
+
+   Ensure ``~/.local/bin`` is on ``PATH``. ``pass``'s only hard runtime dependencies are
+   ``gpg`` and ``getopt`` (``tree`` is optional, used for listing only).
+
    Requires proton-drive :version:`0.6.0` or newer.
 
 Walkthrough: free up local disk, keep the data on Drive
