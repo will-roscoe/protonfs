@@ -18,6 +18,7 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from protonfs import secretservice
 from protonfs.secretservice import state_dir
 
 STORE_ENV = "PROTON_DRIVE_CREDENTIALS_STORE"
@@ -169,3 +170,31 @@ def ensure_pass_store(runner=_run) -> PassResult:
         )
     actions.append(f"initialized the pass store at {password_store_dir()}")
     return PassResult(ready=True, actions=actions)
+
+
+def drive_env(env: dict[str, str] | None = None) -> dict[str, str]:
+    """The environment every proton-drive subprocess inherits (selection only).
+
+    Reads the sticky/override store choice and injects the right env vars. Never
+    generates keys or raises -- establishment (which may keygen) is done by
+    :func:`establish` at auth-login / doctor --fix time.
+    """
+    base = dict(os.environ if env is None else env)
+
+    preset = base.get(STORE_ENV)
+    if preset == PASS:
+        return pass_env(base)
+    if preset == KEYCHAIN:
+        return secretservice.drive_env(base)
+
+    override = base.get(PROTONFS_STORE_ENV, AUTO).strip().lower()
+    if override == PASS:
+        return pass_env(base)
+    if override == KEYCHAIN:
+        return secretservice.drive_env(base)
+
+    choice = read_store_choice()
+    if choice == PASS:
+        return pass_env(base)
+    # keychain sticky, or auto/unset: existing Secret Service behavior.
+    return secretservice.drive_env(base)

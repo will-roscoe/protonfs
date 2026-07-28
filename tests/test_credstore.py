@@ -99,3 +99,30 @@ def test_ensure_pass_store_missing_tools_warns(home, monkeypatch):
     result = cs.ensure_pass_store(runner=FakePass())
     assert result.ready is False
     assert any("pass" in w or "gpg" in w for w in result.warnings)
+
+
+def test_drive_env_pass_when_sticky_pass(home, monkeypatch):
+    monkeypatch.setattr(cs, "read_store_choice", lambda: cs.PASS)
+    out = cs.drive_env({"PATH": "/usr/bin"})
+    assert out[cs.STORE_ENV] == "pass"
+    assert out["PASSWORD_STORE_DIR"] == str(cs.password_store_dir())
+
+
+def test_drive_env_delegates_to_secretservice_for_keychain(home, monkeypatch):
+    monkeypatch.setattr(cs, "read_store_choice", lambda: cs.KEYCHAIN)
+    monkeypatch.setattr(cs.secretservice, "drive_env", lambda e=None: {"KEYCHAIN": "1"})
+    out = cs.drive_env({"PATH": "/usr/bin"})
+    assert out == {"KEYCHAIN": "1"}
+
+
+def test_drive_env_respects_preset_native_var(home, monkeypatch):
+    # user set PROTON_DRIVE_CREDENTIALS_STORE=pass themselves -> honor, fill dirs
+    out = cs.drive_env({"PATH": "/x", cs.STORE_ENV: "pass"})
+    assert out[cs.STORE_ENV] == "pass"
+    assert out["GNUPGHOME"] == str(cs.gnupg_home())
+
+
+def test_drive_env_auto_falls_back_to_secretservice(home, monkeypatch):
+    monkeypatch.setattr(cs, "read_store_choice", lambda: None)
+    monkeypatch.setattr(cs.secretservice, "drive_env", lambda e=None: {"AUTO": "1"})
+    assert cs.drive_env({}) == {"AUTO": "1"}
