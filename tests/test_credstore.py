@@ -101,6 +101,27 @@ def test_ensure_pass_store_missing_tools_warns(home, monkeypatch):
     assert any("pass" in w or "gpg" in w for w in result.warnings)
 
 
+class _TimeoutOnKeygenPass:
+    """A runner whose keygen call hangs (TimeoutExpired) -- Fix 4 regression."""
+
+    def __call__(self, cmd, env, stdin=None):
+        if cmd[0] == "gpg":
+            if "--list-secret-keys" in cmd:
+                return FakeCompleted(returncode=2, stderr="no secret keys")
+            if "--quick-generate-key" in cmd:
+                import subprocess
+
+                raise subprocess.TimeoutExpired(cmd="gpg", timeout=30)
+        return FakeCompleted()
+
+
+def test_ensure_pass_store_degrades_on_gpg_timeout(home, monkeypatch):
+    monkeypatch.setattr(cs.shutil, "which", lambda tool: f"/usr/bin/{tool}")
+    result = cs.ensure_pass_store(runner=_TimeoutOnKeygenPass())
+    assert result.ready is False
+    assert result.warnings
+
+
 def test_drive_env_pass_when_sticky_pass(home, monkeypatch):
     monkeypatch.setattr(cs, "read_store_choice", lambda: cs.PASS)
     out = cs.drive_env({"PATH": "/usr/bin"})
@@ -194,6 +215,29 @@ def test_establish_no_store_when_neither_available(home, monkeypatch):
     result = cs.establish({"PATH": "/x"})
     assert result.store is None
     assert cs.read_store_choice() is None  # nothing persisted on total failure
+
+
+def test_establish_preserves_launched_bus_env_on_pass_fallback_failure(home, monkeypatch):
+    # Fix 1 regression: on a host where secret_service_state comes back "unknown"
+    # (e.g. gdbus missing) and pass is also unavailable, the bus that
+    # ensure_secret_service just launched must still be carried into the returned
+    # env -- not discarded in favor of the pristine `base`.
+    monkeypatch.delenv(cs.secretservice.DISABLE_ENV, raising=False)
+    monkeypatch.setattr(cs.secretservice, "is_linux", lambda: True)
+    monkeypatch.setattr(
+        cs.secretservice, "ensure_secret_service",
+        lambda e=None, runner=None: cs.secretservice.SecretsResult(
+            env={**(e or {}), "DBUS_SESSION_BUS_ADDRESS": "unix:abstract=xyz"}, ready=False,
+        ),
+    )
+    monkeypatch.setattr(cs.secretservice, "secret_service_state", lambda e, runner=None: "unknown")
+    monkeypatch.setattr(
+        cs, "ensure_pass_store",
+        lambda runner=None: cs.PassResult(ready=False, warnings=["no pass"]),
+    )
+    result = cs.establish({"PATH": "/x"})
+    assert result.env["DBUS_SESSION_BUS_ADDRESS"] == "unix:abstract=xyz"
+    assert result.store is None
 
 
 def test_establish_disable_env_returns_no_store(home, monkeypatch):

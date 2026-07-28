@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import stat
 import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -134,41 +135,44 @@ def ensure_pass_store(runner=_run) -> PassResult:
                 f"(install `pass` and `gnupg2`)."
             ],
         )
-    import stat as _stat
-
     gnupg_home().mkdir(parents=True, exist_ok=True)
-    gnupg_home().chmod(_stat.S_IRWXU)  # gpg refuses a world-readable GNUPGHOME
+    gnupg_home().chmod(stat.S_IRWXU)  # gpg refuses a world-readable GNUPGHOME
     password_store_dir().mkdir(parents=True, exist_ok=True)
     if pass_store_initialized():
         return PassResult(ready=True)
 
     env = _managed_env()
     actions: list[str] = []
-    fpr = _gpg_fingerprint(env, runner)
-    if fpr is None:
-        gen = runner(
-            [
-                "gpg", "--batch", "--pinentry-mode", "loopback", "--passphrase", "",
-                "--quick-generate-key", GPG_IDENTITY, "default", "default", "never",
-            ],
-            env,
-        )
-        if gen.returncode != 0:
+    try:
+        fpr = _gpg_fingerprint(env, runner)
+        if fpr is None:
+            gen = runner(
+                [
+                    "gpg", "--batch", "--pinentry-mode", "loopback", "--passphrase", "",
+                    "--quick-generate-key", GPG_IDENTITY, "default", "default", "never",
+                ],
+                env,
+            )
+            if gen.returncode != 0:
+                return PassResult(
+                    ready=False,
+                    warnings=[
+                        f"gpg key generation failed: {gen.stderr.strip() or gen.returncode}"
+                    ],
+                )
+            actions.append("generated a protonfs GPG key (passphrase-less)")
+            fpr = _gpg_fingerprint(env, runner)
+        if fpr is None:
+            return PassResult(ready=False, warnings=["could not read the generated GPG key"])
+
+        init = runner(["pass", "init", fpr], env)
+        if init.returncode != 0 or not pass_store_initialized():
             return PassResult(
                 ready=False,
-                warnings=[f"gpg key generation failed: {gen.stderr.strip() or gen.returncode}"],
+                warnings=[f"`pass init` failed: {init.stderr.strip() or init.returncode}"],
             )
-        actions.append("generated a protonfs GPG key (passphrase-less)")
-        fpr = _gpg_fingerprint(env, runner)
-    if fpr is None:
-        return PassResult(ready=False, warnings=["could not read the generated GPG key"])
-
-    init = runner(["pass", "init", fpr], env)
-    if init.returncode != 0 or not pass_store_initialized():
-        return PassResult(
-            ready=False,
-            warnings=[f"`pass init` failed: {init.stderr.strip() or init.returncode}"],
-        )
+    except (subprocess.SubprocessError, OSError) as exc:
+        return PassResult(ready=False, warnings=[f"pass store setup failed: {exc}"])
     actions.append(f"initialized the pass store at {password_store_dir()}")
     return PassResult(ready=True, actions=actions)
 
@@ -290,10 +294,11 @@ def establish(
         return EstablishResult(base, None)
 
     ss_res = secretservice.ensure_secret_service(base)
+    base = ss_res.env  # carry the resolved/launched bus forward into every return below
     actions = list(ss_res.actions)
-    if secretservice.secret_service_state(ss_res.env) == "ready":
+    if secretservice.secret_service_state(base) == "ready":
         write_store_choice(KEYCHAIN)
-        return EstablishResult(ss_res.env, KEYCHAIN, actions, ss_res.warnings)
+        return EstablishResult(base, KEYCHAIN, actions, ss_res.warnings)
 
     pass_res = ensure_pass_store(runner=runner)
     if pass_res.ready:

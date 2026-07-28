@@ -376,15 +376,38 @@ def test_doctor_failure_suggests_fix_when_not_fixing(
 
 
 def test_shell_exports_emits_bus_line_when_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    from protonfs import credstore
+
     monkeypatch.setattr(
-        doctor_mod, "drive_env", lambda: {BUS_ENV: "unix:abstract=/tmp/bus"}
+        credstore, "drive_env", lambda: {BUS_ENV: "unix:abstract=/tmp/bus"}
     )
     assert shell_exports() == [f"{BUS_ENV}=unix:abstract=/tmp/bus"]
 
 
 def test_shell_exports_empty_when_no_bus(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(doctor_mod, "drive_env", lambda: {})
+    from protonfs import credstore
+
+    monkeypatch.setattr(credstore, "drive_env", lambda: {})
     assert shell_exports() == []
+
+
+def test_shell_exports_emits_pass_vars_on_pass_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Fix 3 regression: shell_exports must route through credstore.drive_env so a
+    # pass-active host gets PROTON_DRIVE_CREDENTIALS_STORE/PASSWORD_STORE_DIR/GNUPGHOME,
+    # not just a (nonexistent) bus line.
+    from protonfs import credstore
+
+    pass_env = {
+        credstore.STORE_ENV: "pass",
+        "PASSWORD_STORE_DIR": "/state/password-store",
+        "GNUPGHOME": "/state/gnupg",
+    }
+    monkeypatch.setattr(credstore, "drive_env", lambda: pass_env)
+    lines = shell_exports()
+    assert f"{credstore.STORE_ENV}=pass" in lines
+    assert "PASSWORD_STORE_DIR=/state/password-store" in lines
+    assert "GNUPGHOME=/state/gnupg" in lines
+    assert not any(line.startswith(f"{BUS_ENV}=") for line in lines)
 
 
 # --- credentials store (pass fallback) -------------------------------------------------
@@ -405,6 +428,39 @@ def test_doctor_reports_pass_store_when_active(
     names = [c.name for c in checks]
     assert "credentials store" in names
     assert not any(c.name == "secret service" for c in checks)  # suppressed for pass
+
+
+def test_doctor_fix_establishes_pass_store(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # Fix 2 regression: `doctor --fix` on a pass-active host must actually call
+    # ensure_pass_store, not just report "not initialized" and stop.
+    from protonfs import credstore, secretservice
+
+    monkeypatch.setattr(secretservice.Path, "home", staticmethod(lambda: tmp_path))
+    monkeypatch.setattr(credstore, "active_store", lambda env=None: ("pass", "sticky"))
+    monkeypatch.setattr(credstore, "pass_tools_present", lambda: True)
+
+    state = {"initialized": False}
+
+    def fake_pass_store_initialized():
+        return state["initialized"]
+
+    calls = []
+
+    def fake_ensure_pass_store(runner=None):
+        calls.append(True)
+        state["initialized"] = True
+        return credstore.PassResult(ready=True, actions=["initialized the pass store"])
+
+    monkeypatch.setattr(credstore, "pass_store_initialized", fake_pass_store_initialized)
+    monkeypatch.setattr(credstore, "ensure_pass_store", fake_ensure_pass_store)
+    monkeypatch.setattr(credstore, "probe_pass_store", lambda runner=None: (True, "round-trip ok"))
+
+    checks = _checks_by_name(run_doctor(fix=True, root=tmp_path))
+    assert calls, "ensure_pass_store must be called under --fix"
+    assert checks["pass store"].ok
+    assert "not initialized" not in checks["pass store"].detail
 
 
 def test_doctor_keychain_store_runs_secret_service_checks(

@@ -23,7 +23,6 @@ from protonfs.secretservice import (
     BUS_ENV,
     DISABLE_ENV,
     SecretServiceError,
-    drive_env,
     ensure_secret_service,
     is_linux,
     keyring_password_file,
@@ -258,6 +257,13 @@ def run_doctor(fix: bool = False, root: Path | None = None) -> list[Check]:
     checks.append(Check("credentials store", True, f"{store} ({how})"))
 
     if store == credstore.PASS:
+        if fix and not credstore.pass_store_initialized():
+            pass_res = credstore.ensure_pass_store()
+            for action in pass_res.actions:
+                click.echo(f"  fix: {action}")
+            for warning in pass_res.warnings:
+                click.echo(f"  ! {warning}")
+
         tools_ok = credstore.pass_tools_present()
         checks.append(
             Check(
@@ -404,8 +410,12 @@ def doctor(fix: bool = False) -> bool:
 
 
 def shell_exports() -> list[str]:
-    """`VAR=value` lines that make the *current shell* match the environment protonfs
-    hands proton-drive. Only needed to run the `proton-drive` binary by hand; every
-    protonfs command sets this up for itself."""
-    env = drive_env()
-    return [f"{BUS_ENV}={env[BUS_ENV]}"] if env.get(BUS_ENV) else []
+    """`VAR=value` lines that make the current shell match the environment protonfs
+    hands proton-drive (the resolved credentials store: bus for keychain, or the pass
+    vars). Only needed to run the `proton-drive` binary by hand; every protonfs command
+    sets this up for itself."""
+    from protonfs import credstore
+
+    env = credstore.drive_env()
+    keys = (BUS_ENV, credstore.STORE_ENV, "PASSWORD_STORE_DIR", "GNUPGHOME")
+    return [f"{k}={env[k]}" for k in keys if env.get(k)]
