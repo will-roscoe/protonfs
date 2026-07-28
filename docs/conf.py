@@ -19,6 +19,7 @@ extensions = [
     "sphinx.ext.viewcode",
     "sphinx.ext.napoleon",  # NumPy/Google docstring styles
     "sphinx.ext.coverage",  # report undocumented Python objects (CI gate)
+    "sphinx.ext.extlinks",
     # Python
     "sphinx.ext.autodoc",
     "sphinx.ext.autosummary",  # generated module/API overview tables
@@ -33,6 +34,12 @@ extensions = [
     # Local: auto-link cross-page `protonfs <subcommand>` mentions to their reference entry.
     "command_xref",
 ]
+
+extlinks = {
+    "repo": ('https://github.com/will-roscoe/protonfs/%s', None),
+    "issue": ('https://github.com/will-roscoe/protonfs/issues/%s', 'issue %s'),
+    "version": ('https://github.com/will-roscoe/protonfs/releases/tag/v%s', 'v%s'),
+}
 
 templates_path = ["_templates"]
 # `_shared/` holds fragments pulled into other pages via `.. include::`; they are not

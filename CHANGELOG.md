@@ -8,6 +8,16 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 
 ## [Unreleased]
 
+### Features
+
+- **credentials store**: on a headless Linux host where the freedesktop Secret Service
+  cannot be made ready, protonfs now falls back automatically to a protonfs-managed
+  `pass` ([password-store](https://www.passwordstore.org/)) credentials store — generating
+  a passphrase-less GPG key and initializing the store on first `auth login` — instead of
+  failing to persist the proton-drive session. The choice is sticky per host. Force it with
+  `PROTONFS_CREDENTIALS_STORE=keychain|pass`; `protonfs doctor` reports the active store.
+  Requires proton-drive >= 0.6.0.
+
 ### Changed
 
 - **install**: bump the pinned/default `proton-drive` binary from `0.5.0` to `0.6.0`

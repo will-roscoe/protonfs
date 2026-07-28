@@ -251,6 +251,21 @@ contract (see :doc:`../stability`).
 
    .. versionadded:: 1.0.0
 
+.. envvar:: PROTONFS_CREDENTIALS_STORE
+
+   Forces which proton-drive credentials store protonfs prepares and uses:
+   ``keychain`` (freedesktop Secret Service) or ``pass`` (`password-store
+   <https://www.passwordstore.org/>`_). The default, ``auto``, tries ``keychain``
+   first and falls back to a protonfs-managed ``pass`` store only when the Secret
+   Service cannot be made ready on this host (see :ref:`Credentials store: automatic
+   pass fallback <credentials-store-pass-fallback>`). The resolved choice is written
+   to a per-host sticky file so later commands never read a different (empty) store.
+   Native ``PROTON_DRIVE_CREDENTIALS_STORE``, if already set in the environment, is
+   passed straight through to ``proton-drive`` and takes precedence over this
+   variable's resolution.
+
+   .. versionadded:: 1.9.0
+
 Configuration file and keys
 -----------------------------
 
