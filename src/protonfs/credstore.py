@@ -65,7 +65,26 @@ def write_store_choice(store: str) -> None:
 
 
 _RUN_TIMEOUT = 30  # gpg keygen can be the slow one, but must not hang forever
-GPG_IDENTITY = "protonfs (Proton Drive CLI session store) <protonfs@localhost>"
+
+# Unattended, passphrase-less key generation as a `gpg --batch --gen-key` parameter
+# file (fed over stdin). This form is portable across GnuPG 2.0 and 2.1+, unlike
+# `--quick-generate-key`/`--pinentry-mode loopback` which only exist from 2.1.13 --
+# a real blocker on the headless target hosts this fallback exists for (e.g. CentOS 7
+# ships GnuPG 2.0.22). `Subkey-Type: RSA` gives the encryption subkey `pass` needs.
+# `%no-protection` yields a passphrase-less key on 2.1+ and is harmlessly ignored on
+# 2.0 (where a batch key with no `Passphrase:` line is passphrase-less anyway).
+_GPG_GEN_PARAMS = (
+    "Key-Type: RSA\n"
+    "Key-Length: 2048\n"
+    "Subkey-Type: RSA\n"
+    "Subkey-Length: 2048\n"
+    "Name-Real: protonfs\n"
+    "Name-Comment: Proton Drive CLI session store\n"
+    "Name-Email: protonfs@localhost\n"
+    "Expire-Date: 0\n"
+    "%no-protection\n"
+    "%commit\n"
+)
 
 
 @dataclass
@@ -112,8 +131,12 @@ def _managed_env(base: dict[str, str] | None = None) -> dict[str, str]:
 
 
 def _gpg_fingerprint(env: dict[str, str], runner) -> str | None:
-    """The fingerprint of the first secret key in the managed GNUPGHOME, or None."""
-    result = runner(["gpg", "--list-secret-keys", "--with-colons"], env)
+    """The fingerprint of the first secret key in the managed GNUPGHOME, or None.
+
+    `--fingerprint` is required for GnuPG 2.0 to emit ``fpr:`` records in
+    ``--with-colons`` secret-key listings (2.1+ emits them regardless).
+    """
+    result = runner(["gpg", "--list-secret-keys", "--with-colons", "--fingerprint"], env)
     if result.returncode != 0:
         return None
     for line in result.stdout.splitlines():
@@ -146,13 +169,7 @@ def ensure_pass_store(runner=_run) -> PassResult:
     try:
         fpr = _gpg_fingerprint(env, runner)
         if fpr is None:
-            gen = runner(
-                [
-                    "gpg", "--batch", "--pinentry-mode", "loopback", "--passphrase", "",
-                    "--quick-generate-key", GPG_IDENTITY, "default", "default", "never",
-                ],
-                env,
-            )
+            gen = runner(["gpg", "--batch", "--gen-key"], env, _GPG_GEN_PARAMS)
             if gen.returncode != 0:
                 return PassResult(
                     ready=False,

@@ -86,6 +86,13 @@ def test_ensure_pass_store_generates_key_then_inits(home, monkeypatch):
     result = cs.ensure_pass_store(runner=fake)
     assert result.ready is True
     assert cs.pass_store_initialized() is True
+    # Keygen must use the portable `--batch --gen-key` form (works on GnuPG 2.0 and
+    # 2.1+), NOT `--quick-generate-key` (2.1.13+ only) which breaks on the CentOS 7
+    # target hosts this fallback exists for. The key params go over stdin.
+    gen_calls = [c for c in fake.calls if c[0] == "gpg" and "--gen-key" in c]
+    assert gen_calls and all("--quick-generate-key" not in c for c in fake.calls)
+    # The fingerprint listing must pass --fingerprint so GnuPG 2.0 emits fpr records.
+    assert any("--list-secret-keys" in c and "--fingerprint" in c for c in fake.calls)
     # a second call is a no-op (store already initialized): it returns before touching
     # the runner at all, so no gpg/pass command is issued.
     fake2 = FakePass(has_key=True)
@@ -108,7 +115,7 @@ class _TimeoutOnKeygenPass:
         if cmd[0] == "gpg":
             if "--list-secret-keys" in cmd:
                 return FakeCompleted(returncode=2, stderr="no secret keys")
-            if "--quick-generate-key" in cmd:
+            if "--gen-key" in cmd:
                 import subprocess
 
                 raise subprocess.TimeoutExpired(cmd="gpg", timeout=30)
