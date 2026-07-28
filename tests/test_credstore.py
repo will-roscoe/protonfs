@@ -126,3 +126,19 @@ def test_drive_env_auto_falls_back_to_secretservice(home, monkeypatch):
     monkeypatch.setattr(cs, "read_store_choice", lambda: None)
     monkeypatch.setattr(cs.secretservice, "drive_env", lambda e=None: {"AUTO": "1"})
     assert cs.drive_env({}) == {"AUTO": "1"}
+
+
+def test_drive_env_protonfs_override_pass_beats_sticky(home, monkeypatch):
+    # branch 2: PROTONFS_CREDENTIALS_STORE=pass wins even over a keychain sticky choice.
+    monkeypatch.setattr(cs, "read_store_choice", lambda: cs.KEYCHAIN)
+    out = cs.drive_env({"PATH": "/x", cs.PROTONFS_STORE_ENV: "pass"})
+    assert out[cs.STORE_ENV] == "pass"
+    assert out["PASSWORD_STORE_DIR"] == str(cs.password_store_dir())
+
+
+def test_drive_env_preset_native_keychain_delegates(home, monkeypatch):
+    # branch 1 (keychain leg): a preset native var wins over everything and delegates.
+    monkeypatch.setattr(cs, "read_store_choice", lambda: cs.PASS)
+    monkeypatch.setattr(cs.secretservice, "drive_env", lambda e=None: {"KC": "1"})
+    out = cs.drive_env({"PATH": "/x", cs.STORE_ENV: "keychain"})
+    assert out == {"KC": "1"}
