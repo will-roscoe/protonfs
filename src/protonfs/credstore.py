@@ -12,7 +12,6 @@ be made ready, and makes that choice sticky so a later command never reads a dif
 """
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 from protonfs.secretservice import state_dir
