@@ -209,3 +209,70 @@ def test_establish_disable_env_returns_no_store(home, monkeypatch):
     result = cs.establish({"PATH": "/x"})
     assert result.store is None
     assert cs.read_store_choice() is None
+
+
+def test_active_store_native_env_wins(home):
+    assert cs.active_store({cs.STORE_ENV: "pass"}) == ("pass", "native-env")
+
+
+def test_active_store_protonfs_env_over_sticky(home, monkeypatch):
+    monkeypatch.setattr(cs, "read_store_choice", lambda: cs.KEYCHAIN)
+    assert cs.active_store({cs.PROTONFS_STORE_ENV: "PASS"}) == ("pass", "protonfs-env")
+
+
+def test_active_store_sticky_when_no_env(home, monkeypatch):
+    monkeypatch.setattr(cs, "read_store_choice", lambda: cs.PASS)
+    assert cs.active_store({"PATH": "/x"}) == ("pass", "sticky")
+
+
+def test_active_store_auto_default_when_nothing_set(home, monkeypatch):
+    monkeypatch.setattr(cs, "read_store_choice", lambda: None)
+    assert cs.active_store({"PATH": "/x"}) == ("keychain", "auto-default")
+
+
+class _ScriptedPass:
+    """A pass runner scripted per command name for probe_pass_store tests."""
+
+    def __init__(self, *, insert=0, show_rc=0, show_out="protonfs-selftest"):
+        self.insert = insert
+        self.show_rc = show_rc
+        self.show_out = show_out
+        self.calls: list[list[str]] = []
+
+    def __call__(self, cmd, env, stdin=None):
+        self.calls.append(cmd)
+        if cmd[1] == "insert":
+            return FakeCompleted(returncode=self.insert, stderr="insert boom")
+        if cmd[1] == "show":
+            return FakeCompleted(returncode=self.show_rc, stdout=self.show_out, stderr="show boom")
+        return FakeCompleted()
+
+
+def test_probe_pass_store_missing_tools(home, monkeypatch):
+    monkeypatch.setattr(cs, "pass_tools_present", lambda: False)
+    ok, detail = cs.probe_pass_store(runner=_ScriptedPass())
+    assert ok is False
+    assert "not installed" in detail
+
+
+def test_probe_pass_store_round_trip_ok(home, monkeypatch):
+    monkeypatch.setattr(cs, "pass_tools_present", lambda: True)
+    fake = _ScriptedPass()
+    ok, detail = cs.probe_pass_store(runner=fake)
+    assert ok is True
+    # inserted, read back, then removed -> the rm call must have happened.
+    assert any(c[1] == "rm" for c in fake.calls)
+
+
+def test_probe_pass_store_insert_failure(home, monkeypatch):
+    monkeypatch.setattr(cs, "pass_tools_present", lambda: True)
+    ok, detail = cs.probe_pass_store(runner=_ScriptedPass(insert=1))
+    assert ok is False
+    assert detail == "insert boom"
+
+
+def test_probe_pass_store_readback_mismatch(home, monkeypatch):
+    monkeypatch.setattr(cs, "pass_tools_present", lambda: True)
+    ok, detail = cs.probe_pass_store(runner=_ScriptedPass(show_out="wrong"))
+    assert ok is False
+    assert "did not read back" in detail or detail == "show boom"
