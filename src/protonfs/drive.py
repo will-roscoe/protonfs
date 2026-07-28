@@ -401,7 +401,7 @@ class DriveClient:
         call may launch a session bus, and doing that at import time would charge
         every `protonfs --help` for it.
         """
-        from protonfs.secretservice import drive_env
+        from protonfs.credstore import drive_env
 
         if self._env is None:
             self._env = drive_env()

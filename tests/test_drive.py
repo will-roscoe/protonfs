@@ -757,3 +757,14 @@ def test_summarize_command_collapses_long_file_lists() -> None:
     assert "197 files" in out or "197 paths" in out
     assert "f_00042" not in out  # no interior path spelled out
     assert len(out) < 120  # bounded, not thousands of chars
+
+
+# --- credentials store: _drive_env routes through credstore.drive_env ------------------
+
+
+def test_driveclient_env_uses_credstore(monkeypatch: pytest.MonkeyPatch) -> None:
+    from protonfs import credstore
+
+    monkeypatch.setattr(credstore, "drive_env", lambda e=None: {"FROM_CREDSTORE": "1"})
+    client = DriveClient(binary="/x")
+    assert client._drive_env() == {"FROM_CREDSTORE": "1"}
