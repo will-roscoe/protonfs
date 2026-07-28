@@ -145,6 +145,9 @@ def test_drive_env_preset_native_keychain_delegates(home, monkeypatch):
 
 
 def test_establish_prefers_keychain_when_secret_service_ready(home, monkeypatch):
+    # The autouse no_keyring_bootstrap fixture sets DISABLE_ENV; clear it so this
+    # test exercises the real auto-resolution path (matches test_secretservice.py).
+    monkeypatch.delenv(cs.secretservice.DISABLE_ENV, raising=False)
     monkeypatch.setattr(cs.secretservice, "is_linux", lambda: True)
     monkeypatch.setattr(
         cs.secretservice, "ensure_secret_service",
@@ -158,6 +161,7 @@ def test_establish_prefers_keychain_when_secret_service_ready(home, monkeypatch)
 
 def test_establish_falls_back_to_pass_and_persists(home, monkeypatch):
     notes = []
+    monkeypatch.delenv(cs.secretservice.DISABLE_ENV, raising=False)
     monkeypatch.setattr(cs.secretservice, "is_linux", lambda: True)
     monkeypatch.setattr(
         cs.secretservice, "ensure_secret_service",
@@ -176,6 +180,7 @@ def test_establish_falls_back_to_pass_and_persists(home, monkeypatch):
 
 
 def test_establish_no_store_when_neither_available(home, monkeypatch):
+    monkeypatch.delenv(cs.secretservice.DISABLE_ENV, raising=False)
     monkeypatch.setattr(cs.secretservice, "is_linux", lambda: True)
     monkeypatch.setattr(
         cs.secretservice, "ensure_secret_service",
@@ -189,3 +194,18 @@ def test_establish_no_store_when_neither_available(home, monkeypatch):
     result = cs.establish({"PATH": "/x"})
     assert result.store is None
     assert cs.read_store_choice() is None  # nothing persisted on total failure
+
+
+def test_establish_disable_env_returns_no_store(home, monkeypatch):
+    # PROTONFS_NO_KEYRING_BOOTSTRAP set (read from os.environ, like ensure_secret_service):
+    # establish must resolve no store and persist nothing, and must not touch the keyring.
+    monkeypatch.setenv(cs.secretservice.DISABLE_ENV, "1")
+    monkeypatch.setattr(cs.secretservice, "is_linux", lambda: True)
+
+    def _boom(*a, **k):  # establish must not bootstrap anything when disabled
+        raise AssertionError("must not call ensure_secret_service when DISABLE_ENV is set")
+
+    monkeypatch.setattr(cs.secretservice, "ensure_secret_service", _boom)
+    result = cs.establish({"PATH": "/x"})
+    assert result.store is None
+    assert cs.read_store_choice() is None

@@ -249,7 +249,11 @@ def establish(
     if not secretservice.is_linux():
         write_store_choice(KEYCHAIN)
         return EstablishResult(base, KEYCHAIN)
-    if base.get(secretservice.DISABLE_ENV):
+    if os.environ.get(secretservice.DISABLE_ENV):
+        # Read the process env, not `base`, to stay consistent with
+        # secretservice.ensure_secret_service (which gates on os.environ): the
+        # opt-out must hold identically for both, or one could bootstrap while
+        # the other short-circuits.
         return EstablishResult(base, None)
 
     ss_res = secretservice.ensure_secret_service(base)
