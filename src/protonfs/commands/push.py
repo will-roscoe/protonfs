@@ -19,6 +19,14 @@ from protonfs.localscan import scan
 
 logger = logging.getLogger(__name__)
 
+# #124: `--resolve` uses a shared remote|local|both vocabulary across push and pull. On
+# push those map to proton-drive's `-f` upload strategies; the proton-drive strategy names
+# (merge|keep-both|replace|skip) are also accepted and pass straight through.
+#   local  -> replace   (overwrite the remote with our local copy)
+#   remote -> skip      (keep the remote copy; skip the conflicting upload)
+#   both   -> keep-both (upload our local copy alongside the remote)
+_RESOLVE_TO_STRATEGY = {"local": "replace", "remote": "skip", "both": "keep-both"}
+
 # #22: proton-drive can report a file as transferred that never lands on the remote.
 # Files that fail post-upload verification are tagged with this on their failure entry so
 # the CLI can tell them apart from genuine conflicts (the remedy is a plain retry, not
@@ -149,8 +157,10 @@ def push(
 
     :param ctx: the loaded repo context.
     :param subpath: repo-root-relative subtree to push, or ``None`` for everything.
-    :param resolve: conflict policy ``merge`` | ``keep-both`` | ``replace`` | ``skip``
-        for files that diverged on both sides, or ``None`` to surface them unresolved.
+    :param resolve: divergence policy ``remote`` | ``local`` | ``both`` (mapped to a
+        proton-drive ``-f`` strategy via :data:`_RESOLVE_TO_STRATEGY`), or a raw
+        proton-drive strategy name ``merge`` | ``keep-both`` | ``replace`` | ``skip``,
+        for files that diverged on both sides; ``None`` to surface them unresolved.
     :param dry_run: when true, report what would upload without transferring or
         persisting anything.
     :param reporter: :class:`~protonfs.reporting.Reporter` to narrate progress through;
@@ -201,8 +211,9 @@ def push(
 
     # D2.1: default push applies NO conflict strategy so the CLI surfaces conflicts as
     # named per-file failures (never a silent skip that we'd falsely index). A strategy
-    # is used only when the user explicitly asks via --resolve.
-    strategy = resolve
+    # is used only when the user explicitly asks via --resolve. Canonical remote|local|both
+    # map to proton-drive `-f` strategies (#124); legacy strategy names pass through.
+    strategy = _RESOLVE_TO_STRATEGY.get(resolve, resolve)
     batch_size = ctx.config.defaults.batch_size
     groups = group_by_parent(to_push)
     total = TransferResult(0, 0, 0, [])

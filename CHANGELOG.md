@@ -8,6 +8,15 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 
 ## [Unreleased]
 
+### Features
+
+- **push/pull**: `--resolve` now shares one ``remote|local|both`` vocabulary across both
+  commands. On push these map to proton-drive's upload strategies (``local``→replace,
+  ``remote``→skip, ``both``→keep-both); the proton-drive strategy names
+  (``merge|keep-both|replace|skip``) stay accepted as synonyms. On pull, ``replace`` is
+  accepted as an alias for ``remote``. This also fixes the refresh "remote-changed" hint,
+  which suggested the invalid ``pull --resolve=replace`` (#124).
+
 ## [1.8.0] - 2026-07-26
 
 ### Features

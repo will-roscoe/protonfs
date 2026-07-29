@@ -127,12 +127,14 @@ flag/argument name; these names, not just their presence, are frozen.
      - ``0`` success; ``1`` Drive/auth error; ``2`` usage error.
    * - ``push``
      - Upload local-only/changed files to Drive. Argument: ``PATH...`` (optional, repeatable; e.g. from a shell glob).
-       Options: ``--resolve [merge|keep-both|replace|skip]``, ``--dry-run``.
+       Options: ``--resolve [remote|local|both]`` (the proton-drive strategy names
+       ``merge|keep-both|replace|skip`` remain accepted as synonyms), ``--dry-run``.
      - ``0`` all transferred/skipped; ``1`` one or more files failed to transfer, or a
        Drive/lock error; ``2`` usage error.
    * - ``pull``
      - Download remote-only/changed files from Drive. Argument: ``PATH...`` (optional, repeatable; e.g. from a shell glob).
-       Options: ``--resolve [remote|local|both]``, ``--dry-run``, ``--refresh``.
+       Options: ``--resolve [remote|local|both]`` (``replace`` accepted as an alias for
+       ``remote``), ``--dry-run``, ``--refresh``.
      - ``0`` all transferred/skipped (including the "index empty, run refresh first"
        early-exit message); ``1`` one or more files failed to transfer, or a
        Drive/lock error; ``2`` usage error.

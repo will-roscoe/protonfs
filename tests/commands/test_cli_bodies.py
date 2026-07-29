@@ -108,7 +108,7 @@ def test_cli_push_reports_failures_and_exits_1(
 
     assert result.exit_code == 1
     assert "FAILED f: boom" in result.output
-    assert "--resolve=merge|keep-both|replace|skip" in result.output
+    assert "--resolve=remote|local|both" in result.output
 
 
 # --- pull failure branch --------------------------------------------------------------
@@ -212,6 +212,12 @@ def test_cli_refresh_prints_changed_and_deleted_branches(
     assert "changed.txt" in result.output
     assert "deleted on the remote (found)" in result.output  # prune=False -> "found"
     assert "refresh --prune" in result.output  # hint only shown when not pruning
+    # #124: the remote-changed hint must suggest VALID, aligned commands. A plain
+    # `protonfs pull <path>` takes the remote version; `push --resolve=local` keeps the
+    # local copy (canonical remote|local|both vocab, now shared by push and pull).
+    assert "protonfs pull <path>` to take the remote version" in result.output
+    assert "push --resolve=local" in result.output
+    assert "--resolve=replace" not in result.output
 
 
 # --- install-drive --------------------------------------------------------------------
