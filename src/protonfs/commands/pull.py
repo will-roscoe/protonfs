@@ -166,6 +166,10 @@ def pull(
     """
     from protonfs.reporting import get_reporter
 
+    # #124: `replace` is an accepted alias for `remote` (replace the local copy), so the
+    # remote|local|both vocabulary lines up with push's `--resolve`.
+    if resolve == "replace":
+        resolve = "remote"
     reporter = reporter or get_reporter()
     reporter.phase("scanning local", subpath=subpath or ".")
     ignore = IgnoreMatcher.from_file(ctx.root)

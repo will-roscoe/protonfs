@@ -163,6 +163,25 @@ def test_push_explicit_resolve_replace_passes_strategy(
     assert fake.upload_calls[0][2] == "replace"
 
 
+@pytest.mark.parametrize(
+    "resolve,strategy",
+    [("local", "replace"), ("remote", "skip"), ("both", "keep-both")],
+)
+def test_push_canonical_resolve_maps_to_proton_strategy(
+    tmp_path: Path, make_fake_drive, resolve: str, strategy: str
+) -> None:
+    # #124: canonical remote|local|both map to proton-drive `-f` strategies.
+    (tmp_path / "dump_0001").write_bytes(b"data")
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    fake = make_fake_drive()
+    ctx.drive = fake
+
+    push(ctx, None, resolve=resolve, dry_run=False)
+
+    assert fake.upload_calls[0][2] == strategy
+
+
 def test_push_resolve_skip_leaves_skipped_files_unindexed(
     tmp_path: Path, make_fake_drive
 ) -> None:

@@ -426,9 +426,12 @@ def ls(
 @click.argument("path", nargs=-1)
 @click.option(
     "--resolve",
-    type=click.Choice(["merge", "keep-both", "replace", "skip"]),
-    help="Conflict strategy for files changed on both sides, passed through to "
-    "proton-drive: merge, keep-both, replace, or skip.",
+    type=click.Choice(["remote", "local", "both", "merge", "keep-both", "replace", "skip"]),
+    help="How to reconcile a file that changed on BOTH sides since the last sync: "
+    "remote=keep the remote copy (skip the upload), local=overwrite the remote with "
+    "your local copy, both=upload your local copy alongside the remote. The proton-drive "
+    "strategy names merge|keep-both|replace|skip are also accepted (replace=local, "
+    "skip=remote, keep-both=both).",
 )
 @click.option(
     "--dry-run",
@@ -495,7 +498,7 @@ def push(path: tuple[str, ...], resolve: str | None, dry_run: bool) -> None:
         if conflicts and not resolve:
             click.echo(
                 "  -> these are remote conflicts; re-run with "
-                "--resolve=merge|keep-both|replace|skip to resolve them."
+                "--resolve=remote|local|both to resolve them."
             )
         raise click.exceptions.Exit(1)
 
@@ -504,11 +507,12 @@ def push(path: tuple[str, ...], resolve: str | None, dry_run: bool) -> None:
 @click.argument("path", nargs=-1)
 @click.option(
     "--resolve",
-    type=click.Choice(["remote", "local", "both"]),
+    type=click.Choice(["remote", "local", "both", "replace"]),
     help=(
         "How to reconcile a file that changed on BOTH sides since the last sync: "
         "remote=overwrite local, local=keep local (stays queued for push), "
         "both=fetch the remote copy under a .remote suffix for a manual merge. "
+        "replace is an alias for remote (replace the local copy). "
         "Without this, pull leaves diverged files untouched and reports them."
     ),
 )
@@ -688,8 +692,8 @@ def refresh(path: tuple[str, ...], prune: bool) -> None:
         for p in result.changed_paths:
             click.echo(f"      {p}")
         click.echo(
-            "    -> `protonfs pull --resolve=replace <path>` to take the remote version, "
-            "or `protonfs push --resolve=replace <path>` to overwrite it with your local copy."
+            "    -> `protonfs pull <path>` to take the remote version, "
+            "or `protonfs push --resolve=local <path>` to keep (and re-upload) your local copy."
         )
     if result.remote_deleted:
         verb = "pruned" if prune else "found"

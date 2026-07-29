@@ -220,6 +220,17 @@ def test_pull_resolve_remote_overwrites_local(tmp_path: Path, make_fake_drive) -
     assert result.failed_items == 0
 
 
+def test_pull_resolve_replace_aliases_remote(tmp_path: Path, make_fake_drive) -> None:
+    # #124: `replace` is an alias for `remote` (replace the local copy).
+    ctx = _diverged_setup(tmp_path)
+    ctx.drive = make_fake_drive(walk_entries=_both_modified_walk())
+
+    result = pull(ctx, None, resolve="replace", dry_run=False)
+
+    assert (tmp_path / "run1" / "dump").read_bytes() == b"downloaded"  # remote won
+    assert result.failed_items == 0
+
+
 def test_pull_resolve_local_keeps_local_and_skips(tmp_path: Path, make_fake_drive) -> None:
     ctx = _diverged_setup(tmp_path)
     ctx.drive = make_fake_drive(walk_entries=_both_modified_walk())
