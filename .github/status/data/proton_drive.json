@@ -1,14 +1,14 @@
 {
   "source": "proton-drive",
-  "updated": "2026-07-20T09:36:58Z",
+  "updated": "2026-07-29T13:46:53Z",
   "run": {
-    "run_id": "29732102596",
+    "run_id": "30457599752",
     "run_attempt": "1",
-    "run_url": "https://github.com/will-roscoe/protonfs/actions/runs/29732102596",
-    "commit": "6fead2fd0948ece01b0ede28cb668191a3399886",
+    "run_url": "https://github.com/will-roscoe/protonfs/actions/runs/30457599752",
+    "commit": "41466ef92da329e9371d54e4fe0ec69156879c45",
     "ref": "main"
   },
-  "pinned": "0.5.0",
+  "pinned": "0.6.0",
   "latest": "0.6.0",
-  "in_sync": false
+  "in_sync": true
 }
