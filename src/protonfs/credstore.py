@@ -30,6 +30,12 @@ PASS = "pass"
 AUTO = "auto"
 _VALID_STORES = (KEYCHAIN, PASS)
 
+# proton-drive first understood PROTON_DRIVE_CREDENTIALS_STORE=pass in 0.6.0. An older
+# binary silently ignores the variable and uses its keychain store, so a host that has
+# resolved to `pass` needs at least this version or the managed pass store is never used.
+# `protonfs doctor` fails on this mismatch (see commands/doctor.py).
+PASS_STORE_MIN_DRIVE = "0.6.0"
+
 
 def gnupg_home() -> Path:
     """The protonfs-managed GNUPGHOME handed to proton-drive's `pass`/`gpg`."""

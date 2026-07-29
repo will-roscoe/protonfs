@@ -110,6 +110,48 @@ def version_currency_check(drive: DriveClient) -> Check:
     )
 
 
+def pass_store_drive_compat_check(drive: DriveClient) -> Check:
+    """Fail when the active store is `pass` but the installed proton-drive predates it.
+
+    proton-drive only honours ``PROTON_DRIVE_CREDENTIALS_STORE=pass`` from
+    :data:`~protonfs.credstore.PASS_STORE_MIN_DRIVE`; an older binary silently ignores it
+    and uses its keychain store, so the managed pass store protonfs set up is never read.
+    Only meaningful on the pass path (the caller invokes it inside that branch).
+    """
+    from protonfs import credstore
+    from protonfs.commands.upgrade import _semver_tuple
+
+    installed = drive.drive_version()
+    minimum = credstore.PASS_STORE_MIN_DRIVE
+    if installed is None:
+        return Check(
+            name="pass/proton-drive compat",
+            ok=True,
+            warn=True,
+            detail="could not determine the proton-drive version",
+            hint="Ensure proton-drive is installed and runnable.",
+        )
+    if _semver_tuple(installed) < _semver_tuple(minimum):
+        return Check(
+            name="pass/proton-drive compat",
+            ok=False,
+            detail=(
+                f"the `pass` credentials store needs proton-drive >= {minimum}, but "
+                f"{installed} is installed and ignores it"
+            ),
+            hint=(
+                f"proton-drive {installed} does not support the pass store, so the session "
+                f"cannot be persisted here. Run `protonfs upgrade` to install proton-drive "
+                f"{minimum}+, or (where the OS keyring works) set "
+                f"PROTONFS_CREDENTIALS_STORE=keychain. To stay on proton-drive {installed}, "
+                f"use a protonfs release from before the pass fallback."
+            ),
+        )
+    return Check(
+        "pass/proton-drive compat", True, f"proton-drive {installed} supports the pass store"
+    )
+
+
 def upstream_currency_check(upstream_fetch=None) -> Check:
     """Advisory on upstream's Stable release vs highest_supported() -- same message
     contract as `protonfs upgrade` (#66). Fails soft offline: an unreachable manifest
@@ -273,6 +315,7 @@ def run_doctor(fix: bool = False, root: Path | None = None) -> list[Check]:
                 hint=None if tools_ok else "Install `pass` and `gnupg2`.",
             )
         )
+        checks.append(pass_store_drive_compat_check(drive))
         init = credstore.pass_store_initialized()
         checks.append(
             Check(

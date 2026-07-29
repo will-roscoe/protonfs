@@ -480,3 +480,37 @@ def test_doctor_keychain_store_runs_secret_service_checks(
     checks = _checks_by_name(run_doctor(fix=False, root=tmp_path))
     assert checks["credentials store"].ok
     assert checks["secret service"].ok
+
+
+# --- pass/proton-drive version compatibility (pass store needs proton-drive >= 0.6.0) ---
+
+
+class _FakeDriveVersion:
+    def __init__(self, version):
+        self._v = version
+
+    def drive_version(self):
+        return self._v
+
+
+def test_pass_store_compat_fails_below_min() -> None:
+    from protonfs.commands.doctor import pass_store_drive_compat_check
+
+    check = pass_store_drive_compat_check(_FakeDriveVersion("0.5.0"))
+    assert check.ok is False
+    assert "0.6.0" in check.detail
+    assert "protonfs upgrade" in (check.hint or "")
+    assert "PROTONFS_CREDENTIALS_STORE=keychain" in (check.hint or "")
+
+
+def test_pass_store_compat_ok_at_min() -> None:
+    from protonfs.commands.doctor import pass_store_drive_compat_check
+
+    assert pass_store_drive_compat_check(_FakeDriveVersion("0.6.0")).ok is True
+
+
+def test_pass_store_compat_unknown_version_warns() -> None:
+    from protonfs.commands.doctor import pass_store_drive_compat_check
+
+    check = pass_store_drive_compat_check(_FakeDriveVersion(None))
+    assert check.ok is True and check.warn is True

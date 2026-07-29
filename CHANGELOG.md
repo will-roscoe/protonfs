@@ -16,7 +16,13 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
   a passphrase-less GPG key and initializing the store on first `auth login` — instead of
   failing to persist the proton-drive session. The choice is sticky per host. Force it with
   `PROTONFS_CREDENTIALS_STORE=keychain|pass`; `protonfs doctor` reports the active store.
-  Requires proton-drive >= 0.6.0.
+  The GPG key is generated with a portable `gpg --batch --gen-key` parameter file so it
+  works on the older GnuPG (2.0.x) shipped by headless targets like CentOS 7, not just
+  GnuPG 2.1+. Requires proton-drive >= 0.6.0: when the active store is `pass` but an older
+  proton-drive is installed (which silently ignores the store selector), `protonfs doctor`
+  now fails with an explicit fix (upgrade proton-drive, switch to keychain, or downgrade
+  protonfs). The supported proton-drive version matrix is documented under
+  `docs/upgrading.rst`.
 
 ### Changed
 
