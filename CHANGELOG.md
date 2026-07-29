@@ -8,6 +8,12 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 
 ## [Unreleased]
 
+## [1.10.0] - 2026-07-29
+
+### Features
+
+- **cli**: align push/pull --resolve on a shared remote|local|both vocabulary (#125)
+
 ## [1.9.0] - 2026-07-29
 
 ### Features
@@ -527,7 +533,8 @@ the preceding development history and its first tagged release:
   line-matching, git-mutation error wrapping, `pathspec` deprecation, subpath
   prune data-loss fix.
 
-[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v1.9.0...HEAD
+[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v1.10.0...HEAD
+[1.10.0]: https://github.com/will-roscoe/protonfs/compare/v1.9.0...v1.10.0
 [1.9.0]: https://github.com/will-roscoe/protonfs/compare/v1.8.0...v1.9.0
 [1.8.0]: https://github.com/will-roscoe/protonfs/compare/v1.7.0...v1.8.0
 [1.7.0]: https://github.com/will-roscoe/protonfs/compare/v1.6.0...v1.7.0
