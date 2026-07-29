@@ -1,19 +1,19 @@
 {
   "source": "ci",
-  "updated": "2026-07-29T13:51:12Z",
+  "updated": "2026-07-29T14:00:23Z",
   "run": {
-    "run_id": "30457815697",
+    "run_id": "30458585491",
     "run_attempt": "1",
-    "run_url": "https://github.com/will-roscoe/protonfs/actions/runs/30457815697",
-    "commit": "e9e8ab4f384e847f9ae2c30bbc5579118643fc3e",
+    "run_url": "https://github.com/will-roscoe/protonfs/actions/runs/30458585491",
+    "commit": "802148719742e1ba44342a1d570180c0fd20034d",
     "ref": "main"
   },
   "tests": {
     "passed": 813,
     "failed": 0,
-    "skipped": 13,
-    "total": 826,
-    "duration_s": 6.62
+    "skipped": 17,
+    "total": 830,
+    "duration_s": 7.11
   },
   "coverage": {
     "line": 96.1,
@@ -30,9 +30,9 @@
       "tests": {
         "passed": 813,
         "failed": 0,
-        "skipped": 13,
-        "total": 826,
-        "duration_s": 6.36
+        "skipped": 17,
+        "total": 830,
+        "duration_s": 6.83
       }
     },
     {
@@ -41,9 +41,9 @@
       "tests": {
         "passed": 813,
         "failed": 0,
-        "skipped": 13,
-        "total": 826,
-        "duration_s": 8.12
+        "skipped": 17,
+        "total": 830,
+        "duration_s": 6.93
       }
     },
     {
@@ -52,9 +52,9 @@
       "tests": {
         "passed": 813,
         "failed": 0,
-        "skipped": 13,
-        "total": 826,
-        "duration_s": 5.17
+        "skipped": 17,
+        "total": 830,
+        "duration_s": 8.67
       }
     },
     {
@@ -63,9 +63,9 @@
       "tests": {
         "passed": 813,
         "failed": 0,
-        "skipped": 13,
-        "total": 826,
-        "duration_s": 7.31
+        "skipped": 17,
+        "total": 830,
+        "duration_s": 6.59
       }
     },
     {
@@ -74,9 +74,9 @@
       "tests": {
         "passed": 813,
         "failed": 0,
-        "skipped": 13,
-        "total": 826,
-        "duration_s": 6.95
+        "skipped": 17,
+        "total": 830,
+        "duration_s": 6.63
       }
     }
   ],
