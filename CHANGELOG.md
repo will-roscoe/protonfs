@@ -16,6 +16,29 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
   (``merge|keep-both|replace|skip``) stay accepted as synonyms. On pull, ``replace`` is
   accepted as an alias for ``remote``. This also fixes the refresh "remote-changed" hint,
   which suggested the invalid ``pull --resolve=replace`` (#124).
+- **credentials store**: on a headless Linux host where the freedesktop Secret Service
+  cannot be made ready, protonfs now falls back automatically to a protonfs-managed
+  `pass` ([password-store](https://www.passwordstore.org/)) credentials store — generating
+  a passphrase-less GPG key and initializing the store on first `auth login` — instead of
+  failing to persist the proton-drive session. The choice is sticky per host. Force it with
+  `PROTONFS_CREDENTIALS_STORE=keychain|pass`; `protonfs doctor` reports the active store.
+  The GPG key is generated with a portable `gpg --batch --gen-key` parameter file so it
+  works on the older GnuPG (2.0.x) shipped by headless targets like CentOS 7, not just
+  GnuPG 2.1+. Requires proton-drive >= 0.6.0: when the active store is `pass` but an older
+  proton-drive is installed (which silently ignores the store selector), `protonfs doctor`
+  now fails with an explicit fix (upgrade proton-drive, switch to keychain, or downgrade
+  protonfs). The supported proton-drive version matrix is documented under
+  `docs/upgrading.rst`.
+
+### Changed
+
+- **install**: bump the pinned/default `proton-drive` binary from `0.5.0` to `0.6.0`
+  (upstream stable, released 2026-07-20) and add it to the support matrix, keeping the
+  `0.5.0`/`0.4.6` pins for verifiable downgrades. SHA-512 pins were produced by
+  independently downloading and hashing each supported platform build (linux-x64,
+  linux-arm64, darwin-x64, darwin-arm64). Upstream `0.6.0` is a non-breaking release for
+  protonfs: no CLI argv or `--json` shape changes, so the wrapper is unaffected. New
+  installs and `protonfs upgrade` now fetch `0.6.0`.
 
 ## [1.8.0] - 2026-07-26
 

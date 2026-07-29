@@ -23,7 +23,6 @@ from protonfs.secretservice import (
     BUS_ENV,
     DISABLE_ENV,
     SecretServiceError,
-    drive_env,
     ensure_secret_service,
     is_linux,
     keyring_password_file,
@@ -108,6 +107,48 @@ def version_currency_check(drive: DriveClient) -> Check:
         ok=False,
         detail=f"{installed} is not in this protonfs release's support matrix",
         hint="Run `protonfs upgrade` to install a supported, verified build.",
+    )
+
+
+def pass_store_drive_compat_check(drive: DriveClient) -> Check:
+    """Fail when the active store is `pass` but the installed proton-drive predates it.
+
+    proton-drive only honours ``PROTON_DRIVE_CREDENTIALS_STORE=pass`` from
+    :data:`~protonfs.credstore.PASS_STORE_MIN_DRIVE`; an older binary silently ignores it
+    and uses its keychain store, so the managed pass store protonfs set up is never read.
+    Only meaningful on the pass path (the caller invokes it inside that branch).
+    """
+    from protonfs import credstore
+    from protonfs.commands.upgrade import _semver_tuple
+
+    installed = drive.drive_version()
+    minimum = credstore.PASS_STORE_MIN_DRIVE
+    if installed is None:
+        return Check(
+            name="pass/proton-drive compat",
+            ok=True,
+            warn=True,
+            detail="could not determine the proton-drive version",
+            hint="Ensure proton-drive is installed and runnable.",
+        )
+    if _semver_tuple(installed) < _semver_tuple(minimum):
+        return Check(
+            name="pass/proton-drive compat",
+            ok=False,
+            detail=(
+                f"the `pass` credentials store needs proton-drive >= {minimum}, but "
+                f"{installed} is installed and ignores it"
+            ),
+            hint=(
+                f"proton-drive {installed} does not support the pass store, so the session "
+                f"cannot be persisted here. Run `protonfs upgrade` to install proton-drive "
+                f"{minimum}+, or (where the OS keyring works) set "
+                f"PROTONFS_CREDENTIALS_STORE=keychain. To stay on proton-drive {installed}, "
+                f"use a protonfs release from before the pass fallback."
+            ),
+        )
+    return Check(
+        "pass/proton-drive compat", True, f"proton-drive {installed} supports the pass store"
     )
 
 
@@ -252,6 +293,49 @@ def run_doctor(fix: bool = False, root: Path | None = None) -> list[Check]:
         checks.append(upstream_currency_check())
     checks.extend(repo_currency_checks(root))
 
+    from protonfs import credstore
+
+    store, how = credstore.active_store()
+    checks.append(Check("credentials store", True, f"{store} ({how})"))
+
+    if store == credstore.PASS:
+        if fix and not credstore.pass_store_initialized():
+            pass_res = credstore.ensure_pass_store()
+            for action in pass_res.actions:
+                click.echo(f"  fix: {action}")
+            for warning in pass_res.warnings:
+                click.echo(f"  ! {warning}")
+
+        tools_ok = credstore.pass_tools_present()
+        checks.append(
+            Check(
+                "tool: pass/gpg",
+                ok=tools_ok,
+                detail="present" if tools_ok else "pass/gpg not installed",
+                hint=None if tools_ok else "Install `pass` and `gnupg2`.",
+            )
+        )
+        checks.append(pass_store_drive_compat_check(drive))
+        init = credstore.pass_store_initialized()
+        checks.append(
+            Check(
+                "pass store",
+                ok=init,
+                detail=str(credstore.password_store_dir()) if init else "not initialized",
+                hint=None if init else "Run `protonfs doctor --fix` (or `protonfs auth login`).",
+            )
+        )
+        ok, detail = credstore.probe_pass_store()
+        checks.append(
+            Check(
+                "pass read/write",
+                ok=ok,
+                detail=detail,
+                hint=None if ok else "Run `protonfs doctor --fix`.",
+            )
+        )
+        return checks
+
     if not is_linux():
         checks.append(
             Check("keyring", True, "not Linux; proton-drive uses the platform keychain")
@@ -369,8 +453,12 @@ def doctor(fix: bool = False) -> bool:
 
 
 def shell_exports() -> list[str]:
-    """`VAR=value` lines that make the *current shell* match the environment protonfs
-    hands proton-drive. Only needed to run the `proton-drive` binary by hand; every
-    protonfs command sets this up for itself."""
-    env = drive_env()
-    return [f"{BUS_ENV}={env[BUS_ENV]}"] if env.get(BUS_ENV) else []
+    """`VAR=value` lines that make the current shell match the environment protonfs
+    hands proton-drive (the resolved credentials store: bus for keychain, or the pass
+    vars). Only needed to run the `proton-drive` binary by hand; every protonfs command
+    sets this up for itself."""
+    from protonfs import credstore
+
+    env = credstore.drive_env()
+    keys = (BUS_ENV, credstore.STORE_ENV, "PASSWORD_STORE_DIR", "GNUPGHOME")
+    return [f"{k}={env[k]}" for k in keys if env.get(k)]

@@ -41,6 +41,38 @@ get X`` -- and installs nothing. Upgrading protonfs itself (above) is the path t
 a newer proton-drive: the new release re-pins and re-tests, then its own
 ``upgrade`` moves the binary forward.
 
+Supported proton-drive versions
+-------------------------------
+This protonfs release ships verified SHA-512 pins and behavioural compatibility for
+the proton-drive versions below. ``protonfs upgrade`` installs the highest supported
+version; the older ones stay installable for downgrades via
+:envvar:`PROTONFS_DRIVE_VERSION`.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 32 48
+
+   * - proton-drive
+     - Status
+     - Notes
+   * - ``0.6.0``
+     - highest supported (default)
+     - Required for the ``pass`` credentials store (:envvar:`PROTONFS_CREDENTIALS_STORE`);
+       older binaries ignore ``PROTON_DRIVE_CREDENTIALS_STORE``.
+   * - ``0.5.0``
+     - supported
+     - Trash restore resolves ``/trash`` entries by decrypted name (first match wins).
+   * - ``0.4.6``
+     - supported (downgrade only)
+     - Accepts original-path ``filesystem restore``.
+
+A proton-drive version outside this list is refused: an unsupported (or unpinned)
+version needs a protonfs release that pins and tests it. ``protonfs doctor`` reports
+the installed version against this matrix, and additionally **fails** when the active
+credentials store is ``pass`` but the installed proton-drive predates ``0.6.0`` --
+directing you to upgrade proton-drive, switch to the keychain store, or use a protonfs
+release without the pass fallback.
+
 The binary swap is verify-first and atomic: the download is staged to a temporary
 file, its SHA-512 checked against the pin, and only then swapped into place. A
 failed download or checksum mismatch never leaves a broken ``proton-drive``
