@@ -8,6 +8,8 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 
 ## [Unreleased]
 
+## [1.9.0] - 2026-07-29
+
 ### Features
 
 - **credentials store**: on a headless Linux host where the freedesktop Secret Service
@@ -33,6 +35,10 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
   linux-arm64, darwin-x64, darwin-arm64). Upstream `0.6.0` is a non-breaking release for
   protonfs: no CLI argv or `--json` shape changes, so the wrapper is unaffected. New
   installs and `protonfs upgrade` now fetch `0.6.0`.
+
+### Features
+
+- **credstore**: pass credentials-store autofallback + proton-drive 0.6.0 pin (#123)
 
 ## [1.8.0] - 2026-07-26
 
@@ -515,7 +521,8 @@ the preceding development history and its first tagged release:
   line-matching, git-mutation error wrapping, `pathspec` deprecation, subpath
   prune data-loss fix.
 
-[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v1.8.0...HEAD
+[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v1.9.0...HEAD
+[1.9.0]: https://github.com/will-roscoe/protonfs/compare/v1.8.0...v1.9.0
 [1.8.0]: https://github.com/will-roscoe/protonfs/compare/v1.7.0...v1.8.0
 [1.7.0]: https://github.com/will-roscoe/protonfs/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/will-roscoe/protonfs/compare/v1.5.2...v1.6.0
