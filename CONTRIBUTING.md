@@ -61,6 +61,14 @@ Notes:
   environment variable) must update `docs/stability.rst` and the surface-freeze
   test (`tests/test_cli_surface.py`) in the same change — that surface is a frozen
   1.0 contract.
+- **Local-only test tiers** never run in CI (they need a real binary/account and are
+  env-gated with `skipif`):
+  - `PROTONFS_TEST_MATRIX=1 pytest tests/test_binary_matrix.py` downloads and runs
+    *every* pinned proton-drive version to catch version-specific breakage the fake-drive
+    unit tests can't (old GnuPG, a missing CLI flag, a bad pin). Add
+    `PROTONFS_TEST_REMOTE=/my-files/test` to also run its live per-binary round-trips.
+  - `PROTONFS_TEST_REMOTE=/my-files/test pytest tests/test_live_integration.py
+    tests/test_live_workflows.py` runs the end-to-end suites against a throwaway remote.
 
 ## Commit messages and versioning
 
