@@ -23,8 +23,10 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import click
+
+from protonfs.credstore import drive_env
 from protonfs.drive import DriveClient, DriveError, binary_path
-from protonfs.secretservice import drive_env
 
 AUTH_SUBCOMMANDS = ("login", "logout", "status")
 
@@ -58,5 +60,17 @@ def auth_passthrough(subcommand: str, binary: str | None = None, runner=subproce
         raise DriveError(
             f"proton-drive binary not found: {bin_path}. Run `protonfs install-drive` first."
         )
-    result = runner([bin_path, "auth", subcommand], env=drive_env())
+    result_env = None
+    if subcommand == "login":
+        from protonfs.credstore import establish
+
+        established = establish(notify=click.echo)
+        result_env = established.env
+        for action in established.actions:
+            click.echo(f"  {action}")
+        for warning in established.warnings:
+            click.echo(f"  ! {warning}")
+    if result_env is None:
+        result_env = drive_env()
+    result = runner([bin_path, "auth", subcommand], env=result_env)
     return result.returncode

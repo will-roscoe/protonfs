@@ -395,13 +395,14 @@ class DriveClient:
         return self.binary_available()
 
     def _drive_env(self) -> dict[str, str]:
-        """Environment for proton-drive, with the keyring bootstrapped on first use.
+        """Environment for proton-drive, with the credentials store resolved on
+        first use (Secret Service bus for keychain, or the managed pass store).
 
         Resolved lazily and cached for the process: on a headless host the first
         call may launch a session bus, and doing that at import time would charge
         every `protonfs --help` for it.
         """
-        from protonfs.secretservice import drive_env
+        from protonfs.credstore import drive_env
 
         if self._env is None:
             self._env = drive_env()

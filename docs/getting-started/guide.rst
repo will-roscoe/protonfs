@@ -119,6 +119,51 @@ in, so a successful browser login is not thrown away.
    Every ``protonfs`` command sets up this keyring environment for itself;
    ``shell-init`` is only needed for manual ``proton-drive`` invocations.
 
+.. _credentials-store-pass-fallback:
+
+Credentials store: automatic ``pass`` fallback
+------------------------------------------------
+On some headless hosts the freedesktop Secret Service still cannot be made ready even
+after ``protonfs doctor --fix`` (no D-Bus, no keyring daemon available at all). In that
+case ``protonfs auth login`` no longer fails to persist the session: it falls back
+automatically to a protonfs-managed `pass <https://www.passwordstore.org/>`_
+credentials store, generating a passphrase-less GPG key and initializing the store —
+the same security posture as the generated keyring password used for the ``keychain``
+path. A one-line notice is printed when this happens, and the choice is then sticky
+for this host, so later commands reuse the same store instead of reading an empty one.
+
+.. code-block:: bash
+
+   protonfs auth login
+   # falling back to a protonfs-managed pass credentials store (no Secret Service
+   # available on this host)...
+   protonfs doctor
+   # credentials store: pass (sticky)
+
+Force a store instead of relying on auto-detection with :envvar:`PROTONFS_CREDENTIALS_STORE`
+(``keychain``/``pass``). If the native ``PROTON_DRIVE_CREDENTIALS_STORE`` is already set in
+the environment, it passes straight through to ``proton-drive`` and wins over
+:envvar:`PROTONFS_CREDENTIALS_STORE`'s resolution.
+
+.. note::
+   The ``pass`` fallback needs ``pass`` and ``gnupg2`` on the host. With root, install
+   them from your package manager (on CentOS 7, enable EPEL first:
+   ``yum install epel-release && yum install pass gnupg2``). ``gnupg2`` is already present
+   on most systems.
+
+   **Without root** (a common headless case), ``pass`` installs into your home directory —
+   it is a self-contained shell script:
+
+   .. code-block:: bash
+
+      git clone https://git.zx2c4.com/password-store
+      make -C password-store PREFIX="$HOME/.local" install   # installs ~/.local/bin/pass
+
+   Ensure ``~/.local/bin`` is on ``PATH``. ``pass``'s only hard runtime dependencies are
+   ``gpg`` and ``getopt`` (``tree`` is optional, used for listing only).
+
+   Requires proton-drive :version:`0.6.0` or newer.
+
 Walkthrough: free up local disk, keep the data on Drive
 -------------------------------------------------------
 ``offload`` deletes the *local* bytes of files it can prove are already on Drive,

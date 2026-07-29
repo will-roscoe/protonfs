@@ -212,3 +212,54 @@ def test_auth_logout_still_passthrough(monkeypatch) -> None:
 
     assert result.exit_code == 0
     assert seen == ["logout"]
+
+
+def test_auth_login_establishes_store(monkeypatch, tmp_path) -> None:
+    """protonfs auth login establishes the credentials store (may fall back to pass)."""
+    from protonfs import credstore
+    from protonfs.commands import auth
+
+    fake_bin = tmp_path / "proton-drive"
+    fake_bin.write_text("#!/bin/sh\n")
+
+    seen = {}
+
+    def fake_establish(env=None, notify=None, runner=None):
+        return credstore.EstablishResult(env={"ESTABLISHED": "1"}, store="pass")
+
+    monkeypatch.setattr(credstore, "establish", fake_establish)
+
+    def fake_runner(cmd, env=None):
+        seen["env"] = env
+        return _Result(0)
+
+    code = auth.auth_passthrough("login", binary=str(fake_bin), runner=fake_runner)
+
+    assert code == 0
+    assert seen["env"] == {"ESTABLISHED": "1"}
+
+
+def test_auth_logout_does_not_establish_store(monkeypatch, tmp_path) -> None:
+    """protonfs auth logout/status use plain drive_env, not establish."""
+    from protonfs import credstore
+    from protonfs.commands import auth
+
+    fake_bin = tmp_path / "proton-drive"
+    fake_bin.write_text("#!/bin/sh\n")
+
+    def fail_establish(env=None, notify=None, runner=None):
+        raise AssertionError("establish should not be called for logout")
+
+    monkeypatch.setattr(credstore, "establish", fail_establish)
+    monkeypatch.setattr(auth, "drive_env", lambda e=None: {"FROM_CREDSTORE": "1"})
+
+    seen = {}
+
+    def fake_runner(cmd, env=None):
+        seen["env"] = env
+        return _Result(0)
+
+    code = auth.auth_passthrough("logout", binary=str(fake_bin), runner=fake_runner)
+
+    assert code == 0
+    assert seen["env"] == {"FROM_CREDSTORE": "1"}

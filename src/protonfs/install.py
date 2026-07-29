@@ -32,7 +32,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 
-DEFAULT_VERSION = "0.5.0"
+DEFAULT_VERSION = "0.6.0"
 VERSION_ENV = "PROTONFS_DRIVE_VERSION"
 SHA512_ENV = "PROTONFS_DRIVE_SHA512"
 DOWNLOAD_BASE = "https://proton.me/download/drive/cli"
@@ -53,6 +53,24 @@ DOWNLOAD_TIMEOUT = 60  # seconds; avoids a stalled connection hanging the instal
 # override (we never install unverified). Older pinned versions stay in the table so
 # PROTONFS_DRIVE_VERSION downgrades remain verifiable.
 PINNED_SHA512 = {
+    # 0.6.0 (released 2026-07-20): manifest checksums independently re-verified by
+    # downloading each binary and hashing it (2026-07-28, via repin_proton_drive.py).
+    ("0.6.0", "linux-x64"): (
+        "e77f5b27a51a81063c23c15ac0a9f07e0ec5c868e78670f34b45b3c3c2e679ed"
+        "769e6225796b900d0d02735a0c52a21eba72356f3ad617de076c405532e698dc"
+    ),
+    ("0.6.0", "linux-arm64"): (
+        "4651d7b23d111a940d5a0d308a62aaf7d39f0d6a8ceba4c6faa2bcd69624557e"
+        "0eb19f5a528e8d759fb1fcd96c9e094777fabdd218372dee563c6712bd13cdde"
+    ),
+    ("0.6.0", "darwin-x64"): (
+        "0755d7263186a71873ac456b5cc88db729afa8dbbb6c062f2b1247a614c60637"
+        "bb70ea590d9dec895630e8ddfb3816e0319c3ecea2ae33216acbaa327c557c50"
+    ),
+    ("0.6.0", "darwin-arm64"): (
+        "744a854403a0f5730ec7c55d3c8bad84ab179590b7be77fc6c138f61b0f98689"
+        "ac62761252037353b2643a5d1ad1b52dec46ae8c2853cefb2a7fd1a5e2016c59"
+    ),
     # 0.5.0 (released 2026-07-13): manifest checksums independently re-verified by
     # downloading each binary and hashing it (2026-07-16).
     ("0.5.0", "linux-x64"): (
@@ -84,7 +102,7 @@ PINNED_SHA512 = {
 # `highest_supported()` requires a newer protonfs release, which re-pins via
 # .github/scripts/repin_proton_drive.py and adds the new version here. Older entries
 # stay so PROTONFS_DRIVE_VERSION downgrades remain a supported, checkable choice.
-SUPPORTED_DRIVE_VERSIONS = ("0.5.0", "0.4.6")
+SUPPORTED_DRIVE_VERSIONS = ("0.6.0", "0.5.0", "0.4.6")
 
 
 def highest_supported() -> str:
