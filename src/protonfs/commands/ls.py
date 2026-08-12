@@ -28,17 +28,43 @@ from protonfs.localscan import scan
 LS_FORMATS = ("table", "plain", "json")
 
 
+def _subpath_is_file(ctx: RepoContext, subpath: str) -> bool:
+    """True if `subpath` names a single tracked file rather than a directory.
+
+    The index is checked first, so a file that is on Drive but not materialised locally
+    (``metadata-only``) is still recognised; then the working tree, for a file that
+    exists locally but is not yet indexed (``local-only``).
+    """
+    if ctx.index.get(subpath) is not None:
+        return True
+    return (ctx.root / subpath).is_file()
+
+
 def remote_rel_paths(ctx: RepoContext, subpath: str | None = None) -> dict[str, RemoteEntry]:
     """Recursive files-only remote listing, scoped to `subpath` when given. rel_paths
     are re-prefixed with the subpath so they match the index's repo-root-relative keys
-    (same convention as `refresh`)."""
+    (same convention as `refresh`).
+
+    A `subpath` naming a single file is walked via its parent directory and filtered to
+    that one entry. Walking the file's own remote path issues a directory ``list``
+    against a file, which Drive never answers: the request times out, is misread as rate
+    limiting, and burns the entire retry/backoff ladder before returning nothing (#129).
+    ``localscan.scan`` has accepted a file subpath since 1.5.2, so ``ls`` takes one
+    happily and only the remote arm could not cope with it.
+    """
     remote_root = ctx.config.remote_root
-    if subpath:
-        remote_root = f"{remote_root}/{subpath}"
-    result = {e.rel_path: e for e in ctx.drive.walk(remote_root) if not e.is_dir}
-    if subpath:
-        result = {f"{subpath}/{rel}": entry for rel, entry in result.items()}
-    return result
+    if not subpath:
+        return {e.rel_path: e for e in ctx.drive.walk(remote_root) if not e.is_dir}
+
+    if _subpath_is_file(ctx, subpath):
+        parent, _, name = subpath.rpartition("/")
+        walk_root = f"{remote_root}/{parent}" if parent else remote_root
+        return {
+            subpath: e for e in ctx.drive.walk(walk_root) if not e.is_dir and e.rel_path == name
+        }
+
+    result = {e.rel_path: e for e in ctx.drive.walk(f"{remote_root}/{subpath}") if not e.is_dir}
+    return {f"{subpath}/{rel}": entry for rel, entry in result.items()}
 
 
 def collect_entries(

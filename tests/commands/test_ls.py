@@ -6,7 +6,7 @@ from pathlib import Path
 
 from rich.console import Console
 
-from protonfs.commands.ls import render_ls
+from protonfs.commands.ls import remote_rel_paths, render_ls
 from protonfs.config import init_config
 from protonfs.context import load_context
 from protonfs.drive import RemoteEntry
@@ -269,3 +269,104 @@ def test_cli_state_choices_match_syncstate() -> None:
     from protonfs.diff import SyncState
 
     assert _STATE_CHOICES == tuple(s.value for s in SyncState)
+
+
+# --- #129: a file pathspec with --remote must not be walked as a directory -----------
+
+
+def test_remote_rel_paths_file_subpath_walks_parent_not_the_file(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    """A file subpath is resolved via its parent listing.
+
+    Walking the file's own remote path issues a directory `list` against a file; Drive
+    never answers it, so the request times out, is misread as throttling, and burns the
+    whole retry ladder for nothing (#129).
+    """
+    (tmp_path / "run1").mkdir()
+    (tmp_path / "run1" / "dump_0001").write_bytes(b"data")
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.drive = make_fake_drive(
+        walk_by_root={
+            "/my-files/test/run1": [
+                RemoteEntry("dump_0001", is_dir=False, size=4),
+                RemoteEntry("dump_0002", is_dir=False, size=4),
+            ]
+        }
+    )
+
+    result = remote_rel_paths(ctx, "run1/dump_0001")
+
+    assert ctx.drive.walk_roots == ["/my-files/test/run1"]
+    assert "/my-files/test/run1/dump_0001" not in ctx.drive.walk_roots
+    # scoped to the requested file, keyed by its repo-root-relative path
+    assert set(result) == {"run1/dump_0001"}
+
+
+def test_remote_rel_paths_file_subpath_known_only_to_index(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    """A metadata-only file (on Drive, not materialised locally) is still a file."""
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.index.set("run1/dump_0001", _entry("run1/dump_0001"))
+    ctx.drive = make_fake_drive(
+        walk_by_root={"/my-files/test/run1": [RemoteEntry("dump_0001", is_dir=False, size=4)]}
+    )
+
+    result = remote_rel_paths(ctx, "run1/dump_0001")
+
+    assert ctx.drive.walk_roots == ["/my-files/test/run1"]
+    assert set(result) == {"run1/dump_0001"}
+
+
+def test_remote_rel_paths_file_subpath_at_repo_root(tmp_path: Path, make_fake_drive) -> None:
+    """A file directly under the repo root has no parent segment to strip."""
+    (tmp_path / "notes.txt").write_bytes(b"x")
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.drive = make_fake_drive(
+        walk_by_root={"/my-files/test": [RemoteEntry("notes.txt", is_dir=False, size=1)]}
+    )
+
+    result = remote_rel_paths(ctx, "notes.txt")
+
+    assert ctx.drive.walk_roots == ["/my-files/test"]
+    assert set(result) == {"notes.txt"}
+
+
+def test_remote_rel_paths_file_subpath_absent_from_remote(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    """A local file with no remote counterpart yields nothing, rather than hanging."""
+    (tmp_path / "run1").mkdir()
+    (tmp_path / "run1" / "dump_0001").write_bytes(b"data")
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.drive = make_fake_drive(
+        walk_by_root={"/my-files/test/run1": [RemoteEntry("dump_0002", is_dir=False, size=4)]}
+    )
+
+    assert remote_rel_paths(ctx, "run1/dump_0001") == {}
+    assert ctx.drive.walk_roots == ["/my-files/test/run1"]
+
+
+def test_remote_rel_paths_directory_subpath_unchanged(tmp_path: Path, make_fake_drive) -> None:
+    """A directory subpath keeps walking itself and re-prefixing its entries."""
+    (tmp_path / "run1").mkdir()
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.drive = make_fake_drive(
+        walk_by_root={
+            "/my-files/test/run1": [
+                RemoteEntry("dump_0001", is_dir=False, size=4),
+                RemoteEntry("nested/dump_0002", is_dir=False, size=4),
+            ]
+        }
+    )
+
+    result = remote_rel_paths(ctx, "run1")
+
+    assert ctx.drive.walk_roots == ["/my-files/test/run1"]
+    assert set(result) == {"run1/dump_0001", "run1/nested/dump_0002"}
