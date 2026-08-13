@@ -55,12 +55,19 @@ version; the older ones stay installable for downgrades via
    * - proton-drive
      - Status
      - Notes
-   * - ``0.6.0``
+   * - ``0.8.0``
      - highest supported (default)
      - Required for the ``pass`` credentials store (:envvar:`PROTONFS_CREDENTIALS_STORE`);
        older binaries ignore ``PROTON_DRIVE_CREDENTIALS_STORE``.
+   * - ``0.7.0``
+     - supported (downgrade only)
+     - No protonfs-visible behavioural change from 0.6.0.
+   * - ``0.6.0``
+     - supported (downgrade only)
+     - Required for the ``pass`` credentials store (:envvar:`PROTONFS_CREDENTIALS_STORE`);
+       older binaries ignore ``PROTON_DRIVE_CREDENTIALS_STORE``.
    * - ``0.5.0``
-     - supported
+     - supported (downgrade only)
      - Trash restore resolves ``/trash`` entries by decrypted name (first match wins).
    * - ``0.4.6``
      - supported (downgrade only)

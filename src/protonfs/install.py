@@ -32,7 +32,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 
-DEFAULT_VERSION = "0.6.0"
+DEFAULT_VERSION = "0.8.0"
 VERSION_ENV = "PROTONFS_DRIVE_VERSION"
 SHA512_ENV = "PROTONFS_DRIVE_SHA512"
 DOWNLOAD_BASE = "https://proton.me/download/drive/cli"
@@ -53,6 +53,44 @@ DOWNLOAD_TIMEOUT = 60  # seconds; avoids a stalled connection hanging the instal
 # override (we never install unverified). Older pinned versions stay in the table so
 # PROTONFS_DRIVE_VERSION downgrades remain verifiable.
 PINNED_SHA512 = {
+    # 0.8.0 (released 2026-08-13): manifest checksums independently re-verified by
+    # downloading each binary and hashing it (2026-08-13, via repin_proton_drive.py).
+    ("0.8.0", "linux-x64"): (
+        "cf61c2688c45e1055d8add6221d9471a5a5b64bf3bcdb86460f5cb18414596cc"
+        "4df3cdb6627c9097c94bec32a3c9915ada3211ef2ae5be33c46ebbc996ccaa28"
+    ),
+    ("0.8.0", "linux-arm64"): (
+        "27a1aec1d2095fd4a1a81e1d47cd1f9fd4901bd579ffe50342d15e2e52078d6e"
+        "8b2dddcf58a4a386438dc7562017778be26c1ba62399f901ae82c7430e2140a3"
+    ),
+    ("0.8.0", "darwin-x64"): (
+        "4fed939abfbab4a7a96e2aaf164d672ce3e2c6cc0717e65b18c31caa5f52ce66"
+        "e3ab843ec2f3c451a3268b38291cd964632a8abf6c9c8ec37f5428973106c9dd"
+    ),
+    ("0.8.0", "darwin-arm64"): (
+        "1483a2fa6afe7a49abdc34f66420b87e0a5d48d236f6f4a79eae7f7d76dc3a6b"
+        "eebedcde5e229ce5fdef42450ada41bbcc02161a64afb473bcaa4fda938c7329"
+    ),
+    # 0.7.0 (released 2026-07-31): manifest checksums independently re-verified by
+    # downloading each binary and hashing it (2026-08-13), via the versioned manifest
+    # (proton.me/download/drive/cli/0.7.0/version.json) since upstream's unversioned
+    # manifest only ever lists the current Stable release.
+    ("0.7.0", "linux-x64"): (
+        "5a5affcbec04ea926a32d10e236c1342227f1b6d416cb797f88f943b2c4f1dcf"
+        "53b5897a115f1c1aa9ce8ce92fd637e1c50bd223b04866577681f0584eccdbc6"
+    ),
+    ("0.7.0", "linux-arm64"): (
+        "73c68017171b57f4e1126b1477dd129a8d8e7189fe42387145fccb4808a3ac1d"
+        "a320ef10d83754364706de80ecc700dd8e04321f0d60c202e20d546f9304efc3"
+    ),
+    ("0.7.0", "darwin-x64"): (
+        "146bbae72e0a6d9b69fe88711115b57fc2e70041d4156c04a280845033ec2d19"
+        "6bdafeb388e2898db5df9fcb8907e878c7f7920cfe448307ef0cbd359913338f"
+    ),
+    ("0.7.0", "darwin-arm64"): (
+        "7b5ff4ff59e7d164a6298a6239b8d2f7b1ffb1eba94e53de93a637ebb10c62d1"
+        "00632c28eac144e722755c28454fe9337b9cc3f5d09c996e17eed9a07992d2ed"
+    ),
     # 0.6.0 (released 2026-07-20): manifest checksums independently re-verified by
     # downloading each binary and hashing it (2026-07-28, via repin_proton_drive.py).
     ("0.6.0", "linux-x64"): (
@@ -102,7 +140,7 @@ PINNED_SHA512 = {
 # `highest_supported()` requires a newer protonfs release, which re-pins via
 # .github/scripts/repin_proton_drive.py and adds the new version here. Older entries
 # stay so PROTONFS_DRIVE_VERSION downgrades remain a supported, checkable choice.
-SUPPORTED_DRIVE_VERSIONS = ("0.6.0", "0.5.0", "0.4.6")
+SUPPORTED_DRIVE_VERSIONS = ("0.8.0", "0.7.0", "0.6.0", "0.5.0", "0.4.6")
 
 
 def highest_supported() -> str:
