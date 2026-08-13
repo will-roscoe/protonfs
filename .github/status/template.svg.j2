@@ -310,17 +310,16 @@ class="{{'pass' if py.status == 'passing' else 'fail'}}"
 
 <text
 class="label muted"
-x="400"
+x="320"
 y="325"
 >
-<!-- 35,435 -->
 BUILDS
 </text>
 
 
 <text
 class="small muted"
-x="400"
+x="320"
 y="370" 
 
 >
@@ -329,7 +328,7 @@ x86_64
 
 <text
 class="small muted"
-x="400"
+x="320"
 y="390" 
 
 >
@@ -339,7 +338,7 @@ ARM64
 
 {% for os, archs in builds.items() %}
 
-{% set x = 480 + loop.index0 * 50 %}
+{% set x = 380 + loop.index0 * 50 %}
 
 <text
 class="small text"
@@ -357,13 +356,58 @@ text-anchor="middle"
 <circle
 cx="{{x}}"
 cy="{{y-5}}"
-r="8"
+r="6"
 class="{{'pass' if status == 'passing' else 'fail'}}"
 />
 
 {% endfor %}
 
 {% endfor %}
+
+
+<!-- Proton Drive -->
+
+<text
+class="label muted"
+x="520"
+y="325"
+>
+PROTON DRIVE
+</text>
+
+
+<text
+class="small text"
+x="520"
+y="355"
+>
+Pinned
+</text>
+
+<text
+class="value in-card text muted {{ 'pass' if proton_drive.pinned == proton_drive.latest else 'warn' }}"
+x="520"
+y="378"
+>
+{{ proton_drive.pinned }}
+</text>
+
+
+<text
+class="small text"
+x="590"
+y="355"
+>
+Latest
+</text>
+
+<text
+class="value in-card text muted"
+x="590"
+y="378"
+>
+{{ proton_drive.latest }}
+</text>
 
 
 </svg>
