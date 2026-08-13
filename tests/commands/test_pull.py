@@ -429,3 +429,29 @@ def test_pull_single_file_pathspec_downloads_only_that_file(
     assert downloaded == ["/my-files/test/a/wanted.bin"]
     assert not (tmp_path / "a" / "other.bin").exists()
     assert not (tmp_path / "b").exists()
+
+
+def test_pull_reports_under_delivery_when_drive_silently_drops_a_file(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    """#132: proton-drive can claim a file transferred (absent from
+    TransferResult.failures) while nothing actually lands locally. pull must not
+    trust that claim -- an unverified file must count as failed, not vanish from
+    both the transferred and failed tallies while still exiting 0."""
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.index.set("ok", _metadata_only_entry("/my-files/test/ok"))
+    ctx.index.set("dropped", _metadata_only_entry("/my-files/test/dropped"))
+    ctx.drive = make_fake_drive(
+        download_result=TransferResult(2, 0, 0, []),  # drive claims full success
+        download_dropped_files={"dropped"},  # but this one never lands on disk
+    )
+
+    result = pull(ctx, None, resolve=None, dry_run=False)
+
+    assert (tmp_path / "ok").exists()
+    assert not (tmp_path / "dropped").exists()
+    assert result.transferred_items == 1
+    assert result.failed_items == 1
+    assert result.failures[0]["name"] == "dropped"
+    assert ctx.index.get("dropped").local_state == "metadata-only"

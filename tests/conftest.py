@@ -27,6 +27,7 @@ class FakeDrive:
         upload_result: TransferResult | None = None,
         download_result: TransferResult | None = None,
         dropped_files: set[str] | None = None,
+        download_dropped_files: set[str] | None = None,
         remote_size_overrides: dict[str, int] | None = None,
         version: str | None = "v0.4.6",
         authed: bool = True,
@@ -53,6 +54,9 @@ class FakeDrive:
         # #22 simulation: names proton-drive reports as transferred but that never land,
         # and per-name size overrides to simulate a truncated/partial upload on the remote.
         self._dropped_files = dropped_files or set()
+        # #132 simulation: names proton-drive reports as transferred (not in
+        # download_result.failures) but that never land locally.
+        self._download_dropped_files = download_dropped_files or set()
         self._remote_size_overrides = remote_size_overrides or {}
         # remote_parent -> {name: claimed_size} for files that actually landed.
         self._remote_files: dict[str, dict[str, int]] = {}
@@ -108,7 +112,7 @@ class FakeDrive:
         failed = {f["name"] for f in result.failures}
         for remote_path in remote_paths:
             name = remote_path.rsplit("/", 1)[-1]
-            if name in failed:
+            if name in failed or name in self._download_dropped_files:
                 continue
             (Path(local_folder) / name).write_bytes(b"downloaded")
         return result
