@@ -8,6 +8,12 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 
 ## [Unreleased]
 
+## [1.10.2] - 2026-08-13
+
+### Bug fixes
+
+- **pull**: verify downloads against the local filesystem instead of trusting counts (#133)
+
 ## [1.10.1] - 2026-08-12
 
 ### Bug fixes
@@ -543,7 +549,8 @@ the preceding development history and its first tagged release:
   line-matching, git-mutation error wrapping, `pathspec` deprecation, subpath
   prune data-loss fix.
 
-[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v1.10.1...HEAD
+[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v1.10.2...HEAD
+[1.10.2]: https://github.com/will-roscoe/protonfs/compare/v1.10.1...v1.10.2
 [1.10.1]: https://github.com/will-roscoe/protonfs/compare/v1.10.0...v1.10.1
 [1.10.0]: https://github.com/will-roscoe/protonfs/compare/v1.9.0...v1.10.0
 [1.9.0]: https://github.com/will-roscoe/protonfs/compare/v1.8.0...v1.9.0
