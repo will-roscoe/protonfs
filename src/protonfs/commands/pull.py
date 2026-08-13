@@ -34,6 +34,12 @@ REMOTE_COPY_SUFFIX = ".remote"
 CONFLICT_KIND = "conflict"
 CONFLICT_ERROR = "local and remote diverged; re-run with --resolve=remote|local|both"
 
+# #132: proton-drive can report a file as transferred that never lands locally (the
+# download analogue of #22 on push). Files that fail this post-download verification are
+# tagged with this so the CLI can tell them apart from genuine conflicts.
+UNDERDELIVERED_KIND = "under-delivered"
+UNDERDELIVERED_ERROR = "claimed transferred but not found locally after download (under-delivered)"
+
 
 def _remote_view(ctx: RepoContext, subpath: str | None) -> dict[str, RemoteEntry]:
     """Walk the remote (scoped to `subpath`) into a rel_path -> RemoteEntry map, so classify
@@ -75,7 +81,6 @@ def _download_and_index(
             # "replace": pull intentionally brings remote content down, overwriting any local
             # copy at the destination (that is what remote-wins / remote-moved mean).
             result = ctx.drive.download(remote_paths, local_folder, file_strategy="replace")
-            total.transferred_items += result.transferred_items
             total.skipped_items += result.skipped_items
             total.failed_items += result.failed_items
             total.failures += result.failures
@@ -86,11 +91,21 @@ def _download_and_index(
                 if Path(rel).name not in failed_names:
                     reporter.item("v", rel)
 
+            # #132: do NOT trust result.transferred_items -- verify each non-failed
+            # candidate actually landed locally before counting it transferred and
+            # indexing it. A file proton-drive did not report as a failure but that is
+            # absent afterward is a silent under-delivery: report it as failed and leave
+            # it unindexed so the next pull retries it, mirroring #22 on push.
             for rel in batch:
-                if Path(rel).name in failed_names:
+                name = Path(rel).name
+                if name in failed_names:
                     continue
                 downloaded_path = ctx.root / rel
                 if not downloaded_path.exists():
+                    total.failed_items += 1
+                    total.failures.append(
+                        {"name": name, "error": UNDERDELIVERED_ERROR, "kind": UNDERDELIVERED_KIND}
+                    )
                     continue
                 stat = downloaded_path.stat()
                 prior = ctx.index.get(rel)
@@ -109,6 +124,7 @@ def _download_and_index(
                         last_synced=now,
                     ),
                 )
+                total.transferred_items += 1
         # #3: persist after each parent group so an interrupted pull resumes from here
         # rather than restarting. Crash-safe once composed with #1's atomic writes.
         ctx.index.save()
@@ -148,6 +164,13 @@ def pull(
     locally and never overwrites a local file, so it cannot clobber a local edit. A
     live remote walk (needed to attribute a direction to diverged files) is paid for
     only when a ``resolve`` policy is supplied.
+
+    .. versionchanged:: 1.10.2
+       Each download is now verified against the local filesystem afterward instead of
+       trusting proton-drive's reported transfer count (#132, the download analogue of
+       #22 on push). A file proton-drive did not report as a failure but that is absent
+       locally afterward is now counted in ``failed_items`` and left unindexed for the
+       next pull to retry, instead of silently vanishing from both tallies.
 
     :param ctx: the loaded repo context.
     :param subpath: repo-root-relative subtree to pull, or ``None`` for everything.

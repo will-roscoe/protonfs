@@ -475,17 +475,16 @@ class="pass"
 
 <text
 class="label muted"
-x="400"
+x="320"
 y="325"
 >
-<!-- 35,435 -->
 BUILDS
 </text>
 
 
 <text
 class="small muted"
-x="400"
+x="320"
 y="370" 
 
 >
@@ -494,7 +493,7 @@ x86_64
 
 <text
 class="small muted"
-x="400"
+x="320"
 y="390" 
 
 >
@@ -506,7 +505,7 @@ ARM64
 
 <text
 class="small text"
-x="480"
+x="380"
 y="350"
 text-anchor="middle"
 >
@@ -516,18 +515,18 @@ Linux
 
 
 <circle
-cx="480"
+cx="380"
 cy="365"
-r="8"
+r="6"
 class="pass"
 />
 
 
 
 <circle
-cx="480"
+cx="380"
 cy="385"
-r="8"
+r="6"
 class="pass"
 />
 
@@ -536,7 +535,7 @@ class="pass"
 
 <text
 class="small text"
-x="530"
+x="430"
 y="350"
 text-anchor="middle"
 >
@@ -546,22 +545,67 @@ macOS
 
 
 <circle
-cx="530"
+cx="430"
 cy="365"
-r="8"
+r="6"
 class="pass"
 />
 
 
 
 <circle
-cx="530"
+cx="430"
 cy="385"
-r="8"
+r="6"
 class="pass"
 />
 
 
+
+
+<!-- Proton Drive -->
+
+<text
+class="label muted"
+x="520"
+y="325"
+>
+PROTON DRIVE
+</text>
+
+
+<text
+class="small text"
+x="520"
+y="355"
+>
+Pinned
+</text>
+
+<text
+class="value in-card text muted warn"
+x="520"
+y="378"
+>
+0.6.0
+</text>
+
+
+<text
+class="small text"
+x="590"
+y="355"
+>
+Latest
+</text>
+
+<text
+class="value in-card text muted"
+x="590"
+y="378"
+>
+0.8.0
+</text>
 
 
 </svg>
