@@ -924,3 +924,33 @@ def test_remote_identities_does_not_warn_on_an_empty_listing(
         assert client.remote_identities("/my-files/test") == {}
 
     assert not caplog.records, caplog.text
+
+
+def test_remote_identities_does_not_shell_out_for_the_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#137 regression: the degraded-verification warning must not read the proton-drive
+    version eagerly. Reading it spawns the binary (seconds of SDK startup), and this runs
+    after EVERY verify listing -- once per parent directory on a push. It also broke any
+    caller that stubs `list` without stubbing the binary, which is how CI caught it.
+    """
+    import protonfs.drive as drive_mod
+
+    monkeypatch.setattr(drive_mod, "_CLAIMED_METADATA_WARNED", False, raising=False)
+    client = DriveClient(binary="proton-drive")
+    calls = []
+
+    def exploding_version():
+        calls.append(1)
+        raise AssertionError("drive_version() must not be called when nothing is warned")
+
+    monkeypatch.setattr(client, "drive_version", exploding_version)
+    # a listing WITH claimed sizes -> no warning -> version must never be consulted
+    monkeypatch.setattr(client, "list_with_backoff", lambda *a, **k: [
+        {"name": {"ok": True, "value": "a"}, "type": "file", "claimedSize": 10}
+    ])
+
+    idents = client.remote_identities("/my-files/test")
+
+    assert idents["a"].claimed_size == 10
+    assert calls == []

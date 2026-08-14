@@ -295,7 +295,7 @@ _CLAIMED_METADATA_WARNED = False
 
 
 def _warn_if_verification_degraded(
-    identities: dict[str, RemoteIdentity], version: str | None
+    identities: dict[str, RemoteIdentity], describe_version: Callable[[], str | None]
 ) -> None:
     """Warn (once per process) when a non-empty listing carries no plaintext metadata.
 
@@ -307,6 +307,12 @@ def _warn_if_verification_degraded(
 
     An EMPTY listing is not evidence either way (a first push into a new folder sees one),
     so it never warns.
+
+    ``describe_version`` is a CALLABLE, resolved only when a warning is actually emitted:
+    reading the version shells out to ``proton-drive``, which carries seconds of SDK
+    startup, and this runs after every verify listing (once per parent directory on a
+    push). Resolving it eagerly would put a subprocess spawn on that hot path -- and would
+    make the function unusable for any caller that has not stubbed the binary.
     """
     global _CLAIMED_METADATA_WARNED
     if _CLAIMED_METADATA_WARNED or not identities:
@@ -314,6 +320,7 @@ def _warn_if_verification_degraded(
     if any(i.claimed_size is not None or i.sha1 for i in identities.values()):
         return
     _CLAIMED_METADATA_WARNED = True
+    version = describe_version()
     logger.warning(
         "this proton-drive build (%s) reports no claimedSize/claimedDigests, so "
         "remote verification is by NAME PRESENCE ONLY -- a wrong or truncated remote "
@@ -708,7 +715,8 @@ class DriveClient:
                 claimed_size=entry.get("claimedSize"),
                 sha1=digests.get("sha1"),
             )
-        _warn_if_verification_degraded(identities, self.drive_version())
+        # bound method, NOT called: only resolved if a warning is actually emitted
+        _warn_if_verification_degraded(identities, self.drive_version)
         return identities
 
     def walk(
