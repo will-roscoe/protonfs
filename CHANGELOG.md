@@ -8,6 +8,12 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 
 ## [Unreleased]
 
+## [1.11.1] - 2026-08-14
+
+### Bug fixes
+
+- **pull**: honour the configured batch_size when sizing download calls (#140)
+
 ## [1.11.0] - 2026-08-14
 
 ### Features
@@ -555,7 +561,8 @@ the preceding development history and its first tagged release:
   line-matching, git-mutation error wrapping, `pathspec` deprecation, subpath
   prune data-loss fix.
 
-[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v1.11.0...HEAD
+[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v1.11.1...HEAD
+[1.11.1]: https://github.com/will-roscoe/protonfs/compare/v1.11.0...v1.11.1
 [1.11.0]: https://github.com/will-roscoe/protonfs/compare/v1.10.2...v1.11.0
 [1.10.2]: https://github.com/will-roscoe/protonfs/compare/v1.10.1...v1.10.2
 [1.10.1]: https://github.com/will-roscoe/protonfs/compare/v1.10.0...v1.10.1
