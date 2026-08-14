@@ -11,7 +11,10 @@ surface these commands expose is documented in ``docs/stability.rst``.
 from __future__ import annotations
 
 import contextlib
+import fnmatch
 import functools
+from pathlib import Path
+from typing import Callable
 
 import click
 
@@ -145,6 +148,129 @@ def _normalize_paths(paths: tuple[str, ...]) -> list[str | None]:
     if not stripped:
         return [None]
     return [p for p in stripped if not any(r != p and p.startswith(f"{r}/") for r in stripped)]
+
+
+# #131: PATH arguments that are glob patterns (mload*, mload*/*.ev), expanded by protonfs
+# itself rather than relying on the shell -- so a `schedule` job's quoted pattern keeps
+# matching as new directories appear, which a shell glob (expanded once, at install time)
+# cannot do.
+_GLOB_CHARS = frozenset("*?[")
+
+
+def _is_pattern(pathspec: str) -> bool:
+    """True if `pathspec` contains a glob metacharacter, so it should be expanded rather
+    than treated as a literal path."""
+    return any(c in pathspec for c in _GLOB_CHARS)
+
+
+def _expand_patterns(
+    paths: tuple[str, ...], matcher: Callable[[str], list[str]]
+) -> tuple[tuple[str, ...], list[str]]:
+    """Expand every glob-looking entry in `paths` via `matcher`, leaving literal paths
+    untouched; the result feeds straight into :func:`_normalize_paths`.
+
+    :param matcher: resolves one pattern to the literal paths it matches right now
+        (:func:`_glob_local` for push's local-filesystem view, :func:`_expand_pattern_index`
+        for pull's index view).
+    :returns: ``(expanded_paths, unmatched_patterns)`` -- the second is every pattern that
+        matched nothing, for the caller to apply ``--strict`` policy against. Deliberately
+        NOT folded into ``expanded_paths``: an empty ``expanded_paths`` must still be
+        distinguished from "no paths given at all" (which means the whole repo) by the
+        caller, so a pattern matching nothing never silently widens to everything.
+    """
+    expanded: list[str] = []
+    unmatched: list[str] = []
+    for raw in paths:
+        if _is_pattern(raw):
+            matches = matcher(raw)
+            if not matches:
+                unmatched.append(raw)
+                continue
+            expanded.extend(matches)
+        else:
+            expanded.append(raw)
+    return tuple(expanded), unmatched
+
+
+def _glob_local(root: Path, pattern: str) -> list[str]:
+    """Expand `pattern` against the live local tree under `root` (push's matcher).
+
+    Uses :meth:`Path.glob`, so semantics match a shell glob exactly: a pattern segment
+    never crosses ``/`` (``mload*`` matches top-level entries only; ``**`` would recurse,
+    but is not needed by any case this issue asks for). Returns sorted repo-relative
+    POSIX paths.
+    """
+    return sorted(m.relative_to(root).as_posix() for m in root.glob(pattern))
+
+
+def _expand_pattern_index(index_keys: list[str] | set[str], pattern: str) -> list[str]:
+    """Expand `pattern` against known index paths (pull's matcher).
+
+    Matches component-by-component (a pattern segment never crosses ``/``, mirroring
+    :func:`_glob_local`), but -- unlike a filesystem glob -- also finds a file with no
+    local presence at all: an offloaded (metadata-only) entry is in the index but absent
+    from disk, and pull's whole purpose is bringing exactly that back (#131).
+
+    A pattern shorter than the full path (e.g. the single segment ``mload*`` against
+    ``mload003_calib_1m/dump_0001``) matches by its DEDUPED PREFIX at the pattern's own
+    depth -- one result per matched top-level family, not one per file -- so it feeds into
+    the existing subtree-pull logic (:func:`~protonfs.diff.within_subpath`) exactly the way
+    a shell-expanded literal directory name already does today.
+    """
+    pattern_parts = pattern.split("/")
+    depth = len(pattern_parts)
+    matched: set[str] = set()
+    for rel in index_keys:
+        parts = rel.split("/")
+        if len(parts) < depth:
+            continue
+        prefix = parts[:depth]
+        if all(fnmatch.fnmatchcase(c, p) for c, p in zip(prefix, pattern_parts)):
+            matched.add("/".join(prefix))
+    return sorted(matched)
+
+
+def _resolve_pathspecs(
+    paths: tuple[str, ...], matcher: Callable[[str], list[str]]
+) -> tuple[list[str | None], list[str]]:
+    """Expand any glob patterns in `paths`, then normalize into the subpath list to loop over.
+
+    :returns: ``(subpaths, unmatched_patterns)``.
+
+    When every given pathspec was a pattern that matched nothing, `subpaths` is **empty**
+    (``[]``) -- deliberately never ``[None]``. ``[None]`` is :func:`_normalize_paths`'s
+    "no pathspecs given, so act on the whole repo" default, and letting a zero-match
+    pattern reach it would turn ``push 'nomatch*'`` into a push of the ENTIRE repo. A
+    pattern that matches nothing must leave the command with nothing to do (#131).
+    """
+    expanded, unmatched = _expand_patterns(paths, matcher)
+    if paths and not expanded:
+        return [], unmatched
+    return _normalize_paths(expanded), unmatched
+
+
+def _report_unmatched(unmatched: list[str], strict: bool, verb: str) -> None:
+    """Report pathspec patterns that matched nothing; under ``--strict``, make them fatal.
+
+    Fails BEFORE any lock is taken or byte transferred, mirroring push's existing
+    nonexistent-literal-path check: ``--strict`` asks for all-or-nothing, so transferring
+    part of the request while an expected pattern went unsatisfied is the wrong outcome.
+
+    Exits ``1`` (an operational failure), NOT the ``2`` used for a nonexistent literal
+    PATH. That distinction is deliberate: a literal path that does not exist can only be a
+    typo, whereas here the command line is perfectly well-formed and the user has simply
+    asked -- via ``--strict`` -- to treat a legitimate runtime state as an error.
+    """
+    if not unmatched:
+        return
+    listed = ", ".join(map(repr, unmatched))
+    if strict:
+        click.echo(f"error: pattern(s) matched nothing: {listed}", err=True)
+        raise click.exceptions.Exit(1)
+    click.echo(
+        f"pattern(s) matched nothing, skipped (nothing to {verb}): {listed} "
+        "-- pass --strict to make this an error"
+    )
 
 
 @contextlib.contextmanager
@@ -438,19 +564,35 @@ def ls(
     is_flag=True,
     help="Report what would be pushed without transferring anything.",
 )
+@click.option(
+    "--strict",
+    is_flag=True,
+    help="Fail (exit 1) if a PATH pattern matches nothing, instead of skipping it.",
+)
 @_drive_error_boundary
-def push(path: tuple[str, ...], resolve: str | None, dry_run: bool) -> None:
+def push(path: tuple[str, ...], resolve: str | None, dry_run: bool, strict: bool) -> None:
     """Upload local-only/changed files to Drive (any number of PATHs).
 
-    Each PATH may be a directory, a single file, or a shell glob (which the shell
-    expands to concrete paths before protonfs sees them). A PATH that does not exist
-    locally is a usage error (exit 2): push uploads local files, so a missing path can
-    only be a typo -- this is distinct from the exit 1 used for transfer failures.
+    Each PATH may be a directory, a single file, or a glob pattern. A quoted pattern
+    (``'mload*'``, ``'mload*/*.ev'``) is expanded by protonfs itself against the local
+    tree at run time; an unquoted one is expanded by the shell first, as before. A PATH
+    that does not exist locally is a usage error (exit 2): push uploads local files, so a
+    missing path can only be a typo -- this is distinct from the exit 1 used for transfer
+    failures.
+
+    A pattern matching nothing is reported and skipped (it never widens to the whole
+    repo); pass ``--strict`` to make that an error instead.
 
     .. versionchanged:: 1.5.2
        PATH may now name a single file (previously only directories were scanned, so a
        file/glob pathspec silently uploaded nothing). A nonexistent PATH is now a usage
        error instead of a silent no-op, and an empty push prints ``nothing to push``.
+
+    .. versionchanged:: 1.11.0
+       A quoted PATH glob pattern is now expanded by protonfs against the local tree,
+       rather than depending on the shell to expand it first (#131) -- so a scheduled job
+       can carry a pattern that keeps matching as new directories appear. Added
+       ``--strict``.
     """
     from protonfs.commands.push import push as push_files
     from protonfs.context import load_context
@@ -458,7 +600,11 @@ def push(path: tuple[str, ...], resolve: str | None, dry_run: bool) -> None:
     from protonfs.locking import repo_lock
 
     ctx = load_context()
-    subpaths = _normalize_paths(path)
+    # #131: expand protonfs-side glob patterns against the local tree first -- push only
+    # ever acts on files physically present, so the filesystem IS the right namespace here
+    # (pull differs; see its matcher). Literal paths pass through untouched.
+    subpaths, unmatched = _resolve_pathspecs(path, lambda p: _glob_local(ctx.root, p))
+    _report_unmatched(unmatched, strict, "push")
     # Validate BEFORE taking the lock or hashing anything: a nonexistent local pathspec
     # can only be a typo (a shell glob expands to existing paths only), so fail fast and
     # loud rather than scan it to nothing and report a misleading success. Report every
@@ -526,12 +672,34 @@ def push(path: tuple[str, ...], resolve: str | None, dry_run: bool) -> None:
     is_flag=True,
     help="Discover remote files (seed the index) before pulling.",
 )
+@click.option(
+    "--strict",
+    is_flag=True,
+    help="Fail (exit 1) if a PATH pattern matches nothing, instead of skipping it.",
+)
 @_drive_error_boundary
-def pull(path: tuple[str, ...], resolve: str | None, dry_run: bool, refresh: bool) -> None:
+def pull(
+    path: tuple[str, ...], resolve: str | None, dry_run: bool, refresh: bool, strict: bool
+) -> None:
     """Download remote-only/changed files from Drive (any number of PATHs).
+
+    Each PATH may be a directory, a single file, or a glob pattern. A quoted pattern
+    (``'mload*'``, ``'mload*/*.ev'``) is expanded by protonfs itself, against the paths
+    the INDEX knows about -- not the local filesystem, because pull's whole purpose is
+    fetching files that are absent locally (an offloaded file has no local presence to
+    glob). Run ``refresh`` first on a repo whose index has not seen those files yet.
+
+    A pattern matching nothing is reported and skipped (it never widens to the whole
+    repo); pass ``--strict`` to make that an error instead.
 
     Diverged files (edited locally AND changed on the remote since the last sync) are
     left untouched unless you pass --resolve; they are reported and pull exits non-zero.
+
+    .. versionchanged:: 1.11.0
+       A quoted PATH glob pattern is now expanded by protonfs against the index, rather
+       than depending on the shell to expand it first (#131) -- so a scheduled job can
+       carry a pattern that keeps matching as new runs appear, and so a pattern can name
+       offloaded files that no filesystem glob could find. Added ``--strict``.
     """
     from protonfs.commands.pull import pull as pull_files
     from protonfs.context import load_context
@@ -542,9 +710,15 @@ def pull(path: tuple[str, ...], resolve: str | None, dry_run: bool, refresh: boo
     if not refresh and not ctx.index.all():
         click.echo("index empty; run `protonfs refresh` first (or `pull --refresh`)")
         return
+    # #131: match patterns against the INDEX namespace (see the docstring) -- a filesystem
+    # glob would silently miss exactly the offloaded files pull exists to bring back.
+    subpaths, unmatched = _resolve_pathspecs(
+        path, lambda p: _expand_pattern_index(list(ctx.index.all()), p)
+    )
+    _report_unmatched(unmatched, strict, "pull")
     result = TransferResult(0, 0, 0, [])
     with repo_lock(ctx.root), _resumable_on_interrupt(ctx, "pull"):
-        for subpath in _normalize_paths(path):
+        for subpath in subpaths:
             _accumulate_transfer(
                 result,
                 pull_files(ctx, subpath, resolve, dry_run, refresh=refresh),
@@ -840,13 +1014,24 @@ def completions(shell: str, install: bool, uninstall: bool) -> None:
     "--command", "command", type=click.Choice(["push", "pull", "sync"]), default="push",
     show_default=True, help="What the job runs (sync = pull then push).",
 )
-@click.option("--path", "sched_path", metavar="SUBPATH", help="Scope the job to a subtree.")
+@click.option(
+    # NB: no bare glob characters in this help string -- sphinx-click renders help as RST,
+    # where a stray asterisk parses as an unterminated emphasis marker and fails the
+    # -W docs build. The concrete pattern examples live in the docstring's literal block.
+    "--path", "sched_path", metavar="PATHSPEC",
+    help="Scope the job to a subtree, or to a quoted glob pattern that protonfs "
+    "re-expands on every run (see the examples below).",
+)
 @click.option("--resolve", "sched_resolve", help="Conflict strategy passed to push/pull.")
+@click.option(
+    "--strict", "sched_strict", is_flag=True,
+    help="Pass --strict to push/pull, so a run whose --path pattern matches nothing fails.",
+)
 @click.option("--label", default="", help="Human label shown in --list.")
 @click.option("--json", "as_json", is_flag=True, help="With --list, emit JSON.")
 def schedule(
     list_, add, uninstall, all_, every, cron_expr, at, command, sched_path,
-    sched_resolve, label, as_json,
+    sched_resolve, sched_strict, label, as_json,
 ) -> None:
     """Manage scheduled push/pull cron jobs for this repo.
 
@@ -856,7 +1041,17 @@ def schedule(
     ``--uninstall --all`` removes them all. Each job runs under ``flock`` with an absolute
     ``proton-drive`` path and tuned timeouts, logging to ``.protonfs/schedule/<id>.log``.
 
+    ``--path`` takes a subtree or a glob pattern. A pattern is stored (and passed to
+    push/pull) unexpanded, so protonfs re-expands it on every run -- one job can cover a
+    whole family of runs and keeps matching as new ones appear::
+
+        protonfs schedule --add --every daily --command pull --path 'mload*/*.ev'
+
     .. versionadded:: 1.8.0
+
+    .. versionchanged:: 1.11.0
+       ``--path`` accepts a glob pattern, re-expanded at run time (#131). Added
+       ``--strict``.
     """
     import json as _json
     from pathlib import Path
@@ -873,7 +1068,7 @@ def schedule(
         if add:
             job = sched.add_job(
                 repo, every=every, cron=cron_expr, at=at, command=command,
-                path=sched_path, resolve=sched_resolve, label=label,
+                path=sched_path, resolve=sched_resolve, strict=sched_strict, label=label,
             )
             click.echo(f"scheduled job {job.id}: {job.cron}  {job.command}")
             click.echo(f"  wrapper: {job.wrapper_path}")

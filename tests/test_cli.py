@@ -139,6 +139,147 @@ def test_normalize_paths_dedupes_and_drops_nested() -> None:
     assert _normalize_paths(("a", "ab")) == ["a", "ab"]
 
 
+# --- #131: PATH arguments that are glob patterns, expanded by protonfs itself (not the
+# shell), so a scheduled job's quoted pattern keeps matching as new directories appear ---
+
+
+def test_is_pattern_detects_glob_metacharacters() -> None:
+    from protonfs.cli import _is_pattern
+
+    assert _is_pattern("mload*") is True
+    assert _is_pattern("a?b") is True
+    assert _is_pattern("a[bc]d") is True
+    assert _is_pattern("mload003_calib_1m") is False
+    assert _is_pattern("a/b") is False
+
+
+def test_expand_patterns_leaves_literal_paths_untouched() -> None:
+    from protonfs.cli import _expand_patterns
+
+    expanded, unmatched = _expand_patterns(("a", "b"), matcher=lambda pat: ["should not be called"])
+
+    assert expanded == ("a", "b")
+    assert unmatched == []
+
+
+def test_expand_patterns_splices_in_matcher_results() -> None:
+    from protonfs.cli import _expand_patterns
+
+    matcher = lambda pat: ["mload003_calib_1m", "mload003_calib_2m"]  # noqa: E731
+
+    expanded, unmatched = _expand_patterns(("mload*", "literal"), matcher=matcher)
+
+    assert expanded == ("mload003_calib_1m", "mload003_calib_2m", "literal")
+    assert unmatched == []
+
+
+def test_expand_patterns_records_zero_match_patterns_as_unmatched() -> None:
+    from protonfs.cli import _expand_patterns
+
+    expanded, unmatched = _expand_patterns(("nomatch*",), matcher=lambda pat: [])
+
+    assert expanded == ()
+    assert unmatched == ["nomatch*"]
+
+
+def test_glob_local_matches_top_level_entries(tmp_path: Path) -> None:
+    from protonfs.cli import _glob_local
+
+    (tmp_path / "mload003_calib_1m").mkdir()
+    (tmp_path / "mload003_calib_2m").mkdir()
+    (tmp_path / "other").mkdir()
+
+    assert _glob_local(tmp_path, "mload*") == ["mload003_calib_1m", "mload003_calib_2m"]
+
+
+def test_glob_local_matches_multi_segment_pattern(tmp_path: Path) -> None:
+    from protonfs.cli import _glob_local
+
+    (tmp_path / "mload003_calib_1m").mkdir()
+    (tmp_path / "mload003_calib_1m" / "output.ev").write_bytes(b"x")
+    (tmp_path / "mload003_calib_1m" / "dump_0001").write_bytes(b"y")
+
+    assert _glob_local(tmp_path, "mload003_calib_*/*.ev") == ["mload003_calib_1m/output.ev"]
+
+
+def test_glob_local_returns_empty_for_no_matches(tmp_path: Path) -> None:
+    from protonfs.cli import _glob_local
+
+    assert _glob_local(tmp_path, "nomatch*") == []
+
+
+def test_expand_pattern_index_matches_by_deduped_prefix() -> None:
+    from protonfs.cli import _expand_pattern_index
+
+    # #131: an offloaded file has no local presence at all, but IS in the index --
+    # pattern matching must find it there, not on disk (Path.glob() would miss it).
+    index_keys = [
+        "mload003_calib_1m/dump_0001",
+        "mload003_calib_1m/output.ev",
+        "mload003_calib_2m/output.ev",
+        "other/dump_0001",
+    ]
+
+    # single-segment pattern matches the whole directory family by its deduped top-level
+    # prefix -- not just files that are themselves exactly one segment deep.
+    assert _expand_pattern_index(index_keys, "mload*") == [
+        "mload003_calib_1m",
+        "mload003_calib_2m",
+    ]
+
+
+def test_expand_pattern_index_matches_multi_segment_pattern() -> None:
+    from protonfs.cli import _expand_pattern_index
+
+    index_keys = [
+        "mload003_calib_1m/dump_0001",
+        "mload003_calib_1m/output.ev",
+        "mload003_calib_2m/output.ev",
+        "other/dump_0001",
+    ]
+
+    assert _expand_pattern_index(index_keys, "mload003_calib_*/*.ev") == [
+        "mload003_calib_1m/output.ev",
+        "mload003_calib_2m/output.ev",
+    ]
+
+
+def test_expand_pattern_index_returns_empty_for_no_matches() -> None:
+    from protonfs.cli import _expand_pattern_index
+
+    assert _expand_pattern_index(["other/dump_0001"], "mload*") == []
+
+
+def test_resolve_pathspecs_zero_match_never_widens_to_whole_repo() -> None:
+    """The dangerous case: `_normalize_paths(())` means WHOLE REPO, so a pattern that
+    matched nothing must not be allowed to fall through to it -- `push 'nomatch*'` has to
+    push nothing, never everything."""
+    from protonfs.cli import _resolve_pathspecs
+
+    subpaths, unmatched = _resolve_pathspecs(("nomatch*",), matcher=lambda pat: [])
+
+    assert subpaths == []  # NOT [None], which would mean the whole repo
+    assert unmatched == ["nomatch*"]
+
+
+def test_resolve_pathspecs_no_arguments_still_means_whole_repo() -> None:
+    from protonfs.cli import _resolve_pathspecs
+
+    # no pathspecs at all is the established "whole repo" default and must be preserved
+    assert _resolve_pathspecs((), matcher=lambda pat: []) == ([None], [])
+
+
+def test_resolve_pathspecs_mixes_literals_with_expanded_patterns() -> None:
+    from protonfs.cli import _resolve_pathspecs
+
+    subpaths, unmatched = _resolve_pathspecs(
+        ("literal", "m*", "nomatch*"), matcher=lambda pat: ["m1", "m2"] if pat == "m*" else []
+    )
+
+    assert subpaths == ["literal", "m1", "m2"]
+    assert unmatched == ["nomatch*"]
+
+
 def test_cli_pull_accepts_multiple_paths_from_a_glob(
     tmp_path: Path, monkeypatch, make_fake_drive
 ) -> None:
@@ -162,6 +303,118 @@ def test_cli_pull_accepts_multiple_paths_from_a_glob(
         "/my-files/test/03pol021/dump",
         "/my-files/test/03pol022/dump",
     ]
+
+
+# --- #131: PATH arguments protonfs expands itself as glob patterns -------------------
+
+
+def test_cli_push_expands_a_local_glob_pattern(
+    tmp_path: Path, monkeypatch, make_fake_drive
+) -> None:
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    for rel in ("mload003_calib_1m/dump", "mload003_calib_2m/dump", "other/dump"):
+        p = tmp_path / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(b"data")
+    ctx.drive = make_fake_drive()
+    monkeypatch.setattr("protonfs.context.load_context", lambda *a, **k: ctx)
+
+    result = CliRunner().invoke(main, ["push", "mload*"])
+
+    assert result.exit_code == 0, result.output
+    assert "transferred=2" in result.output
+    # the decisive assertion: `other/dump` did NOT match `mload*` and was never uploaded
+    uploaded = sorted(p for call in ctx.drive.upload_calls for p in call[0])
+    assert uploaded == [
+        str(tmp_path / "mload003_calib_1m" / "dump"),
+        str(tmp_path / "mload003_calib_2m" / "dump"),
+    ]
+
+
+def test_cli_push_pattern_matching_nothing_is_lenient_by_default(
+    tmp_path: Path, monkeypatch, make_fake_drive
+) -> None:
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.drive = make_fake_drive()
+    monkeypatch.setattr("protonfs.context.load_context", lambda *a, **k: ctx)
+
+    result = CliRunner().invoke(main, ["push", "nomatch*"])
+
+    assert result.exit_code == 0, result.output
+    assert "matched nothing" in result.output.lower()
+
+
+def test_cli_push_pattern_matching_nothing_with_strict_fails(
+    tmp_path: Path, monkeypatch, make_fake_drive
+) -> None:
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.drive = make_fake_drive()
+    monkeypatch.setattr("protonfs.context.load_context", lambda *a, **k: ctx)
+
+    result = CliRunner().invoke(main, ["push", "nomatch*", "--strict"])
+
+    assert result.exit_code == 1, result.output
+
+
+def test_cli_pull_expands_index_pattern_including_offloaded_file(
+    tmp_path: Path, monkeypatch, make_fake_drive
+) -> None:
+    """#131: a pattern must match files the index knows about but that are absent from
+    disk (offloaded) -- a filesystem-only glob would miss exactly this case."""
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.index.set(
+        "mload003_calib_1m/output.ev", _tracked_entry("/my-files/test/mload003_calib_1m/output.ev")
+    )
+    ctx.index.save()
+    ctx.drive = make_fake_drive()
+    monkeypatch.setattr("protonfs.context.load_context", lambda *a, **k: ctx)
+
+    result = CliRunner().invoke(main, ["pull", "mload*"])
+
+    assert result.exit_code == 0, result.output
+    assert "transferred=1" in result.output
+    downloaded = [p for call in ctx.drive.download_calls for p in call[0]]
+    assert downloaded == ["/my-files/test/mload003_calib_1m/output.ev"]
+
+
+def test_cli_pull_pattern_matching_nothing_is_lenient_by_default(
+    tmp_path: Path, monkeypatch, make_fake_drive
+) -> None:
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    # A non-matching entry, so the index is NOT empty: pull short-circuits on an empty
+    # index before it ever looks at pathspecs, which would make this pass for the wrong
+    # reason. This way the zero-match really is the pattern failing to match.
+    ctx.index.set("other/dump", _tracked_entry("/my-files/test/other/dump"))
+    ctx.index.save()
+    ctx.drive = make_fake_drive()
+    monkeypatch.setattr("protonfs.context.load_context", lambda *a, **k: ctx)
+
+    result = CliRunner().invoke(main, ["pull", "nomatch*"])
+
+    assert result.exit_code == 0, result.output
+    assert "matched nothing" in result.output.lower()
+    assert ctx.drive.download_calls == []  # and it did NOT widen to the whole repo
+
+
+def test_cli_pull_pattern_matching_nothing_with_strict_fails(
+    tmp_path: Path, monkeypatch, make_fake_drive
+) -> None:
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.index.set("other/dump", _tracked_entry("/my-files/test/other/dump"))
+    ctx.index.save()
+    ctx.drive = make_fake_drive()
+    monkeypatch.setattr("protonfs.context.load_context", lambda *a, **k: ctx)
+
+    result = CliRunner().invoke(main, ["pull", "nomatch*", "--strict"])
+
+    assert result.exit_code == 1, result.output
+    assert ctx.drive.download_calls == []  # --strict fails BEFORE transferring anything
 
 
 def test_cli_status_combines_counts_across_paths(
