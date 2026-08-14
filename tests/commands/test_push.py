@@ -559,6 +559,53 @@ def test_push_does_not_adopt_conflict_absent_from_remote(
     assert ctx.index.get("dump_0001") is None
 
 
+def test_push_reports_a_phantom_node_distinctly_from_a_real_conflict(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    """#138: upload rejected as "already exists" while the remote listing does NOT contain
+    the file describes a phantom node holding the name, not a different file occupying it.
+    Saying "a different file already exists" is wrong and invites --resolve=remote, which
+    keeps the phantom and loses the data."""
+    from protonfs.commands.push import PHANTOM_KIND
+
+    (tmp_path / "dump_0001").write_bytes(b"data")
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    # conflict on upload, and nothing of that name in the remote listing
+    ctx.drive = make_fake_drive(upload_result=_conflict_upload_result("dump_0001"))
+
+    result = push(ctx, None, None, dry_run=False)
+
+    assert result.failed_items == 1
+    failure = result.failures[0]
+    assert failure["kind"] == PHANTOM_KIND
+    assert failure["kind"] != CONFLICT_KIND
+    # the message must name the remedy, and must not claim a different file is there
+    assert "different file" not in failure["error"]
+    assert "--resolve=local" in failure["error"]
+
+
+def test_push_still_reports_a_real_conflict_as_a_conflict(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    """#138 guard: when the remote genuinely holds a DIFFERENT file of that name, the
+    existing conflict wording stays -- only the absent case changes."""
+    (tmp_path / "dump_0001").write_bytes(b"data")
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.drive = make_fake_drive(upload_result=_conflict_upload_result("dump_0001"))
+    # Seed the remote listing directly: the configured upload REPORTS a conflict, so
+    # calling it would not record anything. What matters here is that the file IS
+    # listable, at a size that does not match the local one.
+    ctx.drive._remote_files["/my-files/test"] = {"dump_0001": 999}
+
+    result = push(ctx, None, None, dry_run=False)
+
+    assert result.failed_items == 1
+    assert result.failures[0]["kind"] == CONFLICT_KIND
+    assert "different file" in result.failures[0]["error"]
+
+
 # --- file pathspecs at the CLI layer (#push-file-pathspecs) ------------------------------
 
 

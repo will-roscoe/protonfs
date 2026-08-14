@@ -13,6 +13,7 @@ from __future__ import annotations
 import contextlib
 import fnmatch
 import functools
+import signal
 from pathlib import Path
 from typing import Callable
 
@@ -127,6 +128,43 @@ def _drive_error_boundary(func):
             raise click.ClickException(str(exc)) from exc
 
     return wrapper
+
+
+def _install_signal_handlers() -> None:
+    """Make ``SIGTERM``/``SIGHUP`` raise, so an in-flight ``proton-drive`` child is never
+    orphaned (#136).
+
+    :func:`subprocess.run` already kills its child on *any* exception -- its bare
+    ``except:`` calls ``process.kill()`` -- so ``SIGINT`` (Ctrl-C, which Python turns into
+    ``KeyboardInterrupt``) is handled correctly and needs nothing here. ``SIGTERM`` and
+    ``SIGHUP`` are the gap: their default action terminates the interpreter outright, so
+    no Python-level cleanup runs at all and the ``proton-drive`` child survives its parent.
+
+    That orphan keeps an exclusive lock on proton-drive's SQLite cache, after which *every*
+    later proton-drive call on the host fails (see :class:`~protonfs.drive.DriveLockError`)
+    until someone finds and kills it by hand. ``SIGHUP`` matters most on a headless box,
+    where a dropped ssh session would otherwise leave a wedged remote.
+
+    Raising :class:`SystemExit` puts both signals on the path ``subprocess.run`` already
+    handles. Exit status follows the ``128 + signum`` convention.
+
+    Installed only from the CLI entry point: a library import must not commandeer the
+    host application's signal handling.
+
+    .. versionadded:: 1.11.0
+    """
+
+    def _raise_system_exit(signum, _frame):
+        raise SystemExit(128 + signum)
+
+    for name in ("SIGTERM", "SIGHUP"):
+        sig = getattr(signal, name, None)
+        if sig is None:  # pragma: no cover - non-POSIX
+            continue
+        try:
+            signal.signal(sig, _raise_system_exit)
+        except (ValueError, OSError):  # pragma: no cover - not on the main thread
+            pass
 
 
 def _normalize_paths(paths: tuple[str, ...]) -> list[str | None]:
@@ -326,6 +364,10 @@ def main(verbose: int, progress_inline: bool | None, event_log: bool | None) -> 
 
     from protonfs.config import load_layered_config
     from protonfs.logs import configure_logging
+
+    # #136: before anything can spawn proton-drive, make a kill signal unwind cleanly
+    # rather than leave an orphaned child holding the Drive cache lock.
+    _install_signal_handlers()
 
     # Resolve flag -> config -> built-in default for the two persisted knobs. A broken
     # repo config (unparseable .protonfs/config.json) must never take down every
@@ -635,11 +677,22 @@ def push(path: tuple[str, ...], resolve: str | None, dry_run: bool, strict: bool
         click.echo(f"  FAILED {failure['name']}: {failure['error']}")
     if result.failed_items:
         under_delivered = [f for f in result.failures if f.get("kind") == "under-delivered"]
-        conflicts = [f for f in result.failures if f.get("kind") != "under-delivered"]
+        phantoms = [f for f in result.failures if f.get("kind") == "phantom"]
+        conflicts = [
+            f for f in result.failures if f.get("kind") not in ("under-delivered", "phantom")
+        ]
         if under_delivered:
             click.echo(
                 f"  -> {len(under_delivered)} file(s) were reported transferred but did not "
                 "land on Drive; they were NOT indexed and will be retried on the next push."
+            )
+        if phantoms:
+            # #138: deliberately NOT offered --resolve=remote -- for a phantom the remote
+            # copy is the unusable thing holding the name, so keeping it loses the data.
+            click.echo(
+                f"  -> {len(phantoms)} file(s) hit a name conflict but are absent from the "
+                "remote listing (a partial/draft upload holding the name). Re-run with "
+                "--resolve=local to overwrite them."
             )
         if conflicts and not resolve:
             click.echo(

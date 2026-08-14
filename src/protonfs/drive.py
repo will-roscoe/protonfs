@@ -67,6 +67,16 @@ class DriveError(RuntimeError):
     """
 
 
+class DriveLockError(DriveError):
+    """proton-drive's local SQLite cache is locked by another proton-drive process (#136).
+
+    Distinct from :class:`DriveThrottleError` because it is not transient: it persists
+    until the holding process goes away, so it must not be retried with backoff.
+
+    .. versionadded:: 1.11.0
+    """
+
+
 class DriveThrottleError(DriveError):
     """A `filesystem list` kept timing out / erroring under throttle past the retry budget.
 
@@ -251,6 +261,68 @@ _THROTTLE_ERROR_SIGNALS = (
 )
 
 
+# #136: proton-drive keeps a local SQLite cache and takes an exclusive lock on it. A
+# proton-drive process that outlives its protonfs parent (SIGTERM/SIGHUP kill the parent
+# without running its cleanup) keeps that lock, and then EVERY later proton-drive call on
+# the host fails. proton-drive reports it as a non-JSON error blob, so without this it
+# surfaced as the generic "unparseable output from proton-drive: ...", which points
+# nowhere near the actual remedy (find and kill the stale process).
+_LOCK_ERROR_SIGNALS = ("sqlite_busy", "database is locked")
+
+
+def _is_lock_error(message: str) -> bool:
+    """Whether a CLI message signals proton-drive's SQLite cache lock being held.
+
+    Deliberately NOT folded into :func:`_is_throttle_error`: a held lock is not transient
+    the way rate-limiting is. Retrying with backoff would burn the whole retry budget while
+    the stale process kept holding it, so this must surface immediately.
+    """
+    lowered = message.lower()
+    return any(signal in lowered for signal in _LOCK_ERROR_SIGNALS)
+
+
+_LOCK_ERROR_HINT = (
+    "proton-drive could not open its local cache: the database is locked by another "
+    "proton-drive process.\nThis is usually a stale process left behind when a protonfs "
+    "run was killed. Check with `pgrep -af proton-drive` and kill any leftover process, "
+    "then retry."
+)
+
+
+# #137: set once a run has already reported degraded verification, so a push spanning many
+# parent directories says it once rather than once per directory.
+_CLAIMED_METADATA_WARNED = False
+
+
+def _warn_if_verification_degraded(
+    identities: dict[str, RemoteIdentity], version: str | None
+) -> None:
+    """Warn (once per process) when a non-empty listing carries no plaintext metadata.
+
+    Every local-vs-remote comparison routes through ``claimedSize``/``claimedDigests.sha1``.
+    When the installed proton-drive emits neither, both guards in push's ``_verify_remote``
+    are skipped and "verified on the remote" silently weakens to "a file of this name
+    exists" -- so a truncated or wrong remote object passes (#137). That is a materially
+    weaker guarantee than the docs describe, and it must not be silent.
+
+    An EMPTY listing is not evidence either way (a first push into a new folder sees one),
+    so it never warns.
+    """
+    global _CLAIMED_METADATA_WARNED
+    if _CLAIMED_METADATA_WARNED or not identities:
+        return
+    if any(i.claimed_size is not None or i.sha1 for i in identities.values()):
+        return
+    _CLAIMED_METADATA_WARNED = True
+    logger.warning(
+        "this proton-drive build (%s) reports no claimedSize/claimedDigests, so "
+        "remote verification is by NAME PRESENCE ONLY -- a wrong or truncated remote "
+        "copy cannot be detected. Upgrade proton-drive (`protonfs upgrade`) for "
+        "size-checked verification.",
+        version or "unknown version",
+    )
+
+
 def _is_throttle_error(message: str) -> bool:
     """Return whether a CLI error message signals transient throttling (worth a retry).
 
@@ -340,6 +412,10 @@ def _classify(message: str) -> DriveError:
     :returns: a :class:`DriveSecretsError`, :class:`DriveAuthError`, or plain
         :class:`DriveError`.
     """
+    # #136: checked first -- a locked cache blocks every command regardless of auth or
+    # keyring state, and its message carries none of the wording the other checks look for.
+    if _is_lock_error(message):
+        return DriveLockError(_LOCK_ERROR_HINT)
     if _is_secrets_error(message):
         return DriveSecretsError(
             f"proton-drive could not use the OS keyring: {message}\n"
@@ -445,6 +521,13 @@ class DriveClient:
         try:
             parsed = json.loads(stdout) if stdout else {}
         except json.JSONDecodeError as exc:
+            # #136: proton-drive prints a raw (non-JSON) blob for a locked cache, so the
+            # failure arrives HERE rather than via the normal non-zero-exit path. Without
+            # this it was reported as "unparseable output", which named the symptom and
+            # not the cause. stderr is checked too, since which stream carries it varies.
+            blob = f"{stdout}\n{result.stderr}"
+            if _is_lock_error(blob):
+                raise DriveLockError(_LOCK_ERROR_HINT) from exc
             raise DriveError(f"unparseable output from proton-drive: {stdout!r}") from exc
         if result.returncode != 0:
             message = json.dumps(parsed) if parsed else result.stderr.strip()
@@ -604,6 +687,10 @@ class DriveClient:
         .. versionchanged:: 1.6.0
            Verify listing is now throttle-resilient (was an unbounded ``list`` that could
            hang forever when Drive throttled the verify-after-push step).
+
+        .. versionchanged:: 1.11.0
+           Warns once per process when the installed proton-drive supplies no plaintext
+           metadata at all, because verification then degrades to name-presence-only (#137).
         """
         identities: dict[str, RemoteIdentity] = {}
         entries = self.list_with_backoff(
@@ -621,6 +708,7 @@ class DriveClient:
                 claimed_size=entry.get("claimedSize"),
                 sha1=digests.get("sha1"),
             )
+        _warn_if_verification_degraded(identities, self.drive_version())
         return identities
 
     def walk(
