@@ -1,22 +1,22 @@
 {
   "source": "ci",
-  "updated": "2026-08-14T07:15:36Z",
+  "updated": "2026-08-14T12:20:06Z",
   "run": {
-    "run_id": "31779129939",
+    "run_id": "31799776113",
     "run_attempt": "1",
-    "run_url": "https://github.com/will-roscoe/protonfs/actions/runs/31779129939",
-    "commit": "f5bfbd29a3f72804acd35b239c963889f6496af4",
+    "run_url": "https://github.com/will-roscoe/protonfs/actions/runs/31799776113",
+    "commit": "df98ca742aea19ab4bf9bfbaae6ebc4a0747495d",
     "ref": "main"
   },
   "tests": {
-    "passed": 843,
+    "passed": 854,
     "failed": 0,
     "skipped": 17,
-    "total": 860,
-    "duration_s": 7.35
+    "total": 871,
+    "duration_s": 6.91
   },
   "coverage": {
-    "line": 96.1,
+    "line": 96.2,
     "target": 80
   },
   "ruff": {
@@ -28,55 +28,55 @@
       "version": "3.9",
       "status": "passing",
       "tests": {
-        "passed": 843,
+        "passed": 854,
         "failed": 0,
         "skipped": 17,
-        "total": 860,
-        "duration_s": 29.57
+        "total": 871,
+        "duration_s": 6.16
       }
     },
     {
       "version": "3.10",
       "status": "passing",
       "tests": {
-        "passed": 843,
+        "passed": 854,
         "failed": 0,
         "skipped": 17,
-        "total": 860,
-        "duration_s": 7.91
+        "total": 871,
+        "duration_s": 7.29
       }
     },
     {
       "version": "3.11",
       "status": "passing",
       "tests": {
-        "passed": 843,
+        "passed": 854,
         "failed": 0,
         "skipped": 17,
-        "total": 860,
-        "duration_s": 6.96
+        "total": 871,
+        "duration_s": 7.41
       }
     },
     {
       "version": "3.12",
       "status": "passing",
       "tests": {
-        "passed": 843,
+        "passed": 854,
         "failed": 0,
         "skipped": 17,
-        "total": 860,
-        "duration_s": 14.49
+        "total": 871,
+        "duration_s": 12.39
       }
     },
     {
       "version": "3.13",
       "status": "passing",
       "tests": {
-        "passed": 843,
+        "passed": 854,
         "failed": 0,
         "skipped": 17,
-        "total": 860,
-        "duration_s": 7.22
+        "total": 871,
+        "duration_s": 9.33
       }
     }
   ],
