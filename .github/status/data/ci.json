@@ -1,19 +1,19 @@
 {
   "source": "ci",
-  "updated": "2026-08-13T23:01:46Z",
+  "updated": "2026-08-14T04:02:32Z",
   "run": {
-    "run_id": "31752220565",
+    "run_id": "31768559950",
     "run_attempt": "1",
-    "run_url": "https://github.com/will-roscoe/protonfs/actions/runs/31752220565",
-    "commit": "c9b96ac94091ae592fc1f59323a8596a0a07b4d6",
+    "run_url": "https://github.com/will-roscoe/protonfs/actions/runs/31768559950",
+    "commit": "da5f5251a4b70b2445091d431c3a41117157ac39",
     "ref": "main"
   },
   "tests": {
-    "passed": 819,
+    "passed": 842,
     "failed": 0,
     "skipped": 17,
-    "total": 836,
-    "duration_s": 6.38
+    "total": 859,
+    "duration_s": 6.26
   },
   "coverage": {
     "line": 96.1,
@@ -28,55 +28,55 @@
       "version": "3.9",
       "status": "passing",
       "tests": {
-        "passed": 819,
+        "passed": 842,
         "failed": 0,
         "skipped": 17,
-        "total": 836,
-        "duration_s": 6.16
+        "total": 859,
+        "duration_s": 7.07
       }
     },
     {
       "version": "3.10",
       "status": "passing",
       "tests": {
-        "passed": 819,
+        "passed": 842,
         "failed": 0,
         "skipped": 17,
-        "total": 836,
-        "duration_s": 7.05
+        "total": 859,
+        "duration_s": 6.6
       }
     },
     {
       "version": "3.11",
       "status": "passing",
       "tests": {
-        "passed": 819,
+        "passed": 842,
         "failed": 0,
         "skipped": 17,
-        "total": 836,
-        "duration_s": 7.04
+        "total": 859,
+        "duration_s": 5.07
       }
     },
     {
       "version": "3.12",
       "status": "passing",
       "tests": {
-        "passed": 819,
+        "passed": 842,
         "failed": 0,
         "skipped": 17,
-        "total": 836,
-        "duration_s": 6.34
+        "total": 859,
+        "duration_s": 7.27
       }
     },
     {
       "version": "3.13",
       "status": "passing",
       "tests": {
-        "passed": 819,
+        "passed": 842,
         "failed": 0,
         "skipped": 17,
-        "total": 836,
-        "duration_s": 6.21
+        "total": 859,
+        "duration_s": 7.48
       }
     }
   ],
