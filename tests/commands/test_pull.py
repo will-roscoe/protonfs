@@ -431,6 +431,39 @@ def test_pull_single_file_pathspec_downloads_only_that_file(
     assert not (tmp_path / "b").exists()
 
 
+def test_pull_uses_configured_batch_size(
+    tmp_path: Path, monkeypatch, make_fake_drive
+) -> None:
+    """#139: the per-batch `filesystem download` size must come from config, exactly as it
+    does for push. Without this, a 200-file batch of large files cannot be shrunk to fit
+    inside PROTONFS_TRANSFER_TIMEOUT, and every attempt times out and is retried whole."""
+    import pytest  # noqa: F401  (monkeypatch fixture typing only)
+
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.config.defaults.batch_size = 2
+    for name in ("f1", "f2", "f3", "f4", "f5"):
+        ctx.index.set(name, _metadata_only_entry(f"/my-files/test/{name}"))
+    ctx.drive = make_fake_drive()
+
+    seen_sizes: list[int] = []
+    import protonfs.commands.pull as pull_mod
+
+    real_batches = pull_mod.batches
+
+    def spy_batches(items, size=200):
+        seen_sizes.append(size)
+        return real_batches(items, size)
+
+    monkeypatch.setattr("protonfs.commands.pull.batches", spy_batches)
+
+    pull(ctx, None, resolve=None, dry_run=False)
+
+    assert seen_sizes and all(s == 2 for s in seen_sizes)
+    # 5 files at size 2 -> download called for 3 batches (2, 2, 1)
+    assert len(ctx.drive.download_calls) == 3
+
+
 def test_pull_reports_under_delivery_when_drive_silently_drops_a_file(
     tmp_path: Path, make_fake_drive
 ) -> None:
