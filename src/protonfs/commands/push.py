@@ -50,6 +50,21 @@ LFS_POINTER_ERROR = "refusing to push a git-LFS pointer stub over remote content
 CONFLICT_KIND = "conflict"
 CONFLICT_ERROR = "a different file already exists on the remote (name conflict; not adopted)"
 
+# #138: proton-drive can reject an upload as a name conflict for a file that is NOT in the
+# remote listing at all -- a "phantom" node (most often a partial/draft upload) that holds
+# the name while being invisible and undownloadable. That is NOT the CONFLICT_KIND case: no
+# different file occupies the name, so telling the user to keep the remote copy
+# (--resolve=remote) would preserve the phantom and lose the local data. The remedy is to
+# overwrite it (--resolve=local, i.e. proton-drive's `-f replace`), which does not ask the
+# existing node's permission. Observed on a file that no listing and no trash lookup could
+# find, yet no upload could replace (sph-dev#47).
+PHANTOM_KIND = "phantom"
+PHANTOM_ERROR = (
+    "upload rejected as a name conflict, but no file of that name is listable on the "
+    "remote -- usually a partial/draft upload holding the name. Re-run with "
+    "--resolve=local to overwrite it"
+)
+
 
 def _is_already_exists(failure: dict) -> bool:
     """True if an upload failure is proton-drive's "file already exists" name-conflict.
@@ -167,6 +182,10 @@ def push(
         defaults to the process reporter (:func:`~protonfs.reporting.get_reporter`).
     :returns: a :class:`~protonfs.drive.TransferResult` of what was uploaded/skipped.
     :raises protonfs.drive.DriveError: on a Drive or lock failure.
+
+    .. versionchanged:: 1.11.0
+       A name conflict for a file that is absent from the remote listing is now reported
+       as a distinct "phantom" failure rather than as a different-file conflict (#138).
 
     .. seealso:: :func:`protonfs.commands.pull.pull` for the download direction.
     """
@@ -304,9 +323,21 @@ def push(
             is_adopt = rel in adopt_rels
             if not _verify_remote(ident, entry, strict_sha1=is_adopt):
                 total.failed_items += 1
-                if is_adopt:
-                    reason = "absent" if ident is None else "remote differs from local"
-                    logger.warning("push conflict: %s already on remote but %s", rel, reason)
+                if is_adopt and ident is None:
+                    # #138: the name is taken but nothing of that name is listable -- a
+                    # phantom node, not a different file. Reported separately so the CLI
+                    # never offers --resolve=remote here (that would keep the phantom).
+                    logger.warning(
+                        "push phantom: %s was rejected as a name conflict but is absent "
+                        "from the remote listing", rel
+                    )
+                    total.failures.append(
+                        {"name": name, "error": PHANTOM_ERROR, "kind": PHANTOM_KIND}
+                    )
+                elif is_adopt:
+                    logger.warning(
+                        "push conflict: %s already on remote but remote differs from local", rel
+                    )
                     total.failures.append(
                         {"name": name, "error": CONFLICT_ERROR, "kind": CONFLICT_KIND}
                     )

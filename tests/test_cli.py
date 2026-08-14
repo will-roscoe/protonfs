@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import pytest
 from click.testing import CliRunner
 
 from protonfs.cli import main
@@ -735,3 +736,51 @@ def test_pull_interrupt_exits_130(tmp_path, monkeypatch, make_fake_drive):
 
     assert result.exit_code == 130
     assert "interrupted" in result.output.lower()
+
+
+# --- #136: SIGTERM/SIGHUP must not orphan an in-flight proton-drive child ---------------
+
+
+def test_install_signal_handlers_makes_sigterm_raise() -> None:
+    """#136: `subprocess.run` already kills its child on any exception (its bare `except:`
+    calls process.kill()), so Ctrl-C is safe -- verified empirically. SIGTERM and SIGHUP
+    are not: their default action terminates Python immediately, that cleanup never runs,
+    and the `proton-drive` child survives holding an exclusive lock on its SQLite cache,
+    which then fails every later run on the host.
+
+    Installing handlers that RAISE converts those signals into the path subprocess.run
+    already handles correctly.
+    """
+    import signal
+
+    from protonfs.cli import _install_signal_handlers
+
+    previous = signal.getsignal(signal.SIGTERM)
+    try:
+        _install_signal_handlers()
+        handler = signal.getsignal(signal.SIGTERM)
+        assert callable(handler), "SIGTERM must not be left at its default action"
+        with pytest.raises(SystemExit):
+            handler(signal.SIGTERM, None)
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+
+
+def test_install_signal_handlers_covers_sighup() -> None:
+    """SIGHUP is the one that matters on a headless box: when the ssh session drops, an
+    in-flight transfer's child would otherwise be orphaned on the remote host."""
+    import signal
+
+    from protonfs.cli import _install_signal_handlers
+
+    if not hasattr(signal, "SIGHUP"):  # pragma: no cover - POSIX only
+        pytest.skip("no SIGHUP on this platform")
+    previous = signal.getsignal(signal.SIGHUP)
+    try:
+        _install_signal_handlers()
+        handler = signal.getsignal(signal.SIGHUP)
+        assert callable(handler)
+        with pytest.raises(SystemExit):
+            handler(signal.SIGHUP, None)
+    finally:
+        signal.signal(signal.SIGHUP, previous)

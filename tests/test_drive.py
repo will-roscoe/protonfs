@@ -768,3 +768,189 @@ def test_driveclient_env_uses_credstore(monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.setattr(credstore, "drive_env", lambda e=None: {"FROM_CREDSTORE": "1"})
     client = DriveClient(binary="/x")
     assert client._drive_env() == {"FROM_CREDSTORE": "1"}
+
+
+# --- #136: a stale proton-drive process holding the SQLite cache lock -------------------
+
+
+def test_sqlite_busy_is_classified_with_an_actionable_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#136: proton-drive prints a non-JSON SQLiteError blob when another proton-drive
+    process holds its cache lock. That currently surfaces as the generic
+    "unparseable output from proton-drive: ...", which gives the operator no path from
+    the symptom to the cause (a stale process to kill)."""
+    from protonfs.drive import DriveLockError
+
+    blob = (
+        'SQLiteError: database is locked\n      errno: 5,\n       code: "SQLITE_BUSY"\n'
+        "      at setEntity (src/cache/sqliteCache.ts:21:15)\n"
+    )
+    client = DriveClient(binary="proton-drive")
+    monkeypatch.setattr("protonfs.drive.shutil.which", lambda _: "/usr/bin/proton-drive")
+    monkeypatch.setattr(subprocess, "run", _stub_run(blob, returncode=1))
+
+    with pytest.raises(DriveLockError) as excinfo:
+        client.list("/my-files/test")
+
+    message = str(excinfo.value)
+    assert "proton-drive" in message
+    # must point at the actual remedy rather than at "unparseable output"
+    assert "pgrep" in message
+
+
+def test_sqlite_busy_on_a_transfer_is_classified_too(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The lock blocks transfers as well as listings, and _run_transfer takes a different
+    path out of the parser, so it needs the same classification."""
+    from protonfs.drive import DriveLockError
+
+    client = DriveClient(binary="proton-drive")
+    monkeypatch.setattr("protonfs.drive.shutil.which", lambda _: "/usr/bin/proton-drive")
+    monkeypatch.setattr(
+        subprocess, "run", _stub_run('SQLiteError: database is locked', returncode=1)
+    )
+
+    with pytest.raises(DriveLockError):
+        client.upload([Path("/tmp/x")], "/my-files/test")
+
+
+def test_lock_error_is_not_retried_as_a_throttle(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A held lock is not transient in the way throttling is -- retrying with backoff just
+    burns the retry budget while the stale process keeps holding it. It must surface at
+    once so the operator can clear it."""
+    from protonfs.drive import DriveLockError
+
+    calls = []
+
+    def counting_run(args, capture_output, text, **kwargs):
+        calls.append(args)
+        return subprocess.CompletedProcess(
+            args, 1, stdout='SQLiteError: database is locked', stderr=""
+        )
+
+    client = DriveClient(binary="proton-drive")
+    monkeypatch.setattr("protonfs.drive.shutil.which", lambda _: "/usr/bin/proton-drive")
+    monkeypatch.setattr(subprocess, "run", counting_run)
+
+    with pytest.raises(DriveLockError):
+        client.list_with_backoff("/my-files/test", retries=3, sleep=lambda _: None)
+
+    assert len(calls) == 1, "a lock error must not be retried with backoff"
+
+
+# --- #137: verification silently degrading to name-presence-only ------------------------
+
+
+def _listing_json(names_with_sizes, *, claimed: bool) -> str:
+    import json
+
+    entries = []
+    for name, size in names_with_sizes:
+        entry = {
+            "name": {"ok": True, "value": name},
+            "type": "file",
+            "totalStorageSize": size + 651,
+        }
+        if claimed:
+            entry["claimedSize"] = size
+            entry["claimedDigests"] = {"sha1": "abc"}
+        entries.append(entry)
+    return json.dumps(entries)
+
+
+def test_remote_identities_warns_when_binary_supplies_no_claimed_sizes(
+    monkeypatch: pytest.MonkeyPatch, caplog
+) -> None:
+    """#137: proton-drive 0.5.0 omits claimedSize/claimedDigests entirely, so
+    `_verify_remote`'s size and digest guards both no-op and verification degrades to
+    "a file of this name exists". That is a much weaker claim than the docs promise and
+    it currently happens silently."""
+    import logging
+
+    import protonfs.drive as drive_mod
+
+    monkeypatch.setattr(drive_mod, "_CLAIMED_METADATA_WARNED", False, raising=False)
+    client = DriveClient(binary="proton-drive")
+    monkeypatch.setattr("protonfs.drive.shutil.which", lambda _: "/usr/bin/proton-drive")
+    monkeypatch.setattr(
+        subprocess, "run", _stub_run(_listing_json([("a", 10), ("b", 20)], claimed=False))
+    )
+
+    with caplog.at_level(logging.WARNING, logger="protonfs.drive"):
+        idents = client.remote_identities("/my-files/test")
+
+    assert len(idents) == 2
+    assert all(i.claimed_size is None for i in idents.values())
+    assert any("presence" in r.message.lower() or "claimedsize" in r.message.lower()
+               for r in caplog.records), caplog.text
+
+
+def test_remote_identities_does_not_warn_when_claimed_sizes_are_present(
+    monkeypatch: pytest.MonkeyPatch, caplog
+) -> None:
+    import logging
+
+    import protonfs.drive as drive_mod
+
+    monkeypatch.setattr(drive_mod, "_CLAIMED_METADATA_WARNED", False, raising=False)
+    client = DriveClient(binary="proton-drive")
+    monkeypatch.setattr("protonfs.drive.shutil.which", lambda _: "/usr/bin/proton-drive")
+    monkeypatch.setattr(
+        subprocess, "run", _stub_run(_listing_json([("a", 10)], claimed=True))
+    )
+
+    with caplog.at_level(logging.WARNING, logger="protonfs.drive"):
+        idents = client.remote_identities("/my-files/test")
+
+    assert idents["a"].claimed_size == 10
+    assert not caplog.records, caplog.text
+
+
+def test_remote_identities_does_not_warn_on_an_empty_listing(
+    monkeypatch: pytest.MonkeyPatch, caplog
+) -> None:
+    """An empty directory says nothing about the binary's capabilities -- warning there
+    would fire on every first push into a new folder."""
+    import logging
+
+    import protonfs.drive as drive_mod
+
+    monkeypatch.setattr(drive_mod, "_CLAIMED_METADATA_WARNED", False, raising=False)
+    client = DriveClient(binary="proton-drive")
+    monkeypatch.setattr("protonfs.drive.shutil.which", lambda _: "/usr/bin/proton-drive")
+    monkeypatch.setattr(subprocess, "run", _stub_run("[]"))
+
+    with caplog.at_level(logging.WARNING, logger="protonfs.drive"):
+        assert client.remote_identities("/my-files/test") == {}
+
+    assert not caplog.records, caplog.text
+
+
+def test_remote_identities_does_not_shell_out_for_the_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#137 regression: the degraded-verification warning must not read the proton-drive
+    version eagerly. Reading it spawns the binary (seconds of SDK startup), and this runs
+    after EVERY verify listing -- once per parent directory on a push. It also broke any
+    caller that stubs `list` without stubbing the binary, which is how CI caught it.
+    """
+    import protonfs.drive as drive_mod
+
+    monkeypatch.setattr(drive_mod, "_CLAIMED_METADATA_WARNED", False, raising=False)
+    client = DriveClient(binary="proton-drive")
+    calls = []
+
+    def exploding_version():
+        calls.append(1)
+        raise AssertionError("drive_version() must not be called when nothing is warned")
+
+    monkeypatch.setattr(client, "drive_version", exploding_version)
+    # a listing WITH claimed sizes -> no warning -> version must never be consulted
+    monkeypatch.setattr(client, "list_with_backoff", lambda *a, **k: [
+        {"name": {"ok": True, "value": "a"}, "type": "file", "claimedSize": 10}
+    ])
+
+    idents = client.remote_identities("/my-files/test")
+
+    assert idents["a"].claimed_size == 10
+    assert calls == []
