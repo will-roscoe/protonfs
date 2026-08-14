@@ -452,10 +452,33 @@ push
 .. versionchanged:: 1.1.0
    Interactive batch progress on stderr; accepts multiple ``PATH`` pathspecs.
 
+.. versionchanged:: 1.11.0
+   A quoted ``PATH`` glob pattern is expanded by protonfs itself against the local
+   tree, instead of relying on the shell to expand it first. Added ``--strict``.
+
 Uploads local-only and locally-modified files under ``PATH`` (or the whole repo)
 to Drive. When run interactively (stderr is a terminal), a running
 ``push: N/M file(s)`` progress line is shown on stderr after each uploaded batch;
 scripts and redirected output see only the frozen summary on stdout.
+
+.. _push-patterns:
+
+``PATH`` may be a directory, a single file, or a **glob pattern**. An unquoted
+pattern is expanded by your shell before protonfs sees it, as always; a *quoted*
+one (``'mload*'``, ``'mload*/*.ev'``) reaches protonfs intact and is expanded by
+protonfs against the local tree at run time. The two are equivalent
+interactively, but only the quoted form survives into a scheduled job — see
+:ref:`cmd-schedule` — where the pattern must be re-expanded on each run so it
+keeps matching as new directories appear. A pattern segment never crosses ``/``,
+matching shell semantics.
+
+A pattern that matches nothing is reported and skipped, and **never widens to the
+whole repo**::
+
+    pattern(s) matched nothing, skipped (nothing to push): 'mload*' -- pass --strict to make this an error
+
+Pass ``--strict`` to make that an error (exit ``1``) instead. ``--strict`` fails
+before anything is transferred, so a run is all-or-nothing rather than partial.
 Without ``--resolve``, a genuine remote conflict is reported as a named
 per-file failure rather than silently resolved or skipped. Every batch is
 re-verified against a live remote listing after upload (matching each file's
@@ -485,11 +508,36 @@ pull
 .. versionchanged:: 1.1.0
    Interactive batch progress on stderr; accepts multiple ``PATH`` pathspecs.
 
+.. versionchanged:: 1.11.0
+   A quoted ``PATH`` glob pattern is expanded by protonfs itself against the
+   **index**, instead of relying on the shell to expand it first. Added ``--strict``.
+
 Downloads remote-only and (with ``--resolve``) remote-modified files under
 ``PATH`` (or the whole repo). When run interactively (stderr is a terminal), a
 running ``pull: N/M file(s)`` progress line is shown on stderr after each
 transferred batch; scripts and redirected output see only the frozen summary on
-stdout. A file edited **locally** and changed on the
+stdout.
+
+``PATH`` accepts a **glob pattern** on the same terms as :ref:`push <push-patterns>`,
+with one important difference: pull expands a pattern against the paths the
+**index** knows about, not the local filesystem. That is deliberate — pull exists
+to fetch files that are *absent locally*, and an offloaded file has no local
+presence for a filesystem glob to find, so matching on disk would silently miss
+exactly the files you asked for. The practical consequence is that a pattern only
+matches what the index has already seen: run :ref:`cmd-refresh` first on a repo
+whose index does not yet know about those files (``pull --refresh 'mload*'`` on a
+brand-new repo expands the pattern *before* the refresh seeds the index, so it
+matches nothing on that first run).
+
+A pattern that matches nothing is reported and skipped, never widening to the
+whole repo; ``--strict`` makes it an error (exit ``1``) instead, failing before
+anything is transferred.
+
+This is what makes the small-files case schedulable: ``'mload*/*.ev'`` pulls a
+few megabytes of time-series data across every matching run, while leaving the
+much larger dumps in those same directories offloaded.
+
+A file edited **locally** and changed on the
 **remote** since the last sync (a divergence) is left untouched by a bare
 ``pull`` — it is reported and the command exits non-zero, so a local edit is
 never silently overwritten. Choose a side with ``--resolve``:
@@ -726,10 +774,41 @@ timeouts, logging to ``.protonfs/schedule/<id>.log``. Jobs are recorded per-devi
 
 .. versionadded:: 1.8.0
 
+.. versionchanged:: 1.11.0
+   ``--path`` accepts a glob pattern, re-expanded on every run. Added ``--strict``.
+
+Scoping a job with a pattern
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+``--path`` takes a subtree *or* a glob pattern. The pattern is stored unexpanded and
+written into the wrapper quoted, so cron's shell leaves it alone and protonfs expands
+it fresh on **every run**. That is the difference that matters for scheduling: a shell
+glob is expanded once, when you install the job, and is frozen from then on — a
+pattern keeps matching as new runs appear, with no need to reinstall the job.
+
+This makes two otherwise inexpressible setups routine — pulling one family of runs
+while leaving the rest deliberately offloaded, and pulling only the small time-series
+files out of directories whose dumps are far too large to want locally::
+
+    protonfs schedule --add --every daily --command pull --path 'mload*'
+    protonfs schedule --add --every daily --command pull --path 'mload*/*.ev'
+
+Note the quotes: without them your shell expands the pattern before protonfs sees it,
+and you get a job frozen to whatever matched at install time (the older behaviour).
+
+By default a run whose pattern matches nothing is reported in the job log and treated
+as a no-op, which is usually what you want — a pattern for runs that do not exist
+*yet* should not fail nightly. Pass ``--strict`` when a job's pattern is expected to
+always match something, and a run that matches nothing should fail loudly instead:
+
+.. code-block:: console
+
+    $ protonfs schedule --add --every daily --command pull --path 'mload*' --strict
+
 Examples::
 
     protonfs schedule --add --every daily --at 1,3,5   # nightly at 01/03/05h
     protonfs schedule --add --cron "0 */6 * * *" --command sync
+    protonfs schedule --add --every daily --command pull --path 'mload*/*.ev'
     protonfs schedule --list
     protonfs schedule --uninstall a1d3ae
     protonfs schedule --all                            # remove every job

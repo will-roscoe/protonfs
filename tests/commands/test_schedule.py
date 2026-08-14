@@ -120,6 +120,53 @@ def test_add_job_with_path_and_resolve(repo: Path) -> None:
     assert '"mload002"' in text and "--resolve=replace" in text
 
 
+def test_add_job_keeps_a_glob_pattern_quoted_for_protonfs_to_expand(repo: Path) -> None:
+    """#131: the wrapper must pass a pattern through to protonfs *unexpanded*.
+
+    The quoting was previously the bug (cron's shell could not expand it, so a job could
+    only ever target one literal subtree). Now that protonfs expands patterns itself, the
+    same quoting is exactly what makes a scheduled pattern work: it survives cron's shell
+    and reaches protonfs intact, so it re-matches as new runs appear.
+    """
+    job = sched.add_job(
+        repo, cron="0 2 * * *", command="pull", path="mload*/*.ev", runner=FakeCrontab(),
+    )
+    assert job.path == "mload*/*.ev"
+    assert '"mload*/*.ev"' in Path(job.wrapper_path).read_text()
+
+
+def test_add_job_with_strict_passes_the_flag_to_the_wrapper(repo: Path) -> None:
+    job = sched.add_job(
+        repo, cron="0 2 * * *", command="pull", path="mload*", strict=True,
+        runner=FakeCrontab(),
+    )
+    assert job.strict is True
+    assert "--strict" in Path(job.wrapper_path).read_text()
+
+
+def test_add_job_without_strict_omits_the_flag(repo: Path) -> None:
+    job = sched.add_job(repo, cron="0 2 * * *", command="pull", path="mload*", runner=FakeCrontab())
+    assert job.strict is False
+    assert "--strict" not in Path(job.wrapper_path).read_text()
+
+
+def test_job_from_a_manifest_predating_strict_still_loads(repo: Path) -> None:
+    """A job installed before --strict existed has no `strict` key in the manifest;
+    loading it must not blow up (the field defaults to False)."""
+    import json
+
+    job = sched.add_job(repo, every="daily", runner=FakeCrontab())
+    manifest_path = repo / ".protonfs" / sched.MANIFEST_FILE_NAME
+    document = json.loads(manifest_path.read_text())
+    del document["jobs"][job.id]["strict"]  # simulate a pre-1.11.0 manifest
+    manifest_path.write_text(json.dumps(document))
+
+    loaded = sched.list_jobs(repo)
+
+    assert len(loaded) == 1
+    assert loaded[0].strict is False
+
+
 def test_reinstall_same_id_is_idempotent(repo: Path, monkeypatch) -> None:
     cron = FakeCrontab()
     # force a deterministic id so we can re-install it

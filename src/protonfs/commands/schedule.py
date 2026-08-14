@@ -63,6 +63,9 @@ class ScheduledJob:
     created_at: str
     log_path: str
     wrapper_path: str = ""
+    # #131: passed through to push/pull as --strict. Defaulted (and declared last) so a
+    # manifest written before this field existed still loads via ScheduledJob(**data).
+    strict: bool = False
 
 
 def _default_runner(args: list[str], stdin: str | None = None) -> subprocess.CompletedProcess:
@@ -194,9 +197,15 @@ def _wrapper_text(job: ScheduledJob, protonfs_bin: str, drive_bin: str, lock_pat
 def _args(job: ScheduledJob) -> str:
     parts = ""
     if job.path:
+        # Quoted deliberately: it keeps cron's shell from touching the value, so a glob
+        # pattern reaches protonfs INTACT and is expanded by protonfs itself at run time
+        # (#131). That is what lets one job cover a family of runs and keep matching as
+        # new ones appear -- a shell glob would have been expanded once, at install time.
         parts += f' "{job.path}"'
     if job.resolve:
         parts += f" --resolve={job.resolve}"
+    if job.strict:
+        parts += " --strict"
     return parts
 
 
@@ -213,6 +222,7 @@ def add_job(
     command: str = "push",
     path: str | None = None,
     resolve: str | None = None,
+    strict: bool = False,
     list_timeout: int = DEFAULT_LIST_TIMEOUT,
     transfer_timeout: int = DEFAULT_TRANSFER_TIMEOUT,
     batch_size: int = DEFAULT_BATCH_SIZE,
@@ -223,7 +233,16 @@ def add_job(
 ) -> ScheduledJob:
     """Install a scheduled job: write its wrapper, append a tagged crontab line, record it.
 
+    :param path: a subtree, or a glob pattern (``mload*``, ``mload*/*.ev``). A pattern is
+        written into the wrapper quoted, so cron's shell leaves it alone and protonfs
+        expands it itself on every run -- meaning one job covers a whole family of runs
+        and keeps matching as new ones appear (#131).
+    :param strict: pass ``--strict`` to push/pull, so a run whose pattern matches nothing
+        fails (exit 1) instead of being reported and skipped.
     :raises ScheduleError: on a non-repo, unknown command, bad cadence, or missing crontab.
+
+    .. versionchanged:: 1.11.0
+       Added ``strict``; ``path`` may now be a glob pattern.
     """
     if not is_protonfs_repo(repo_root):
         raise ScheduleError(f"{repo_root} is not a protonfs repo (run `protonfs setup`).")
@@ -242,6 +261,7 @@ def add_job(
         command=command,
         path=path,
         resolve=resolve,
+        strict=strict,
         repo=str(repo_root.resolve()),
         list_timeout=list_timeout,
         transfer_timeout=transfer_timeout,

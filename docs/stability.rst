@@ -126,18 +126,25 @@ flag/argument name; these names, not just their presence, are frozen.
        ``--format [table|plain|json]``, ``--visual [treemap|waffle]``.
      - ``0`` success; ``1`` Drive/auth error; ``2`` usage error.
    * - ``push``
-     - Upload local-only/changed files to Drive. Argument: ``PATH...`` (optional, repeatable; e.g. from a shell glob).
+     - Upload local-only/changed files to Drive. Argument: ``PATH...`` (optional,
+       repeatable; a shell glob, or a quoted pattern protonfs expands itself against the
+       local tree).
        Options: ``--resolve [remote|local|both]`` (the proton-drive strategy names
-       ``merge|keep-both|replace|skip`` remain accepted as synonyms), ``--dry-run``.
-     - ``0`` all transferred/skipped; ``1`` one or more files failed to transfer, or a
-       Drive/lock error; ``2`` usage error.
+       ``merge|keep-both|replace|skip`` remain accepted as synonyms), ``--dry-run``,
+       ``--strict``.
+     - ``0`` all transferred/skipped (including a pattern that matched nothing, which is
+       reported and skipped); ``1`` one or more files failed to transfer, a pattern
+       matched nothing under ``--strict``, or a Drive/lock error; ``2`` usage error.
    * - ``pull``
-     - Download remote-only/changed files from Drive. Argument: ``PATH...`` (optional, repeatable; e.g. from a shell glob).
+     - Download remote-only/changed files from Drive. Argument: ``PATH...`` (optional,
+       repeatable; a shell glob, or a quoted pattern protonfs expands itself against the
+       index).
        Options: ``--resolve [remote|local|both]`` (``replace`` accepted as an alias for
-       ``remote``), ``--dry-run``, ``--refresh``.
+       ``remote``), ``--dry-run``, ``--refresh``, ``--strict``.
      - ``0`` all transferred/skipped (including the "index empty, run refresh first"
-       early-exit message); ``1`` one or more files failed to transfer, or a
-       Drive/lock error; ``2`` usage error.
+       early-exit message, and a pattern that matched nothing, which is reported and
+       skipped); ``1`` one or more files failed to transfer, a pattern matched nothing
+       under ``--strict``, or a Drive/lock error; ``2`` usage error.
    * - ``offload``
      - Delete local bytes of protonfs-tracked files confirmed present on Drive.
        Argument: ``PATH...`` (optional, repeatable; e.g. from a shell glob). Options: ``--no-verify``, ``--dry-run``,
@@ -207,8 +214,10 @@ flag/argument name; these names, not just their presence, are frozen.
    * - ``schedule``
      - Install/list/remove cron jobs running push/pull on a schedule. ``--add`` (with
        ``--every``/``--cron``/``--at``, ``--command``, ``--path``, ``--resolve``,
-       ``--label``); ``--uninstall <id|index>`` (``-U``), ``--uninstall --all``; bare or
-       ``--list`` lists. Added in 1.8.0.
+       ``--strict``, ``--label``); ``--uninstall <id|index>`` (``-U``),
+       ``--uninstall --all``; bare or ``--list`` lists. Added in 1.8.0. ``--path`` accepts
+       a glob pattern (re-expanded by protonfs on every run) and ``--strict`` was added in
+       1.11.0.
      - ``0`` success; ``2`` usage error (bad cadence, unknown id, not a repo, or
        conflicting mode flags).
    * - ``auth login`` / ``auth logout``

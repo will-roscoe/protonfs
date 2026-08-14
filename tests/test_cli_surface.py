@@ -58,8 +58,8 @@ EXPECTED_OPTIONS: dict[str, frozenset[str]] = {
     "deinit": frozenset({"--dry-run", "--yes"}),
     "status": frozenset({"--format"}),
     "ls": frozenset({"--remote", "--trash", "--dirs", "--state", "--format", "--visual"}),
-    "push": frozenset({"--resolve", "--dry-run"}),
-    "pull": frozenset({"--resolve", "--dry-run", "--refresh"}),
+    "push": frozenset({"--resolve", "--dry-run", "--strict"}),
+    "pull": frozenset({"--resolve", "--dry-run", "--refresh", "--strict"}),
     "offload": frozenset({"--no-verify", "--dry-run", "--yes"}),
     "rm": frozenset({"-r", "--recursive", "-f", "--force", "--yes"}),
     "restore": frozenset(),
@@ -72,7 +72,7 @@ EXPECTED_OPTIONS: dict[str, frozenset[str]] = {
     "schedule": frozenset(
         {
             "--list", "--add", "--uninstall", "-U", "--all", "--every", "--cron",
-            "--at", "--command", "--path", "--resolve", "--label", "--json",
+            "--at", "--command", "--path", "--resolve", "--strict", "--label", "--json",
         }
     ),
     "auth": frozenset(),
