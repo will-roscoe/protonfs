@@ -69,10 +69,15 @@ def _download_and_index(
     """
     total = TransferResult(0, 0, 0, [])
     done = 0
+    # #139: size each `filesystem download` call from config, exactly as push does. A
+    # batch that cannot finish inside PROTONFS_TRANSFER_TIMEOUT is retried WHOLE, so on a
+    # slow link (or with large files) the only way to make progress is a smaller batch --
+    # which is what defaults.batch_size is documented to be for.
+    batch_size = ctx.config.defaults.batch_size
     for parent, group in group_by_parent(rels).items():
         local_folder = ctx.root if parent == "." else ctx.root / parent
         local_folder.mkdir(parents=True, exist_ok=True)
-        for batch in batches(group):
+        for batch in batches(group, batch_size):
             remote_paths = []
             for rel in batch:
                 entry = ctx.index.get(rel)
