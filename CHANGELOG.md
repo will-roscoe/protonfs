@@ -8,6 +8,18 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 
 ## [Unreleased]
 
+## [1.12.0] - 2026-08-17
+
+### Features
+
+- **status**: add --remote so sync state can be checked against Drive
+
+### Bug fixes
+
+- **push**: verify a skipped batch instead of refusing to look at it
+- **pull**: walk the parent, not the file, when --resolve names one file
+- **pull**: stage downloads so an interrupted pull leaves no partial file
+
 ## [1.11.3] - 2026-08-17
 
 ### Bug fixes
@@ -573,7 +585,8 @@ the preceding development history and its first tagged release:
   line-matching, git-mutation error wrapping, `pathspec` deprecation, subpath
   prune data-loss fix.
 
-[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v1.11.3...HEAD
+[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v1.12.0...HEAD
+[1.12.0]: https://github.com/will-roscoe/protonfs/compare/v1.11.3...v1.12.0
 [1.11.3]: https://github.com/will-roscoe/protonfs/compare/v1.11.2...v1.11.3
 [1.11.2]: https://github.com/will-roscoe/protonfs/compare/v1.11.1...v1.11.2
 [1.11.1]: https://github.com/will-roscoe/protonfs/compare/v1.11.0...v1.11.1
