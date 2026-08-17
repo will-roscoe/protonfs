@@ -64,7 +64,8 @@ def offload(
 
     :param ctx: the loaded repo context.
     :param subpath: repo-root-relative subtree to offload, or ``None`` for everything.
-    :param verify: re-check each file against the remote before deleting local bytes;
+    :param verify: re-check each file against the remote before deleting local bytes.
+        A file whose remote copy cannot be verified is skipped, not deleted;
         when false, trust the index (faster, unsafe).
     :param dry_run: report what would be freed without deleting anything.
     :param reporter: :class:`~protonfs.reporting.Reporter` to narrate progress through;
@@ -129,11 +130,22 @@ def offload(
 
             if verify:
                 ident = identities.get(name)
-                verified = ident is not None and (
-                    ident.claimed_size is None or ident.claimed_size == local_size
-                )
-                if not verified:
-                    reporter.warn(f"skip {rel}: not verified on remote")
+                # An unverifiable identity is NOT a pass. Treating a missing claimed_size
+                # as "fine" is what let a stale remote copy look verified (#147) while
+                # this deleted the only full one; deletion is the operation with no undo,
+                # so it is the one that must refuse when it cannot check.
+                if ident is None:
+                    reason = "absent from the remote listing"
+                elif ident.claimed_size is None:
+                    reason = "remote reports no size, so it cannot be verified"
+                elif ident.claimed_size != local_size:
+                    reason = f"remote size {ident.claimed_size} != local {local_size}"
+                elif ident.sha1 and entry.sha1 and ident.sha1 != entry.sha1:
+                    reason = "remote digest differs from the indexed copy"
+                else:
+                    reason = None
+                if reason is not None:
+                    reporter.warn(f"skip {rel}: {reason}")
                     result.skipped_unverified += 1
                     result.skipped_paths.append(rel)
                     continue
