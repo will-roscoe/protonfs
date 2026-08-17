@@ -185,9 +185,32 @@ def test_push_canonical_resolve_maps_to_proton_strategy(
 def test_push_resolve_skip_leaves_skipped_files_unindexed(
     tmp_path: Path, make_fake_drive
 ) -> None:
-    # D2.1: --resolve=skip returns only an aggregate skippedItems count, so when a
-    # batch reports any skip we cannot tell which file was skipped -> index none of
-    # the batch's non-failed files (conservative; never records an unconfirmed hash).
+    # #145: a skip is only an aggregate count, so the file is verified against the
+    # remote rather than assumed. Here nothing landed there, so it stays unindexed --
+    # the conservative outcome, now reached by checking instead of by refusing to look.
+    (tmp_path / "dump_0001").write_bytes(b"data")
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.drive = make_fake_drive(
+        upload_result=TransferResult(
+            transferred_items=0, skipped_items=1, failed_items=0, failures=[]
+        ),
+        dropped_files={"dump_0001"},  # skipped AND absent from the remote
+    )
+
+    result = push(ctx, None, resolve="skip", dry_run=False)
+
+    assert result.skipped_items == 1
+    assert ctx.index.get("dump_0001") is None  # not marked present on an ambiguous skip
+
+
+def test_push_skip_adopts_a_byte_identical_remote_copy(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    # #145: proton-drive skips a file it considers already present, and reports only an
+    # aggregate count. Indexing none of the batch left such a file local-only forever,
+    # because the next push took the same branch. Verified strictly against the remote
+    # and byte-identical, it is adopted: local and remote agree, so synced is the truth.
     (tmp_path / "dump_0001").write_bytes(b"data")
     init_config(tmp_path, "/my-files/test")
     ctx = load_context(tmp_path)
@@ -197,18 +220,40 @@ def test_push_resolve_skip_leaves_skipped_files_unindexed(
         )
     )
 
-    result = push(ctx, None, resolve="skip", dry_run=False)
+    push(ctx, None, resolve="skip", dry_run=False)
 
-    assert result.skipped_items == 1
-    assert ctx.index.get("dump_0001") is None  # not marked present on an ambiguous skip
+    entry = ctx.index.get("dump_0001")
+    assert entry is not None  # converges instead of staying local-only
+    assert entry.local_state == "present"
+
+
+def test_push_skip_does_not_adopt_a_differing_remote_copy(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    # #145: adoption is strict. A skipped file whose remote copy differs in size is a
+    # real divergence, so it must NOT be recorded as synced just because the name is
+    # taken -- that is the mistake that let a stale remote copy look verified.
+    (tmp_path / "dump_0001").write_bytes(b"data")
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.drive = make_fake_drive(
+        upload_result=TransferResult(
+            transferred_items=0, skipped_items=1, failed_items=0, failures=[]
+        ),
+        remote_size_overrides={"dump_0001": 999},  # remote holds different content
+    )
+
+    push(ctx, None, resolve="skip", dry_run=False)
+
+    assert ctx.index.get("dump_0001") is None
 
 
 def test_push_skip_with_mixed_batch_indexes_nothing_in_that_batch(
     tmp_path: Path, make_fake_drive
 ) -> None:
-    # D2.1: a single batch may report transferred AND skipped together (aggregate
-    # counts). Since we cannot tell which file was skipped, ANY skip in the batch
-    # means none of its non-failed files are indexed. Locks in the conservative rule.
+    # #145: a single batch may report transferred AND skipped together (aggregate
+    # counts). Not knowing which file was skipped means every one of them is verified
+    # against the remote; neither landed there, so neither is indexed.
     (tmp_path / "a").write_bytes(b"aa")
     (tmp_path / "b").write_bytes(b"bb")
     init_config(tmp_path, "/my-files/test")
@@ -217,7 +262,8 @@ def test_push_skip_with_mixed_batch_indexes_nothing_in_that_batch(
     ctx.drive = make_fake_drive(
         upload_result=TransferResult(
             transferred_items=1, skipped_items=1, failed_items=0, failures=[]
-        )
+        ),
+        dropped_files={"a", "b"},  # neither actually reached the remote
     )
 
     push(ctx, None, resolve="skip", dry_run=False)

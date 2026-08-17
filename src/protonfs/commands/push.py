@@ -270,6 +270,11 @@ def push(
         # ADOPT: verify the remote copy matches and record it without re-uploading.
         candidates: list[str] = []
         adopt_rels: set[str] = set()
+        # Files in a batch proton-drive reported skips for: possibly uploaded, possibly
+        # skipped as already-present. Verified strictly, and reported as an
+        # under-delivery rather than a conflict when they fail -- "we could not confirm
+        # this" is what actually happened, and it must not read as "the remote differs".
+        unattributed_rels: set[str] = set()
         for batch in batches(rels, batch_size):
             local_paths = [ctx.root / rel for rel in batch]
             result = ctx.drive.upload(local_paths, remote_parent, file_strategy=strategy)
@@ -291,11 +296,13 @@ def push(
                     reporter.item("^", rel)
 
             # D2.1: a skip is reported only as an aggregate count, so we cannot tell
-            # WHICH files in the batch were skipped. Rather than falsely record an
-            # unconfirmed hash, index none of this batch's non-failed files and leave
-            # them for the next push.
-            if result.skipped_items > 0:
-                continue
+            # WHICH files in the batch were skipped. Indexing an unconfirmed hash would
+            # be wrong, but so was the original response of indexing none of them and
+            # "leaving them for the next push": the next push takes this same branch, so
+            # a file proton-drive keeps skipping never converges (#145). Not knowing
+            # which file was skipped is a reason to verify all of them against the
+            # remote, not to verify none -- the per-file check below settles each one.
+            unattributed = result.skipped_items > 0
             for rel in batch:
                 name = Path(rel).name
                 if name in failed_names:
@@ -303,6 +310,8 @@ def push(
                 candidates.append(rel)
                 if name in conflict_names:
                     adopt_rels.add(rel)
+                elif unattributed:
+                    unattributed_rels.add(rel)
 
         if not candidates:
             continue
@@ -321,7 +330,8 @@ def push(
             name = Path(rel).name
             ident = identities.get(name)
             is_adopt = rel in adopt_rels
-            if not _verify_remote(ident, entry, strict_sha1=is_adopt):
+            strict = is_adopt or rel in unattributed_rels
+            if not _verify_remote(ident, entry, strict_sha1=strict):
                 total.failed_items += 1
                 if is_adopt and ident is None:
                     # #138: the name is taken but nothing of that name is listable -- a

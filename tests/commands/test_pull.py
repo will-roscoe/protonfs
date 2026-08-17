@@ -3,11 +3,46 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from protonfs.commands.pull import pull
 from protonfs.config import init_config
 from protonfs.context import load_context
 from protonfs.drive import RemoteEntry, TransferResult
 from protonfs.index import IndexEntry
+
+
+def test_pull_resolve_with_a_file_pathspec_walks_the_parent(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    # #142: --resolve is what makes pull take a live remote view, and it walked the
+    # pathspec directly. For a FILE that runs `filesystem list` against a file, whose
+    # output is not the JSON array the parser expects -- surfacing as a bare `[` and a
+    # generic unparseable-output error. Walk the parent directory and filter instead.
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.index.set(
+        "run1/dump_0001",
+        IndexEntry(
+            size=1, mtime=1.0, sha256="", sha1="",
+            remote_path="/my-files/test/run1/dump_0001",
+            origin_device="d", local_state="metadata-only", last_synced="2026-01-01T00:00:00Z",
+        ),
+    )
+    ctx.drive = make_fake_drive(
+        walk_by_root={
+            "/my-files/test/run1": [
+                RemoteEntry(rel_path="dump_0001", is_dir=False, size=1),
+                RemoteEntry(rel_path="dump_0002", is_dir=False, size=1),
+            ]
+        }
+    )
+
+    pull(ctx, "run1/dump_0001", resolve="remote", dry_run=True)
+
+    # the parent was listed, never the file itself
+    assert ctx.drive.walk_roots == ["/my-files/test/run1"]
+    assert "/my-files/test/run1/dump_0001" not in ctx.drive.walk_roots
 
 
 def test_pull_downloads_metadata_only_files_and_updates_index(
@@ -488,3 +523,39 @@ def test_pull_reports_under_delivery_when_drive_silently_drops_a_file(
     assert result.failed_items == 1
     assert result.failures[0]["name"] == "dropped"
     assert ctx.index.get("dropped").local_state == "metadata-only"
+
+
+def test_interrupted_download_leaves_no_partial_file_in_the_tree(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    # #141: downloading straight to the destination left a TRUNCATED file there when a
+    # pull was interrupted. The next pull could not tell it from a local edit: it
+    # reported "local and remote diverged" and offered --resolve=local, which would have
+    # uploaded the partial over the good remote copy. Staging the transfer means an
+    # interruption leaves nothing at the destination, so the next pull simply re-fetches.
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.index.set(
+        "run1/dump_0001",
+        IndexEntry(
+            size=66003940, mtime=0.0, sha256="", sha1="",
+            remote_path="/my-files/test/run1/dump_0001",
+            origin_device="d", local_state="metadata-only", last_synced="2026-01-01T00:00:00Z",
+        ),
+    )
+    fake = make_fake_drive()
+
+    def interrupted(remote_paths, local_folder, file_strategy=None, folder_strategy=None):
+        # what a dropped link looks like: some bytes written, then nothing
+        (Path(local_folder) / "dump_0001").write_bytes(b"partial")
+        raise KeyboardInterrupt
+
+    fake.download = interrupted
+    ctx.drive = fake
+
+    with pytest.raises(KeyboardInterrupt):
+        pull(ctx, None, resolve=None, dry_run=False)
+
+    assert not (tmp_path / "run1" / "dump_0001").exists()  # no truncated file in the tree
+    staging = tmp_path / ".protonfs" / "download"
+    assert not staging.exists() or list(staging.iterdir()) == []  # and none left staged

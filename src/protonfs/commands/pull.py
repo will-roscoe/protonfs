@@ -6,10 +6,12 @@
 from __future__ import annotations
 
 import datetime
+import shutil
 import tempfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from protonfs.batching import batches, group_by_parent
+from protonfs.config import CONFIG_DIR_NAME
 from protonfs.context import RepoContext
 from protonfs.diff import SyncState, classify, within_subpath
 from protonfs.drive import RemoteEntry, TransferResult
@@ -41,20 +43,56 @@ UNDERDELIVERED_KIND = "under-delivered"
 UNDERDELIVERED_ERROR = "claimed transferred but not found locally after download (under-delivered)"
 
 
+def _names_a_file(ctx: RepoContext, subpath: str) -> bool:
+    """Whether ``subpath`` names a tracked file rather than a directory."""
+    return ctx.index.get(subpath) is not None or (ctx.root / subpath).is_file()
+
+
 def _remote_view(ctx: RepoContext, subpath: str | None) -> dict[str, RemoteEntry]:
     """Walk the remote (scoped to `subpath`) into a rel_path -> RemoteEntry map, so classify
     can attribute modification DIRECTION (remote-modified vs both-modified) to diverged files.
     Only paid for when a --resolve policy is in play."""
+    # A FILE pathspec must not be walked: `filesystem list` against a file does not
+    # return the JSON array the parser expects, and the bare `[` surfaces as a generic
+    # unparseable-output error naming neither the file nor the cause (#142). Walk its
+    # parent directory instead and keep only that one entry.
+    prefix = subpath
+    wanted: str | None = None
+    if subpath and _names_a_file(ctx, subpath):
+        parent = str(PurePosixPath(subpath).parent)
+        prefix = "" if parent == "." else parent
+        wanted = subpath
+
     remote_root = ctx.config.remote_root
-    if subpath:
-        remote_root = f"{remote_root}/{subpath}"
+    if prefix:
+        remote_root = f"{remote_root}/{prefix}"
     entries = ctx.drive.walk(remote_root)
     remote = {e.rel_path: e for e in entries if not e.is_dir}
     # walk rel_paths are relative to remote_root; re-prefix so keys match the index's
     # repo-root-relative rel_paths (mirrors refresh.py).
-    if subpath:
-        remote = {f"{subpath}/{rel}": e for rel, e in remote.items()}
+    if prefix:
+        remote = {f"{prefix}/{rel}": e for rel, e in remote.items()}
+    if wanted is not None:
+        remote = {k: v for k, v in remote.items() if k == wanted}
     return remote
+
+
+def _staging_dir(ctx: RepoContext) -> Path:
+    """Directory downloads land in before being moved into the tree.
+
+    Under ``.protonfs/`` so a leftover partial from a killed process is never scanned as
+    a tracked file, and under the repo root so moving a completed file into place is a
+    rename rather than a copy. Stale directories from a previous kill are swept on the
+    way in, since a process that died mid-download had no chance to clean up after
+    itself. Called once per pull rather than once per batch: the repo lock keeps
+    concurrent pulls out, and sweeping repeatedly would be wasted work.
+    """
+    staging = ctx.root / CONFIG_DIR_NAME / "download"
+    staging.mkdir(parents=True, exist_ok=True)
+    for stale in staging.iterdir():
+        if stale.is_dir():
+            shutil.rmtree(stale, ignore_errors=True)
+    return staging
 
 
 def _download_and_index(
@@ -74,6 +112,7 @@ def _download_and_index(
     # slow link (or with large files) the only way to make progress is a smaller batch --
     # which is what defaults.batch_size is documented to be for.
     batch_size = ctx.config.defaults.batch_size
+    staging = _staging_dir(ctx)
     for parent, group in group_by_parent(rels).items():
         local_folder = ctx.root if parent == "." else ctx.root / parent
         local_folder.mkdir(parents=True, exist_ok=True)
@@ -83,9 +122,24 @@ def _download_and_index(
                 entry = ctx.index.get(rel)
                 default_remote = f"{ctx.config.remote_root}/{rel}"
                 remote_paths.append(entry.remote_path if entry else default_remote)
-            # "replace": pull intentionally brings remote content down, overwriting any local
-            # copy at the destination (that is what remote-wins / remote-moved mean).
-            result = ctx.drive.download(remote_paths, local_folder, file_strategy="replace")
+            # Download into a staging directory and move each file into the tree only
+            # once the transfer returns. Downloading straight to the destination left a
+            # TRUNCATED file there when a pull was interrupted, and the next pull could
+            # not tell it from a local edit: it reported "local and remote diverged" and
+            # offered --resolve=local, which would upload the partial over the good
+            # remote copy (#141). Staging lives under .protonfs/, which the scan skips,
+            # and on the same filesystem, so the move is a rename.
+            tmp = Path(tempfile.mkdtemp(dir=staging))
+            try:
+                # "replace": pull intentionally brings remote content down, overwriting any
+                # local copy at the destination (that is what remote-wins / remote-moved mean).
+                result = ctx.drive.download(remote_paths, tmp, file_strategy="replace")
+                for rel in batch:
+                    landed = tmp / Path(rel).name
+                    if landed.exists():
+                        landed.replace(ctx.root / rel)
+            finally:
+                shutil.rmtree(tmp, ignore_errors=True)
             total.skipped_items += result.skipped_items
             total.failed_items += result.failed_items
             total.failures += result.failures
