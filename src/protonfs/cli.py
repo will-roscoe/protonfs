@@ -440,19 +440,8 @@ def deinit(dry_run: bool, yes: bool) -> None:
     show_default=True,
     help="Output format: the classic state-per-line counts, or one JSON object.",
 )
-@click.option(
-    "--remote",
-    is_flag=True,
-    help="Force a live Drive listing to compute state instead of relying on the local "
-    "index alone (slower, but catches remote changes that refresh hasn't seen yet). "
-    "Without it, 'synced' means the file matches the index, not that it was verified "
-    "on Drive.",
-)
-def status(path: tuple[str, ...], fmt: str, remote: bool) -> None:
+def status(path: tuple[str, ...], fmt: str) -> None:
     """Summarize sync state (counts by local-only/remote-only/synced/conflict).
-
-    Without ``--remote`` the comparison is against the local index only, so ``synced``
-    means "matches what protonfs last recorded" rather than "verified on Drive".
 
     Accepts any number of PATHs (e.g. from a shell glob); counts are combined.
     Exit code, so an unattended caller can branch without parsing the counts:
@@ -469,7 +458,7 @@ def status(path: tuple[str, ...], fmt: str, remote: bool) -> None:
     ctx = load_context()
     counts: Counter = Counter()
     for subpath in _normalize_paths(path):
-        counts.update(compute_status(ctx, subpath, remote=remote))
+        counts.update(compute_status(ctx, subpath))
     code = status_exit_code(counts)
     if fmt == "json":
         import json

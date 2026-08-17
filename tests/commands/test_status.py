@@ -13,22 +13,7 @@ from protonfs.commands.status import (
 from protonfs.config import init_config
 from protonfs.context import load_context
 from protonfs.diff import SyncState
-from protonfs.drive import RemoteEntry
-from protonfs.index import IndexEntry
 from protonfs.lfs import POINTER_SIGNATURE
-
-
-def _synced_entry(path: Path) -> IndexEntry:
-    """An index entry recording `path` exactly as it is on disk right now."""
-    from protonfs.localscan import hash_file_digests
-
-    sha256, sha1 = hash_file_digests(path)
-    stat = path.stat()
-    return IndexEntry(
-        size=stat.st_size, mtime=stat.st_mtime, sha256=sha256, sha1=sha1,
-        remote_path=f"/my-files/test/{path.name}", origin_device="d",
-        local_state="present", last_synced="2026-01-01T00:00:00Z",
-    )
 
 
 def test_compute_status_narrates_scan(tmp_path: Path, recording_reporter_cls) -> None:
@@ -137,43 +122,3 @@ def test_pointer_only_tree_is_clean_end_to_end(tmp_path: Path) -> None:
 
     assert counts[SyncState.LFS_POINTER.value] == 1
     assert status_exit_code(counts) == STATUS_CLEAN
-
-
-def test_compute_status_without_remote_reports_synced_from_the_index_alone(
-    tmp_path: Path, make_fake_drive
-) -> None:
-    # #144: the default path never contacts Drive, so "synced" means "matches what
-    # protonfs last recorded". A remote copy that has since changed is invisible here --
-    # which is why --remote exists and why offload does its own live verification.
-    (tmp_path / "dump_0001").write_bytes(b"data")
-    init_config(tmp_path, "/my-files/test")
-    ctx = load_context(tmp_path)
-    ctx.index.set("dump_0001", _synced_entry(tmp_path / "dump_0001"))
-    ctx.drive = make_fake_drive(
-        walk_entries=[RemoteEntry(rel_path="dump_0001", is_dir=False, size=999, claimed_size=999)]
-    )
-
-    counts = compute_status(ctx, None)
-
-    assert counts[SyncState.SYNCED.value] == 1
-    assert ctx.drive.walk_roots == []  # Drive was never listed
-
-
-def test_compute_status_with_remote_detects_a_changed_remote_copy(
-    tmp_path: Path, make_fake_drive
-) -> None:
-    # #144: --remote walks Drive and classifies against it, so a remote copy that no
-    # longer matches the index is reported instead of being counted as synced.
-    (tmp_path / "dump_0001").write_bytes(b"data")
-    init_config(tmp_path, "/my-files/test")
-    ctx = load_context(tmp_path)
-    ctx.index.set("dump_0001", _synced_entry(tmp_path / "dump_0001"))
-    ctx.drive = make_fake_drive(
-        walk_entries=[RemoteEntry(rel_path="dump_0001", is_dir=False, size=999, claimed_size=999)]
-    )
-
-    counts = compute_status(ctx, None, remote=True)
-
-    assert counts[SyncState.SYNCED.value] == 0
-    assert counts[SyncState.REMOTE_MODIFIED.value] == 1
-    assert ctx.drive.walk_roots == ["/my-files/test"]

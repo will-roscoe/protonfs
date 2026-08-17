@@ -573,7 +573,7 @@ def test_cli_verbose_count_configures_reporter(tmp_path, monkeypatch, make_fake_
     monkeypatch.setattr("protonfs.context.load_context", lambda *a, **k: ctx)
     captured = {}
 
-    def _fake_compute_status(c, p, **kwargs):
+    def _fake_compute_status(c, p):
         captured["lvl"] = get_reporter().level
         return Counter()
 
