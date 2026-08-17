@@ -29,7 +29,9 @@ _QUIESCENT = frozenset({SyncState.SYNCED, SyncState.METADATA_ONLY, SyncState.LFS
 _CONFLICT = frozenset({SyncState.CONFLICT, SyncState.BOTH_MODIFIED})
 
 
-def compute_status(ctx: RepoContext, subpath: str | None, reporter=None) -> Counter:
+def compute_status(
+    ctx: RepoContext, subpath: str | None, reporter=None, remote: bool = False
+) -> Counter:
     """Summarise sync state as a count of files per :class:`~protonfs.diff.SyncState`.
 
     Scans the working tree (scoped to ``subpath`` when given), classifies each file
@@ -40,7 +42,16 @@ def compute_status(ctx: RepoContext, subpath: str | None, reporter=None) -> Coun
         for the whole tree.
     :param reporter: :class:`~protonfs.reporting.Reporter` to narrate progress through;
         defaults to the process reporter (:func:`~protonfs.reporting.get_reporter`).
+    :param remote: walk Drive and classify against it as well as the index. Off by
+        default because listing is slow and throttle-prone; without it a file is
+        compared only against what protonfs last recorded, so ``synced`` means "matches
+        the index", NOT "verified present on Drive". Mirrors ``ls --remote``.
     :returns: a :class:`collections.Counter` keyed by ``SyncState.value``.
+
+    .. note:: A failed or throttled walk raises rather than falling back to the local
+       comparison. Reporting index-only states as though the remote had been checked is
+       the confusion this flag exists to remove, so a partial answer must not be
+       presented as a verified one.
 
     .. seealso:: :func:`status_exit_code` maps this summary to a process exit code.
     """
@@ -53,7 +64,13 @@ def compute_status(ctx: RepoContext, subpath: str | None, reporter=None) -> Coun
     local = scan(ctx.root, scan_root, ignore, ctx.index, low_io=ctx.config.defaults.low_io)
     # #96: classify() sees the whole repo-wide index; the scan above is scoped. Filter
     # so `status SUBPATH` never counts (or exits non-zero for) entries outside SUBPATH.
-    entries = classify(local, ctx.index)
+    remote_view = None
+    if remote:
+        from protonfs.commands.ls import remote_rel_paths
+
+        reporter.phase("listing", subpath=subpath or ".")
+        remote_view = remote_rel_paths(ctx, subpath)
+    entries = classify(local, ctx.index, remote_view)
     return Counter(
         entry.state.value for entry in entries if within_subpath(entry.rel_path, subpath)
     )

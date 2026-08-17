@@ -115,7 +115,10 @@ flag/argument name; these names, not just their presence, are frozen.
    * - ``status``
      - Summarize sync state (counts by local-only/remote-only/synced/conflict).
        Argument: ``PATH...`` (optional, repeatable; e.g. from a shell glob).
-       Option: ``--format [plain|json]``.
+       Options: ``--format [plain|json]``, ``--remote``.
+       Without ``--remote`` the comparison is against the local index only, so
+       ``synced`` means "matches what protonfs last recorded", not "verified present
+       on Drive".
      - ``0`` clean (synced or intentionally remote-only); ``1`` drift present
        (something to push/pull/prune); ``2`` conflict present (needs a human or
        ``--resolve``). Conflict outranks drift when both are present. (Usage errors
