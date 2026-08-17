@@ -300,10 +300,14 @@ def _warn_if_verification_degraded(
     """Warn (once per process) when a non-empty listing carries no plaintext metadata.
 
     Every local-vs-remote comparison routes through ``claimedSize``/``claimedDigests.sha1``.
-    When the installed proton-drive emits neither, both guards in push's ``_verify_remote``
-    are skipped and "verified on the remote" silently weakens to "a file of this name
-    exists" -- so a truncated or wrong remote object passes (#137). That is a materially
-    weaker guarantee than the docs describe, and it must not be silent.
+    When neither reaches us, both guards in push's ``_verify_remote`` are skipped and
+    "verified on the remote" silently weakens to "a file of this name exists" -- so a
+    truncated or wrong remote object passes (#137). That is a materially weaker guarantee
+    than the docs describe, and it must not be silent.
+
+    Historically this fired because the fields were read from the wrong level of the
+    entry (#147) rather than because proton-drive withheld them, so the message points at
+    the listing shape instead of telling the user to upgrade.
 
     An EMPTY listing is not evidence either way (a first push into a new folder sees one),
     so it never warns.
@@ -322,10 +326,11 @@ def _warn_if_verification_degraded(
     _CLAIMED_METADATA_WARNED = True
     version = describe_version()
     logger.warning(
-        "this proton-drive build (%s) reports no claimedSize/claimedDigests, so "
-        "remote verification is by NAME PRESENCE ONLY -- a wrong or truncated remote "
-        "copy cannot be detected. Upgrade proton-drive (`protonfs upgrade`) for "
-        "size-checked verification.",
+        "no claimedSize/claimedDigests on any entry of this listing (proton-drive %s), "
+        "so remote verification is by NAME PRESENCE ONLY -- a wrong or truncated remote "
+        "copy cannot be detected. This is usually a listing shape protonfs does not yet "
+        "parse rather than a missing capability, so please report it with the output of "
+        "`proton-drive filesystem list <path> --json`.",
         version or "unknown version",
     )
 
@@ -432,6 +437,45 @@ def _classify(message: str) -> DriveError:
     if _is_auth_error(message):
         return DriveAuthError(f"proton-drive auth required: {message}")
     return DriveError(message)
+
+
+def active_revision(entry: dict) -> dict | None:
+    """The active revision of a `filesystem list` entry, or None if it is unreadable.
+
+    Plaintext identity (``claimedSize``, ``claimedDigests``) lives on the revision, not
+    on the entry, and the CLI nests it two different ways: ``cli-drive@0.5.0`` wraps it
+    in the same ``{"ok", "value"}`` result envelope as ``name``, while ``0.8.0`` returns
+    it flat. A single entry mixes both conventions -- ``name`` is enveloped on either
+    build -- so this unwraps per field rather than per version.
+
+    Returns ``{}`` when the entry carries no revision at all, and ``None`` when one is
+    present but its envelope reports failure: "could not be read" is not the same as
+    "not there", and only the former means the remote copy cannot be verified.
+    """
+    rev = entry.get("activeRevision")
+    if rev is None:
+        return {}
+    if not isinstance(rev, dict):
+        return None
+    if "ok" in rev or "value" in rev:
+        if not rev.get("ok"):
+            return None
+        value = rev.get("value")
+        return value if isinstance(value, dict) else None
+    return rev
+
+
+def claimed_identity(entry: dict) -> tuple[int | None, str | None]:
+    """``(claimed_size, sha1)`` for a file entry: its plaintext size and content digest.
+
+    Both are ``None`` when the revision is absent or unreadable, which every caller must
+    treat as "cannot verify this remote copy" rather than as a passing check.
+    """
+    rev = active_revision(entry)
+    if not rev:
+        return None, None
+    digests = rev.get("claimedDigests") or {}
+    return rev.get("claimedSize"), digests.get("sha1")
 
 
 def decrypted_name(entry: dict) -> str | None:
@@ -710,11 +754,8 @@ class DriveClient:
             name = decrypted_name(entry)
             if name is None:
                 continue
-            digests = entry.get("claimedDigests") or {}
-            identities[name] = RemoteIdentity(
-                claimed_size=entry.get("claimedSize"),
-                sha1=digests.get("sha1"),
-            )
+            claimed_size, sha1 = claimed_identity(entry)
+            identities[name] = RemoteIdentity(claimed_size=claimed_size, sha1=sha1)
         # bound method, NOT called: only resolved if a warning is actually emitted
         _warn_if_verification_degraded(identities, self.drive_version)
         return identities
@@ -763,13 +804,13 @@ class DriveClient:
                     results.append(RemoteEntry(rel_path=rel, is_dir=True, size=0))
                     queue.append((child_abs, f"{rel}/"))
                 else:
-                    digests = entry.get("claimedDigests") or {}
+                    claimed_size, sha1 = claimed_identity(entry)
                     file_entry = RemoteEntry(
                         rel_path=rel,
                         is_dir=False,
                         size=entry.get("totalStorageSize", 0),
-                        claimed_size=entry.get("claimedSize"),
-                        sha1=digests.get("sha1"),
+                        claimed_size=claimed_size,
+                        sha1=sha1,
                     )
                     results.append(file_entry)
                     dir_files.append(file_entry)

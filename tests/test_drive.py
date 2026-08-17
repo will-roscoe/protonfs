@@ -110,11 +110,15 @@ def test_remote_identities_parses_claimed_fields_and_skips_folders(
     monkeypatch.setattr("protonfs.drive.shutil.which", lambda _: "/usr/bin/proton-drive")
     payload = (
         "["
-        '{"name": {"ok": true, "value": "f1"}, "type": "file", "claimedSize": 100,'
-        ' "claimedDigests": {"sha1": "aa"}, "totalStorageSize": 128},'
+        # cli-drive@0.8.0: activeRevision is flat
+        '{"name": {"ok": true, "value": "f1"}, "type": "file", "totalStorageSize": 128,'
+        ' "activeRevision": {"claimedSize": 100, "claimedDigests": {"sha1": "aa"}}},'
         '{"name": {"ok": true, "value": "sub"}, "type": "folder"},'
-        '{"name": {"ok": false, "value": ""}, "type": "file", "claimedSize": 7},'
-        '{"name": {"ok": true, "value": "f2"}, "type": "file", "claimedSize": 200}'
+        '{"name": {"ok": false, "value": ""}, "type": "file",'
+        ' "activeRevision": {"claimedSize": 7}},'
+        # cli-drive@0.5.0: activeRevision is wrapped in the {ok, value} envelope
+        '{"name": {"ok": true, "value": "f2"}, "type": "file",'
+        ' "activeRevision": {"ok": true, "value": {"claimedSize": 200}}}'
         "]"
     )
     monkeypatch.setattr(subprocess, "run", _stub_run(payload))
@@ -124,8 +128,33 @@ def test_remote_identities_parses_claimed_fields_and_skips_folders(
     assert set(identities) == {"f1", "f2"}  # folder + undecryptable entry excluded
     assert identities["f1"].claimed_size == 100  # plaintext size, not totalStorageSize (128)
     assert identities["f1"].sha1 == "aa"
-    assert identities["f2"].claimed_size == 200
+    assert identities["f2"].claimed_size == 200  # read through the 0.5.0 envelope
     assert identities["f2"].sha1 is None
+
+
+def test_claimed_identity_reads_both_revision_shapes_and_flags_unreadable() -> None:
+    # #147: claimedSize/claimedDigests live on activeRevision, which cli-drive@0.8.0
+    # returns flat and 0.5.0 wraps in the {ok, value} envelope -- while `name` is
+    # enveloped on both. Reading them from the entry itself yields None everywhere,
+    # which every verify treats as a pass.
+    from protonfs.drive import active_revision, claimed_identity
+
+    flat = {"type": "file", "activeRevision": {"claimedSize": 100,
+                                               "claimedDigests": {"sha1": "aa"}}}
+    enveloped = {"type": "file", "activeRevision": {"ok": True, "value": {
+        "claimedSize": 200, "claimedDigests": {"sha1": "bb"}}}}
+
+    assert claimed_identity(flat) == (100, "aa")
+    assert claimed_identity(enveloped) == (200, "bb")
+
+    # Absent revision: nothing to read, but nothing went wrong either.
+    assert active_revision({"type": "file"}) == {}
+    assert claimed_identity({"type": "file"}) == (None, None)
+
+    # Unreadable revision is NOT the same as an absent one: it means the remote copy
+    # cannot be verified, and callers must be able to tell the two apart.
+    assert active_revision({"activeRevision": {"ok": False, "value": None}}) is None
+    assert claimed_identity({"activeRevision": {"ok": False, "value": None}}) == (None, None)
 
 
 def test_remote_identities_is_throttle_resilient(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -141,8 +170,8 @@ def test_remote_identities_is_throttle_resilient(monkeypatch: pytest.MonkeyPatch
         if calls["n"] < 3:
             raise subprocess.TimeoutExpired(cmd="proton-drive", timeout=timeout)
         return [
-            {"name": {"ok": True, "value": "f1"}, "type": "file", "claimedSize": 100,
-             "claimedDigests": {"sha1": "aa"}},
+            {"name": {"ok": True, "value": "f1"}, "type": "file",
+             "activeRevision": {"claimedSize": 100, "claimedDigests": {"sha1": "aa"}}},
         ]
 
     monkeypatch.setattr(client, "list", flaky)
@@ -251,8 +280,10 @@ def test_walk_surfaces_plaintext_claimed_identity(monkeypatch):
                 "name": {"ok": True, "value": "f.txt"},
                 "type": "file",
                 "totalStorageSize": 13,  # encrypted size, runs larger than plaintext
-                "claimedSize": 10,  # plaintext size
-                "claimedDigests": {"sha1": "abc123"},
+                "activeRevision": {
+                    "claimedSize": 10,  # plaintext size, on the revision not the entry
+                    "claimedDigests": {"sha1": "abc123"},
+                },
             },
         ],
     }
@@ -852,8 +883,10 @@ def _listing_json(names_with_sizes, *, claimed: bool) -> str:
             "totalStorageSize": size + 651,
         }
         if claimed:
-            entry["claimedSize"] = size
-            entry["claimedDigests"] = {"sha1": "abc"}
+            entry["activeRevision"] = {
+                "claimedSize": size,
+                "claimedDigests": {"sha1": "abc"},
+            }
         entries.append(entry)
     return json.dumps(entries)
 
@@ -947,7 +980,8 @@ def test_remote_identities_does_not_shell_out_for_the_version(
     monkeypatch.setattr(client, "drive_version", exploding_version)
     # a listing WITH claimed sizes -> no warning -> version must never be consulted
     monkeypatch.setattr(client, "list_with_backoff", lambda *a, **k: [
-        {"name": {"ok": True, "value": "a"}, "type": "file", "claimedSize": 10}
+        {"name": {"ok": True, "value": "a"}, "type": "file",
+         "activeRevision": {"claimedSize": 10}}
     ])
 
     idents = client.remote_identities("/my-files/test")

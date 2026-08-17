@@ -111,6 +111,31 @@ def test_offload_skips_locally_modified_file(tmp_path: Path, make_fake_drive) ->
     assert ctx.index.get("dump_0001").local_state == "present"
 
 
+def test_offload_refuses_when_the_remote_reports_no_size(tmp_path: Path, make_fake_drive) -> None:
+    # #147: a remote identity with no claimed_size cannot be verified. Passing it was
+    # how a stale remote copy looked "verified" while offload deleted the only full one,
+    # so an unverifiable file must be skipped -- deletion is the step with no undo.
+    from protonfs.drive import RemoteIdentity
+
+    init_config(tmp_path, "/my-files/test")
+    (tmp_path / "dump_0001").write_bytes(b"data")
+    ctx = load_context(tmp_path)
+    ctx.index.set("dump_0001", _synced_entry(tmp_path / "dump_0001", "/my-files/test/dump_0001"))
+    fake = make_fake_drive()
+    fake.remote_identities = lambda parent: {
+        "dump_0001": RemoteIdentity(claimed_size=None, sha1=None)
+    }
+    ctx.drive = fake
+
+    result = offload(ctx, None)
+
+    assert result.offloaded == 0
+    assert result.skipped_unverified == 1
+    assert result.skipped_paths == ["dump_0001"]
+    assert (tmp_path / "dump_0001").exists()  # local bytes kept
+    assert ctx.index.get("dump_0001").local_state == "present"
+
+
 def test_offload_modified_guard_holds_under_no_verify(tmp_path: Path, make_fake_drive) -> None:
     # The unsynced-edit guard is unconditional -- it protects even when remote verification
     # is explicitly disabled.
