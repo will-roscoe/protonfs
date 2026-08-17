@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import datetime
 import tempfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from protonfs.batching import batches, group_by_parent
 from protonfs.context import RepoContext
@@ -41,19 +41,37 @@ UNDERDELIVERED_KIND = "under-delivered"
 UNDERDELIVERED_ERROR = "claimed transferred but not found locally after download (under-delivered)"
 
 
+def _names_a_file(ctx: RepoContext, subpath: str) -> bool:
+    """Whether ``subpath`` names a tracked file rather than a directory."""
+    return ctx.index.get(subpath) is not None or (ctx.root / subpath).is_file()
+
+
 def _remote_view(ctx: RepoContext, subpath: str | None) -> dict[str, RemoteEntry]:
     """Walk the remote (scoped to `subpath`) into a rel_path -> RemoteEntry map, so classify
     can attribute modification DIRECTION (remote-modified vs both-modified) to diverged files.
     Only paid for when a --resolve policy is in play."""
+    # A FILE pathspec must not be walked: `filesystem list` against a file does not
+    # return the JSON array the parser expects, and the bare `[` surfaces as a generic
+    # unparseable-output error naming neither the file nor the cause (#142). Walk its
+    # parent directory instead and keep only that one entry.
+    prefix = subpath
+    wanted: str | None = None
+    if subpath and _names_a_file(ctx, subpath):
+        parent = str(PurePosixPath(subpath).parent)
+        prefix = "" if parent == "." else parent
+        wanted = subpath
+
     remote_root = ctx.config.remote_root
-    if subpath:
-        remote_root = f"{remote_root}/{subpath}"
+    if prefix:
+        remote_root = f"{remote_root}/{prefix}"
     entries = ctx.drive.walk(remote_root)
     remote = {e.rel_path: e for e in entries if not e.is_dir}
     # walk rel_paths are relative to remote_root; re-prefix so keys match the index's
     # repo-root-relative rel_paths (mirrors refresh.py).
-    if subpath:
-        remote = {f"{subpath}/{rel}": e for rel, e in remote.items()}
+    if prefix:
+        remote = {f"{prefix}/{rel}": e for rel, e in remote.items()}
+    if wanted is not None:
+        remote = {k: v for k, v in remote.items() if k == wanted}
     return remote
 
 
