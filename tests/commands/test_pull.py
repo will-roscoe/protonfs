@@ -10,6 +10,39 @@ from protonfs.drive import RemoteEntry, TransferResult
 from protonfs.index import IndexEntry
 
 
+def test_pull_resolve_with_a_file_pathspec_walks_the_parent(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    # #142: --resolve is what makes pull take a live remote view, and it walked the
+    # pathspec directly. For a FILE that runs `filesystem list` against a file, whose
+    # output is not the JSON array the parser expects -- surfacing as a bare `[` and a
+    # generic unparseable-output error. Walk the parent directory and filter instead.
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.index.set(
+        "run1/dump_0001",
+        IndexEntry(
+            size=1, mtime=1.0, sha256="", sha1="",
+            remote_path="/my-files/test/run1/dump_0001",
+            origin_device="d", local_state="metadata-only", last_synced="2026-01-01T00:00:00Z",
+        ),
+    )
+    ctx.drive = make_fake_drive(
+        walk_by_root={
+            "/my-files/test/run1": [
+                RemoteEntry(rel_path="dump_0001", is_dir=False, size=1),
+                RemoteEntry(rel_path="dump_0002", is_dir=False, size=1),
+            ]
+        }
+    )
+
+    pull(ctx, "run1/dump_0001", resolve="remote", dry_run=True)
+
+    # the parent was listed, never the file itself
+    assert ctx.drive.walk_roots == ["/my-files/test/run1"]
+    assert "/my-files/test/run1/dump_0001" not in ctx.drive.walk_roots
+
+
 def test_pull_downloads_metadata_only_files_and_updates_index(
     tmp_path: Path, make_fake_drive
 ) -> None:
