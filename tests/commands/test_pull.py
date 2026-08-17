@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from protonfs.commands.pull import pull
 from protonfs.config import init_config
 from protonfs.context import load_context
@@ -521,3 +523,39 @@ def test_pull_reports_under_delivery_when_drive_silently_drops_a_file(
     assert result.failed_items == 1
     assert result.failures[0]["name"] == "dropped"
     assert ctx.index.get("dropped").local_state == "metadata-only"
+
+
+def test_interrupted_download_leaves_no_partial_file_in_the_tree(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    # #141: downloading straight to the destination left a TRUNCATED file there when a
+    # pull was interrupted. The next pull could not tell it from a local edit: it
+    # reported "local and remote diverged" and offered --resolve=local, which would have
+    # uploaded the partial over the good remote copy. Staging the transfer means an
+    # interruption leaves nothing at the destination, so the next pull simply re-fetches.
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.index.set(
+        "run1/dump_0001",
+        IndexEntry(
+            size=66003940, mtime=0.0, sha256="", sha1="",
+            remote_path="/my-files/test/run1/dump_0001",
+            origin_device="d", local_state="metadata-only", last_synced="2026-01-01T00:00:00Z",
+        ),
+    )
+    fake = make_fake_drive()
+
+    def interrupted(remote_paths, local_folder, file_strategy=None, folder_strategy=None):
+        # what a dropped link looks like: some bytes written, then nothing
+        (Path(local_folder) / "dump_0001").write_bytes(b"partial")
+        raise KeyboardInterrupt
+
+    fake.download = interrupted
+    ctx.drive = fake
+
+    with pytest.raises(KeyboardInterrupt):
+        pull(ctx, None, resolve=None, dry_run=False)
+
+    assert not (tmp_path / "run1" / "dump_0001").exists()  # no truncated file in the tree
+    staging = tmp_path / ".protonfs" / "download"
+    assert not staging.exists() or list(staging.iterdir()) == []  # and none left staged
