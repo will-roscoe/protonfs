@@ -8,6 +8,10 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 
 ## [Unreleased]
 
+### Bug fixes
+
+- **config**: set up a freshly cloned repo instead of failing on its missing device_id (#151)
+
 ## [1.12.0] - 2026-08-17
 
 ### Features

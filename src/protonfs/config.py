@@ -25,6 +25,24 @@ from pathlib import Path
 
 from protonfs.batching import DEFAULT_BATCH_SIZE
 
+
+class MissingDeviceIdError(ValueError):
+    """No ``device_id`` resolved for a repo whose shared config exists (#151).
+
+    Raised by :func:`load_layered_config`. Subclasses :exc:`ValueError`, which is what
+    that function raised before this type existed, so existing handlers keep working --
+    but callers should catch this rather than a bare :exc:`ValueError`, because the env
+    layer raises its own for an unparseable ``PROTONFS_BATCH_SIZE`` and the two want
+    opposite remedies.
+
+    The ordinary cause is a fresh clone: ``config.json`` is committed and present, while
+    ``config.local.json`` -- where :func:`init_config` puts ``device_id`` -- is gitignored
+    and therefore absent. Recover with :func:`ensure_device_id`.
+
+    .. versionadded:: 1.12.1
+    """
+
+
 CONFIG_DIR_NAME = ".protonfs"
 CONFIG_FILE_NAME = "config.json"
 LOCAL_CONFIG_FILE_NAME = "config.local.json"
@@ -354,8 +372,19 @@ def load_layered_config(repo_root: Path) -> Config | None:
 
     Returns None when the per-repo shared file is absent, matching `load_config`'s
     contract: a global or local file alone does not mean this repo is "set up". Raises
-    `ValueError` if no layer resolves a `device_id` (shouldn't happen for a repo that went
-    through `protonfs setup`, since `init_config` always writes one).
+    `MissingDeviceIdError` if no layer resolves a `device_id` -- which is the ordinary
+    state of a FRESH CLONE rather than a corrupt repo: `init_config` writes `device_id`
+    only to the gitignored `config.local.json`, so a clone receives the shared config
+    without it (#151). Callers that can recover call `ensure_device_id`; the rest report
+    the repo as not yet set up on this machine.
+
+    Resolving config stays a pure read -- as `IndexStore` and the hash cache also are --
+    so this never mints the missing id itself and nothing writes to `.protonfs/` merely
+    because a value was looked up.
+
+    .. versionchanged:: 1.12.1
+       Raises :exc:`MissingDeviceIdError` (a :exc:`ValueError` subclass) rather than a
+       bare :exc:`ValueError`.
     """
     shared_path = config_path(repo_root)
     if not shared_path.exists():
@@ -368,9 +397,11 @@ def load_layered_config(repo_root: Path) -> Config | None:
     merged = _deep_merge(merged, _env_layer())
 
     if not merged.get("device_id"):
-        raise ValueError(
+        raise MissingDeviceIdError(
             "no device_id resolved for this repo (checked config.local.json, config.json, "
-            "the global config, and env vars). Run `protonfs setup` to generate one."
+            "the global config, and env vars). This is the normal state of a fresh clone, "
+            "since config.local.json is gitignored -- run `protonfs setup` to generate one "
+            "for this machine."
         )
     return Config.from_dict(merged)
 
@@ -398,6 +429,40 @@ def migrate_device_id_to_local(repo_root: Path) -> bool:
     shared_data.pop("device_id", None)
     _atomic_write_json(shared_path, shared_data)
     return True
+
+
+def ensure_device_id(repo_root: Path) -> str:
+    """Return this machine's ``device_id`` for `repo_root`, minting one if there is none.
+
+    The recovery for :exc:`MissingDeviceIdError`, and the reason a freshly cloned repo
+    needs nothing else: ``device_id`` is per-machine by design, so a clone is *supposed*
+    to get its own rather than inherit the one belonging to the machine that ran
+    `protonfs setup`. It is attribution only -- it lands in an index entry's
+    ``origin_device`` -- so minting one commits the repo to nothing.
+
+    Idempotent: an id already resolvable from any layer is adopted rather than replaced,
+    and only ``config.local.json`` is ever written.
+
+    :param repo_root: the protonfs root.
+    :returns: the resolved or newly generated device id.
+
+    .. versionadded:: 1.12.1
+    """
+    local_data = load_local_config(repo_root)
+    if local_data.get("device_id"):
+        return local_data["device_id"]
+    # A shared, global or env layer may still carry one (a pre-#21 layout, or an explicit
+    # override): adopt it rather than minting a second id for the same machine.
+    for layer in (_read_json_dict(config_path(repo_root)), load_global_config(), _env_layer()):
+        inherited = layer.get("device_id")
+        if inherited:
+            local_data["device_id"] = inherited
+            save_local_config(repo_root, local_data)
+            return inherited
+    device_id = str(uuid.uuid4())
+    local_data["device_id"] = device_id
+    save_local_config(repo_root, local_data)
+    return device_id
 
 
 def init_config(repo_root: Path, remote_root: str) -> Config:

@@ -135,6 +135,33 @@ def test_ensure_config_new_repo_writes_device_id_to_local_file_only(
     assert (tmp_path / ".protonfs" / "config.local.json").exists()
 
 
+def test_ensure_config_sets_up_a_fresh_clone_without_prompting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # #151: `protonfs setup` in a fresh clone used to crash in this very function, making
+    # the error's own advice ("run protonfs setup") circular. remote_root arrived with the
+    # clone, so the only thing missing is a device_id for this machine -- and prompting for
+    # a remote_root that is already committed would invite someone to overwrite it.
+    from protonfs.config import init_config, load_local_config
+
+    original = init_config(tmp_path, "/my-files/cloned")
+    (tmp_path / ".protonfs" / "config.local.json").unlink()
+
+    def _fail_if_prompted(*args, **kwargs):
+        raise AssertionError("a clone already carries remote_root; nothing to prompt for")
+
+    monkeypatch.setattr(click, "prompt", _fail_if_prompted)
+
+    result = ensure_config(tmp_path)
+
+    assert result.remote_root == "/my-files/cloned"
+    assert result.device_id  # minted for this machine
+    assert result.device_id != original.device_id  # NOT the machine that ran setup
+    assert load_local_config(tmp_path)["device_id"] == result.device_id
+    shared_on_disk = json.loads((tmp_path / ".protonfs" / "config.json").read_text())
+    assert shared_on_disk == {"remote_root": "/my-files/cloned"}
+
+
 def test_ensure_config_migrates_old_layout_device_id_to_local(tmp_path: Path) -> None:
     from protonfs.config import Config, load_local_config, save_config
 

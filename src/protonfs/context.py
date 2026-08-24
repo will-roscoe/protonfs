@@ -14,7 +14,7 @@ from pathlib import Path
 
 import click
 
-from protonfs.config import Config, load_layered_config
+from protonfs.config import Config, MissingDeviceIdError, load_layered_config
 from protonfs.drive import DriveClient
 from protonfs.index import IndexStore
 
@@ -42,11 +42,26 @@ def load_context(start: Path | None = None) -> RepoContext:
         directory.
     :returns: The assembled :class:`RepoContext`.
     :raises click.ClickException: If no layered config resolves for this directory
-        (i.e. ``protonfs setup`` has not been run there) -- see
-        :func:`~protonfs.config.load_layered_config`.
+        (i.e. ``protonfs setup`` has not been run there, or has not been run on this
+        machine yet) -- see :func:`~protonfs.config.load_layered_config`.
+
+    .. versionchanged:: 1.12.1
+       A clone whose ``device_id`` has not been minted on this machine reports that,
+       instead of raising :exc:`ValueError` as an uncaught traceback (#151).
     """
     root = (start or Path.cwd()).resolve()
-    config = load_layered_config(root)
+    try:
+        config = load_layered_config(root)
+    except MissingDeviceIdError as exc:
+        # #151: a clone of a repo that IS set up, just not here. Reported apart from the
+        # "no protonfs in this directory" case because the remedy differs -- `setup` mints
+        # a device id without prompting -- and because this used to be a raw traceback.
+        raise click.ClickException(
+            "This repo is set up, but not on this machine yet: no device_id resolved. "
+            "It lives in .protonfs/config.local.json, which is gitignored and so never "
+            "arrives with a clone. Run `protonfs setup` here to generate one -- it will "
+            "not prompt, and will not change the shared config."
+        ) from exc
     if config is None:
         raise click.ClickException(
             "protonfs is not set up in this directory. Run `protonfs setup` first."

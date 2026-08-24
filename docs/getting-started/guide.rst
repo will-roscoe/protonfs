@@ -93,6 +93,16 @@ Set up a directory, log in, and push its contents to Drive.
 On another machine, run ``protonfs setup`` pointed at the **same** Drive path, then
 ``protonfs pull`` to bring the files down.
 
+If that machine got the directory by **cloning** a repo that is already set up, ``setup``
+has nothing to ask you: ``remote_root`` and the ignore/include contract arrive with the
+clone. All it does there is generate a ``device_id`` for this machine, because that value
+lives in ``.protonfs/config.local.json``, which is gitignored and so never travels with a
+clone. Run ``protonfs setup`` once per machine and then carry on with ``refresh``/``pull``.
+
+.. versionchanged:: 1.12.1
+   Before this, ``setup`` in a fresh clone failed on the missing ``device_id`` -- as did
+   every other command -- and its own advice pointed back at ``setup``.
+
 .. seealso:: :doc:`syncing` for the push/pull/status model in depth.
 
 Walkthrough: a headless server (SSH, no desktop)

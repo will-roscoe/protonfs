@@ -187,7 +187,12 @@ def repo_currency_checks(root: Path) -> list[Check]:
     root -- there is nothing to check."""
     import json
 
-    from protonfs.config import config_path, local_config_path
+    from protonfs.config import (
+        MissingDeviceIdError,
+        config_path,
+        load_layered_config,
+        local_config_path,
+    )
     from protonfs.index import INDEX_FILE_NAME, INDEX_SCHEMA_VERSION
     from protonfs.migrations import pending_migrations
 
@@ -233,6 +238,21 @@ def repo_currency_checks(root: Path) -> list[Check]:
     gitignore = root / ".protonfs" / ".gitignore"
     local_name = local_config_path(root).name
     layering_problems = []
+    # #151: a clone carries the committed config.json but never config.local.json, so no
+    # device_id resolves and every command fails. Doctor reported "sane" throughout, which
+    # is how a repo that could not run a single command still got a clean bill of health.
+    try:
+        load_layered_config(root)
+    except MissingDeviceIdError:
+        checks.append(
+            Check(
+                name="device id",
+                ok=True,
+                warn=True,
+                detail="not set on this machine (config.local.json is absent)",
+                hint="Run `protonfs setup` here to generate one; it will not prompt.",
+            )
+        )
     if "device_id" in shared:
         layering_problems.append("shared config.json still carries device_id")
     if not gitignore.exists() or local_name not in gitignore.read_text():
