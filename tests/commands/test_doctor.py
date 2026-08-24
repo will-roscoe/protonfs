@@ -120,6 +120,35 @@ def test_repo_checks_warn_on_stale_index_schema(tmp_path: Path) -> None:
     assert "v0 on disk" in checks["index schema"].detail
 
 
+def test_repo_checks_warn_when_the_clone_has_no_device_id_for_this_machine(
+    tmp_path: Path,
+) -> None:
+    # #151: doctor reported "shared/local split is sane" on a clone where every command
+    # crashed, because it only looked at where device_id lived and never at whether one
+    # resolved at all. A repo that cannot run a command must not get a clean bill of health.
+    init_config(tmp_path, "/my-files/test")
+    from protonfs.commands.setup import write_git_control_files
+    from protonfs.ignore import init_ignore, init_include
+
+    init_ignore(tmp_path)
+    init_include(tmp_path)
+    write_git_control_files(tmp_path)
+    (tmp_path / ".protonfs" / "config.local.json").unlink()
+
+    checks = {c.name: c for c in repo_currency_checks(tmp_path)}
+
+    assert checks["device id"].warn
+    assert "not set on this machine" in checks["device id"].detail
+    assert "protonfs setup" in checks["device id"].hint
+    # The split itself really is fine -- the missing id is a separate finding.
+    assert not checks["config layering"].warn
+
+
+def test_repo_checks_report_no_device_id_finding_on_a_healthy_repo(tmp_path: Path) -> None:
+    init_config(tmp_path, "/my-files/test")
+    assert "device id" not in {c.name for c in repo_currency_checks(tmp_path)}
+
+
 def test_repo_checks_warn_on_pending_migrations_and_layering(tmp_path: Path) -> None:
     init_config(tmp_path, "/my-files/test")
     shared = tmp_path / ".protonfs" / "config.json"

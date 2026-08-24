@@ -8,6 +8,8 @@ import pytest
 from protonfs.config import (
     Config,
     Defaults,
+    MissingDeviceIdError,
+    ensure_device_id,
     init_config,
     load_config,
     load_layered_config,
@@ -87,7 +89,7 @@ class TestLayeredConfig:
         (tmp_path / ".protonfs" / "config.json").write_text(
             json.dumps({"remote_root": "/my-files/x"})
         )
-        with pytest.raises(ValueError):
+        with pytest.raises(MissingDeviceIdError):
             load_layered_config(tmp_path)
 
     def test_global_layer_beaten_by_shared(
@@ -156,12 +158,69 @@ class TestLayeredConfig:
         assert resolved.device_id == config.device_id
 
     def test_missing_local_layer_after_shared_only_setup_raises(self, tmp_path: Path) -> None:
-        # New-layout repo has device_id ONLY in config.local.json; delete it and there's
-        # no layer left to resolve device_id from.
+        # This is the shape of a FRESH CLONE (#151): device_id lives only in the gitignored
+        # config.local.json, so the clone gets the shared config without it. Resolving stays
+        # a pure read and still refuses -- `ensure_device_id` is what recovers, not this.
         init_config(tmp_path, "/my-files/repo")
         (tmp_path / ".protonfs" / "config.local.json").unlink()
-        with pytest.raises(ValueError):
+        with pytest.raises(MissingDeviceIdError):
             load_layered_config(tmp_path)
+
+    def test_load_does_not_mint_a_device_id_behind_the_callers_back(
+        self, tmp_path: Path
+    ) -> None:
+        # Resolving config must not write to .protonfs/ (#151): a failed load leaves the
+        # repo exactly as it found it, so nothing is created merely by looking.
+        init_config(tmp_path, "/my-files/repo")
+        (tmp_path / ".protonfs" / "config.local.json").unlink()
+        with pytest.raises(MissingDeviceIdError):
+            load_layered_config(tmp_path)
+        assert not (tmp_path / ".protonfs" / "config.local.json").exists()
+
+    def test_unparseable_batch_size_is_not_reported_as_a_missing_device_id(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The env layer raises its own ValueError for a bad int. It must stay
+        # distinguishable from the missing-device_id case, which wants a different
+        # remedy -- this is why that case has its own type (#151).
+        init_config(tmp_path, "/my-files/repo")
+        monkeypatch.setenv("PROTONFS_BATCH_SIZE", "not-a-number")
+        with pytest.raises(ValueError) as caught:
+            load_layered_config(tmp_path)
+        assert not isinstance(caught.value, MissingDeviceIdError)
+
+
+class TestEnsureDeviceId:
+    def test_mints_one_for_a_fresh_clone_and_writes_only_the_local_file(
+        self, tmp_path: Path
+    ) -> None:
+        # #151: the clone recovery. A new machine is SUPPOSED to get its own id rather
+        # than inherit the one belonging to the machine that ran setup, so the shared,
+        # committed config must come through untouched.
+        init_config(tmp_path, "/my-files/repo")
+        (tmp_path / ".protonfs" / "config.local.json").unlink()
+        shared_before = (tmp_path / ".protonfs" / "config.json").read_text()
+
+        device_id = ensure_device_id(tmp_path)
+
+        assert device_id
+        assert load_local_config(tmp_path)["device_id"] == device_id
+        assert (tmp_path / ".protonfs" / "config.json").read_text() == shared_before
+        assert load_layered_config(tmp_path).remote_root == "/my-files/repo"
+
+    def test_is_idempotent(self, tmp_path: Path) -> None:
+        config = init_config(tmp_path, "/my-files/repo")
+        assert ensure_device_id(tmp_path) == config.device_id
+        assert ensure_device_id(tmp_path) == config.device_id
+
+    def test_adopts_an_id_from_the_shared_layer_rather_than_minting_a_second(
+        self, tmp_path: Path
+    ) -> None:
+        # A pre-#21 repo carries device_id in the shared file. Minting a fresh one here
+        # would silently re-identify a machine that already had an id.
+        save_config(tmp_path, Config(remote_root="/my-files/old", device_id="old-device"))
+        assert ensure_device_id(tmp_path) == "old-device"
+        assert load_local_config(tmp_path)["device_id"] == "old-device"
 
 
 class TestMigrateDeviceIdToLocal:

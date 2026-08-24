@@ -22,6 +22,7 @@ import click
 
 from protonfs.config import (
     Config,
+    MissingDeviceIdError,
     config_path,
     global_config_path,
     load_config,
@@ -115,7 +116,16 @@ def _require_known_key(key: str) -> None:
 def config_get(root: Path, key: str) -> str:
     """Return the RESOLVED value of `key` across all layers, as a string."""
     _require_known_key(key)
-    config = load_layered_config(root)
+    try:
+        config = load_layered_config(root)
+    except MissingDeviceIdError as exc:
+        # #151: a clone not yet set up on this machine.
+        raise click.ClickException(
+            "This repo is set up, but not on this machine yet: no device_id resolved. "
+            "It lives in .protonfs/config.local.json, which is gitignored and so never "
+            "arrives with a clone. Run `protonfs setup` here to generate one -- it will "
+            "not prompt, and will not change the shared config."
+        ) from exc
     if config is None:
         raise click.ClickException(
             "protonfs is not set up in this directory. Run `protonfs setup` first."

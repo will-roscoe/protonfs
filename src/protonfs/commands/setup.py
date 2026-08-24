@@ -16,7 +16,14 @@ import click
 
 from protonfs.commands.push import ensure_remote_root
 from protonfs.commands.push import push as push_files
-from protonfs.config import Config, init_config, load_layered_config, migrate_device_id_to_local
+from protonfs.config import (
+    Config,
+    MissingDeviceIdError,
+    ensure_device_id,
+    init_config,
+    load_layered_config,
+    migrate_device_id_to_local,
+)
 from protonfs.context import RepoContext
 from protonfs.drive import DriveClient
 from protonfs.ignore import init_ignore, init_include
@@ -83,10 +90,26 @@ def ensure_config(root: Path) -> Config:
     is relocated to ``config.local.json``); a fresh repo prompts for its Drive
     ``remote_root``.
 
+    A repo that arrived by clone is a third case: its shared config is present but the
+    per-device one is not, so it needs a ``device_id`` minted for this machine and
+    nothing else (#151).
+
     :param root: the protonfs root.
     :returns: the loaded or newly-initialised :class:`~protonfs.config.Config`.
+
+    .. versionchanged:: 1.12.1
+       Sets up a freshly cloned repo instead of failing on its missing ``device_id``.
     """
-    existing = load_layered_config(root)
+    try:
+        existing = load_layered_config(root)
+    except MissingDeviceIdError:
+        # #151: a fresh clone carries the committed config.json but not the gitignored
+        # config.local.json, so no device_id resolves and the load raises. Minting one is
+        # the whole of "set this repo up on THIS machine" -- remote_root, ignore and
+        # include all arrived with the clone, so there is nothing to prompt for.
+        device_id = ensure_device_id(root)
+        click.echo(f"Generated a device id for this machine: {device_id}")
+        existing = load_layered_config(root)
     if existing is not None:
         # #21: repos set up before per-device layering existed may still have device_id
         # in the shared config.json -- move it to config.local.json now that we're here
