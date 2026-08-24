@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from protonfs.commands.push import CONFLICT_KIND, LFS_POINTER_KIND, ensure_remote_root, push
+from protonfs.commands.status import compute_status
 from protonfs.config import init_config
 from protonfs.context import load_context
 from protonfs.diff import DiffEntry, SyncState
@@ -309,6 +310,67 @@ def test_push_size_mismatch_is_treated_as_under_delivery(
 
     assert ctx.index.get("dump_0001") is None
     assert result.failed_items == 1
+
+
+def test_push_reuploads_a_file_appended_to_after_its_first_push(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    # #144: a long-running job appends to its output for the whole run. The file was already
+    # pushed once, so it is in the index; the second push must notice the changed content and
+    # send it again. Asserted on the remote's plaintext size, because that is the surface the
+    # original divergence was visible in -- Drive held 99182 bytes of an 888442-byte series.
+    first = b"line1\n"
+    appended = b"line1\nline2\nline3\n"
+    grow = tmp_path / "grow.txt"
+    grow.write_bytes(first)
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    fake = make_fake_drive()
+    ctx.drive = fake
+
+    push(ctx, None, resolve=None, dry_run=False)
+    assert fake.remote_identities("/my-files/test")["grow.txt"].claimed_size == len(first)
+
+    grow.write_bytes(appended)  # append, as the running job would
+    result = push(ctx, None, resolve=None, dry_run=False)
+
+    assert result.transferred_items == 1
+    assert fake.remote_identities("/my-files/test")["grow.txt"].claimed_size == len(appended)
+    assert ctx.index.get("grow.txt").size == len(appended)
+
+
+def test_push_never_records_synced_while_the_remote_holds_the_older_copy(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    # #144, the failure mode itself: the append is uploaded but the remote keeps the SHORTER
+    # copy. Verification must catch that and leave the index alone, so the file keeps
+    # reporting as locally-changed instead of `synced`. The bug was that claimedSize was read
+    # from the wrong level of the listing entry (#147), came back None, and _verify_remote
+    # passed on name presence -- recording the local hash as delivered while Drive disagreed.
+    first = b"line1\n"
+    appended = b"line1\nline2\nline3\n"
+    grow = tmp_path / "grow.txt"
+    grow.write_bytes(first)
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    # The remote reports the pre-append size no matter what is uploaded.
+    fake = make_fake_drive(remote_size_overrides={"grow.txt": len(first)})
+    ctx.drive = fake
+
+    push(ctx, None, resolve=None, dry_run=False)
+    grow.write_bytes(appended)
+    result = push(ctx, None, resolve=None, dry_run=False)
+
+    assert result.failed_items == 1
+    assert result.transferred_items == 0
+    # The index must still describe the copy Drive actually holds, not the local one.
+    assert ctx.index.get("grow.txt").size == len(first)
+    # Never `synced`. Without a remote view status cannot attribute a direction, so it
+    # falls back to the conservative conflict-class state -- which is the point: the file
+    # is flagged for attention rather than silently counted as safely on Drive.
+    counts = compute_status(ctx, None)
+    assert counts[SyncState.SYNCED.value] == 0
+    assert counts[SyncState.CONFLICT.value] == 1
 
 
 def test_push_partial_drop_indexes_only_verified_files(
