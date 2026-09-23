@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import datetime
 import logging
+from enum import Enum
 from pathlib import Path
 
 from protonfs.batching import batches, group_by_parent
@@ -66,6 +67,27 @@ PHANTOM_ERROR = (
 )
 
 
+# #144: a remote identity with no plaintext `claimedSize` cannot confirm anything beyond
+# "a file of this name exists". offload already refuses to delete on such an identity;
+# push must not record one as delivered either, or it writes the very index entry offload
+# would then decline to act on. The upload still happens -- only the claim of delivery is
+# withheld -- and the file is reported with this kind, left unindexed (or at its previous
+# entry) so status never counts it and the next push retries it.
+UNVERIFIED_KIND = "unverified"
+UNVERIFIED_ERROR = (
+    "on the remote, but its listing reports no plaintext size, so delivery could not be "
+    "verified (unverified; NOT indexed)"
+)
+
+
+class _Verdict(Enum):
+    """Outcome of checking one push candidate against its remote identity."""
+
+    VERIFIED = "verified"
+    REFUTED = "refuted"  # absent, or positively different from the local file
+    UNVERIFIABLE = "unverifiable"  # present, but the listing carries no plaintext size
+
+
 def _is_already_exists(failure: dict) -> bool:
     """True if an upload failure is proton-drive's "file already exists" name-conflict.
 
@@ -76,21 +98,28 @@ def _is_already_exists(failure: dict) -> bool:
     return "already exist" in message or "name conflict" in message
 
 
-def _verify_remote(ident, entry, *, strict_sha1: bool) -> bool:
+def _verify_remote(ident, entry, *, strict_sha1: bool) -> _Verdict:
     """Whether the remote identity ``ident`` confirms the local ``entry`` is on Drive.
 
-    Size must match when the remote reports one (#22). When ``strict_sha1`` (adopting a
-    pre-existing remote file rather than one we just uploaded) and both sides expose a
-    sha1, the digests must match too -- size alone can collide, and adoption must never
-    record diverged content as synced.
+    The plaintext size must match (#22). When ``strict_sha1`` (adopting a pre-existing
+    remote file rather than one we just uploaded) and both sides expose a sha1, the
+    digests must match too -- size alone can collide, and adoption must never record
+    diverged content as synced.
+
+    An identity with no ``claimed_size`` is :attr:`_Verdict.UNVERIFIABLE`, not a pass
+    (#144): it proves only that a file of that name exists, which is the check that let
+    a stale remote copy be indexed as delivered. A sha1 that positively disagrees still
+    refutes it, since that is evidence of a difference rather than an absence of evidence.
     """
     if ident is None:
-        return False
-    if ident.claimed_size is not None and ident.claimed_size != entry.size:
-        return False
+        return _Verdict.REFUTED
     if strict_sha1 and ident.sha1 and entry.sha1 and ident.sha1 != entry.sha1:
-        return False
-    return True
+        return _Verdict.REFUTED
+    if ident.claimed_size is None:
+        return _Verdict.UNVERIFIABLE
+    if ident.claimed_size != entry.size:
+        return _Verdict.REFUTED
+    return _Verdict.VERIFIED
 
 
 # Proton Drive's true root only holds special areas; user files must live under one of these
@@ -186,6 +215,12 @@ def push(
     .. versionchanged:: 1.11.0
        A name conflict for a file that is absent from the remote listing is now reported
        as a distinct "phantom" failure rather than as a different-file conflict (#138).
+
+    .. versionchanged:: 1.12.2
+       A remote copy whose listing reports no plaintext size is no longer accepted as
+       verified. The file is still uploaded, but reported as an ``unverified`` failure
+       and not indexed (nor adopted), so ``status`` does not count it and the next push
+       retries it (#144).
 
     .. seealso:: :func:`protonfs.commands.pull.pull` for the download direction.
     """
@@ -324,6 +359,8 @@ def push(
         # Adoption candidates (#self-heal) run the same verify, stricter (sha1 too): a
         # remote copy that matches is recorded without re-upload; one that differs is a
         # real name-conflict, reported as such rather than silently overwritten.
+        # #144: an identity with no plaintext size can confirm neither, so it is neither
+        # indexed nor adopted -- see UNVERIFIED_KIND.
         identities = ctx.drive.remote_identities(remote_parent)
         for rel in candidates:
             entry = local[rel]
@@ -331,7 +368,19 @@ def push(
             ident = identities.get(name)
             is_adopt = rel in adopt_rels
             strict = is_adopt or rel in unattributed_rels
-            if not _verify_remote(ident, entry, strict_sha1=strict):
+            verdict = _verify_remote(ident, entry, strict_sha1=strict)
+            if verdict is _Verdict.UNVERIFIABLE:
+                total.failed_items += 1
+                logger.warning(
+                    "push unverified: %s is on the remote but the listing reports no "
+                    "plaintext size for it, so delivery cannot be verified; it was NOT "
+                    "indexed and will be retried on the next push", rel
+                )
+                total.failures.append(
+                    {"name": name, "error": UNVERIFIED_ERROR, "kind": UNVERIFIED_KIND}
+                )
+                continue
+            if verdict is not _Verdict.VERIFIED:
                 total.failed_items += 1
                 if is_adopt and ident is None:
                     # #138: the name is taken but nothing of that name is listable -- a
@@ -352,9 +401,12 @@ def push(
                         {"name": name, "error": CONFLICT_ERROR, "kind": CONFLICT_KIND}
                     )
                 else:
-                    reason = (
-                        "absent" if ident is None else f"size {ident.claimed_size} != {entry.size}"
-                    )
+                    if ident is None:
+                        reason = "absent"
+                    elif ident.claimed_size != entry.size:
+                        reason = f"size {ident.claimed_size} != {entry.size}"
+                    else:
+                        reason = "sha1 differs"
                     logger.warning("push under-delivery: %s not verified (%s)", rel, reason)
                     total.failures.append(
                         {"name": name, "error": UNDERDELIVERED_ERROR, "kind": UNDERDELIVERED_KIND}

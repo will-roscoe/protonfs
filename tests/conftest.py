@@ -29,6 +29,7 @@ class FakeDrive:
         dropped_files: set[str] | None = None,
         download_dropped_files: set[str] | None = None,
         remote_size_overrides: dict[str, int] | None = None,
+        report_claimed_size: bool = True,
         version: str | None = "v0.4.6",
         authed: bool = True,
         parent_names: dict[str, str | None] | None = None,
@@ -58,6 +59,9 @@ class FakeDrive:
         # download_result.failures) but that never land locally.
         self._download_dropped_files = download_dropped_files or set()
         self._remote_size_overrides = remote_size_overrides or {}
+        # #144 simulation: a listing that carries no plaintext claimedSize (the shape the
+        # #147 parse bug produced). Public so a test can flip it between two pushes.
+        self.report_claimed_size = report_claimed_size
         # remote_parent -> {name: claimed_size} for files that actually landed.
         self._remote_files: dict[str, dict[str, int]] = {}
         self._version = version
@@ -99,7 +103,10 @@ class FakeDrive:
         self.identity_calls.append(remote_parent)
         bucket = self._remote_files.get(remote_parent, {})
         return {
-            name: RemoteIdentity(claimed_size=size, sha1=None) for name, size in bucket.items()
+            name: RemoteIdentity(
+                claimed_size=size if self.report_claimed_size else None, sha1=None
+            )
+            for name, size in bucket.items()
         }
 
     def download(self, remote_paths, local_folder, file_strategy=None, folder_strategy=None):

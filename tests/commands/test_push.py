@@ -4,12 +4,18 @@ from pathlib import Path
 
 import pytest
 
-from protonfs.commands.push import CONFLICT_KIND, LFS_POINTER_KIND, ensure_remote_root, push
+from protonfs.commands.push import (
+    CONFLICT_KIND,
+    LFS_POINTER_KIND,
+    UNVERIFIED_KIND,
+    ensure_remote_root,
+    push,
+)
 from protonfs.commands.status import compute_status
 from protonfs.config import init_config
 from protonfs.context import load_context
 from protonfs.diff import DiffEntry, SyncState
-from protonfs.drive import DriveError, TransferResult
+from protonfs.drive import DriveError, RemoteIdentity, TransferResult
 from protonfs.lfs import POINTER_SIGNATURE
 
 
@@ -371,6 +377,146 @@ def test_push_never_records_synced_while_the_remote_holds_the_older_copy(
     counts = compute_status(ctx, None)
     assert counts[SyncState.SYNCED.value] == 0
     assert counts[SyncState.CONFLICT.value] == 1
+
+
+# --- #144: a remote identity with no plaintext size is not verification ----------------
+
+
+def test_push_uploads_but_does_not_index_a_file_the_listing_cannot_size(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    # The upload happens; only the claim of delivery is withheld. Before #144 a listing
+    # without claimedSize passed on name presence and the file was indexed as delivered.
+    (tmp_path / "dump_0001").write_bytes(b"data")
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    fake = make_fake_drive(report_claimed_size=False)
+    ctx.drive = fake
+
+    result = push(ctx, None, resolve=None, dry_run=False)
+
+    assert len(fake.upload_calls) == 1
+    assert result.transferred_items == 0
+    assert result.failed_items == 1
+    assert result.failures[0]["kind"] == UNVERIFIED_KIND
+    assert ctx.index.get("dump_0001") is None
+    counts = compute_status(ctx, None)
+    assert counts[SyncState.SYNCED.value] == 0
+    assert counts[SyncState.LOCAL_ONLY.value] == 1
+
+
+def test_push_keeps_the_previous_entry_when_a_changed_file_cannot_be_verified(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    # The residual exposure on #144: the first push verifies, the listing then stops
+    # reporting sizes, and the appended file is pushed again. The index must keep
+    # describing the copy that WAS verified, so status never reports the append synced.
+    first = b"line1\n"
+    appended = b"line1\nline2\nline3\n"
+    grow = tmp_path / "grow.txt"
+    grow.write_bytes(first)
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    fake = make_fake_drive()
+    ctx.drive = fake
+
+    push(ctx, None, resolve=None, dry_run=False)
+    grow.write_bytes(appended)
+    fake.report_claimed_size = False
+    result = push(ctx, None, resolve=None, dry_run=False)
+
+    assert len(fake.upload_calls) == 2  # the append was still sent
+    assert result.transferred_items == 0
+    assert result.failures[0]["kind"] == UNVERIFIED_KIND
+    assert ctx.index.get("grow.txt").size == len(first)
+    counts = compute_status(ctx, None)
+    assert counts[SyncState.SYNCED.value] == 0
+
+
+def test_push_retries_an_unverified_file_and_indexes_it_once_the_listing_sizes_it(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    (tmp_path / "dump_0001").write_bytes(b"data")
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    fake = make_fake_drive(report_claimed_size=False)
+    ctx.drive = fake
+
+    push(ctx, None, resolve=None, dry_run=False)
+    assert ctx.index.get("dump_0001") is None
+
+    fake.report_claimed_size = True
+    result = push(ctx, None, resolve=None, dry_run=False)
+
+    assert len(fake.upload_calls) == 2  # retried, not left behind
+    assert result.transferred_items == 1
+    assert result.failed_items == 0
+    assert ctx.index.get("dump_0001").size == 4
+
+
+def test_push_does_not_adopt_a_name_conflict_the_listing_cannot_size(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    # Adoption records a remote copy WITHOUT uploading, so an unsized identity is even
+    # less of a basis for it: nothing of ours was sent, and nothing about theirs is known.
+    (tmp_path / "dump_0001").write_bytes(b"data")
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    fake = make_fake_drive(
+        upload_result=_conflict_upload_result("dump_0001"), report_claimed_size=False
+    )
+    fake._remote_files["/my-files/test"] = {"dump_0001": 999}
+    ctx.drive = fake
+
+    result = push(ctx, None, None, dry_run=False)
+
+    assert result.adopted_items == 0
+    assert result.failed_items == 1
+    assert result.failures[0]["kind"] == UNVERIFIED_KIND
+    assert ctx.index.get("dump_0001") is None
+
+
+def test_push_cli_unverified_prints_retry_hint_not_resolve(
+    tmp_path: Path, monkeypatch, make_fake_drive
+) -> None:
+    from click.testing import CliRunner
+
+    from protonfs.cli import main
+
+    (tmp_path / "dump_0001").write_bytes(b"data")
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.drive = make_fake_drive(report_claimed_size=False)
+    monkeypatch.setattr("protonfs.context.load_context", lambda *a, **k: ctx)
+
+    result = CliRunner().invoke(main, ["push"])
+
+    assert result.exit_code == 1
+    assert "could not be verified" in result.output
+    assert "retried on the next push" in result.output
+    assert "--resolve" not in result.output
+
+
+@pytest.mark.parametrize(
+    "ident,strict,expected",
+    [
+        (None, False, "refuted"),
+        (RemoteIdentity(claimed_size=4, sha1=None), False, "verified"),
+        (RemoteIdentity(claimed_size=3, sha1=None), False, "refuted"),
+        (RemoteIdentity(claimed_size=None, sha1=None), False, "unverifiable"),
+        (RemoteIdentity(claimed_size=None, sha1=None), True, "unverifiable"),
+        (RemoteIdentity(claimed_size=None, sha1="ab"), True, "refuted"),
+        (RemoteIdentity(claimed_size=4, sha1="ab"), True, "refuted"),
+        (RemoteIdentity(claimed_size=4, sha1="cd"), True, "verified"),
+    ],
+)
+def test_verify_remote_verdicts(ident, strict: bool, expected: str) -> None:
+    from protonfs.commands.push import _verify_remote
+    from protonfs.localscan import ScanEntry
+
+    entry = ScanEntry(rel_path="f", size=4, mtime=0.0, sha256="x", sha1="cd")
+
+    assert _verify_remote(ident, entry, strict_sha1=strict).value == expected
 
 
 def test_push_partial_drop_indexes_only_verified_files(

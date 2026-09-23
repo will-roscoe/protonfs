@@ -677,14 +677,26 @@ def push(path: tuple[str, ...], resolve: str | None, dry_run: bool, strict: bool
         click.echo(f"  FAILED {failure['name']}: {failure['error']}")
     if result.failed_items:
         under_delivered = [f for f in result.failures if f.get("kind") == "under-delivered"]
+        unverified = [f for f in result.failures if f.get("kind") == "unverified"]
         phantoms = [f for f in result.failures if f.get("kind") == "phantom"]
         conflicts = [
-            f for f in result.failures if f.get("kind") not in ("under-delivered", "phantom")
+            f
+            for f in result.failures
+            if f.get("kind") not in ("under-delivered", "unverified", "phantom")
         ]
         if under_delivered:
             click.echo(
                 f"  -> {len(under_delivered)} file(s) were reported transferred but did not "
                 "land on Drive; they were NOT indexed and will be retried on the next push."
+            )
+        if unverified:
+            # #144: not a conflict -- --resolve cannot help while the listing carries no
+            # plaintext size, so it is deliberately not suggested.
+            click.echo(
+                f"  -> {len(unverified)} file(s) are on Drive but could not be verified: the "
+                "remote listing reports no plaintext size for them. They were NOT indexed "
+                "and will be retried on the next push. If this persists, report it with the "
+                "output of `proton-drive filesystem list <remote dir> --json`."
             )
         if phantoms:
             # #138: deliberately NOT offered --resolve=remote -- for a phantom the remote

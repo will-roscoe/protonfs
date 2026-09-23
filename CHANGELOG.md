@@ -8,6 +8,10 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 
 ## [Unreleased]
 
+### Bug fixes
+
+- **push**: a remote copy whose listing reports no plaintext size is no longer indexed (or adopted) as delivered. The file is still uploaded, but reported as an `unverified` failure (exit 1) and left out of the index, so `status` never counts it as `synced` and the next push retries it. Closes the last gap where push accepted an identity that `offload` refuses (#144)
+
 ## [1.12.2] - 2026-09-23
 
 ### Bug fixes

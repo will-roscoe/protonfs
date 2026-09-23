@@ -101,11 +101,21 @@ unindexed and reported as a distinct ``under-delivered`` failure (not a
 conflict) — the fix is a plain retry on the next push, not a ``--resolve``
 strategy.
 
+A remote copy whose listing carries **no** plaintext ``claimedSize`` proves only
+that a file of that name exists, so it is never accepted as verification. The
+upload still happens, but the file is reported as an ``unverified`` failure (push
+exits ``1``) and is not indexed — a file already in the index keeps its previous
+entry. ``status`` therefore never counts it as ``synced``, and the next push
+retries it; once the listing reports a size again, that retry verifies (or
+adopts) it normally. The same identity is one ``offload`` refuses to delete on,
+so push can no longer write an index entry that offload would decline to trust.
+
 ``offload`` reuses the identical verify-against-remote idiom before it deletes
-any local bytes (below), and a batch is only considered indexable at all if
-``proton-drive`` did not report it skipped — a skip is only reported as an
-aggregate count with no per-file attribution, so the whole batch is left
-unindexed rather than guessing which files within it actually skipped.
+any local bytes (below). A batch ``proton-drive`` reports skips for is verified
+file by file rather than trusted or discarded: a skip is only reported as an
+aggregate count with no per-file attribution, so each file in that batch must
+match the remote strictly (size, and sha1 where both sides have one) before it
+is indexed.
 
 Git-LFS pointer-stub protection
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
