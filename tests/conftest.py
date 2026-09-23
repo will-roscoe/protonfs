@@ -7,9 +7,15 @@ the per-file `_FakeDrive` copies. It is *configured*, never subclassed: pass an
 `walk_by_root`) for remote listings, `trash_listing` for `list("/trash")`, and
 `version` / `authed` for the setup checks. Use the `make_fake_drive` fixture (a
 factory) so tests need no imports.
+
+Uploads follow proton-drive's real conflict rules (#144): an existing name with no
+strategy fails as a name conflict, and a changed file only lands on its existing node
+as a new revision (`merge`). Before #144 the fake let any upload overwrite, which is
+how a push that never re-uploaded an appended file passed its regression test.
 """
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path, PurePosixPath
 
 import pytest
@@ -29,6 +35,7 @@ class FakeDrive:
         dropped_files: set[str] | None = None,
         download_dropped_files: set[str] | None = None,
         remote_size_overrides: dict[str, int] | None = None,
+        report_claimed_size: bool = True,
         version: str | None = "v0.4.6",
         authed: bool = True,
         parent_names: dict[str, str | None] | None = None,
@@ -58,8 +65,16 @@ class FakeDrive:
         # download_result.failures) but that never land locally.
         self._download_dropped_files = download_dropped_files or set()
         self._remote_size_overrides = remote_size_overrides or {}
+        # #144 simulation: a listing that carries no plaintext claimedSize (the shape the
+        # #147 parse bug produced). Public so a test can flip it between two pushes.
+        self.report_claimed_size = report_claimed_size
         # remote_parent -> {name: claimed_size} for files that actually landed.
         self._remote_files: dict[str, dict[str, int]] = {}
+        # remote_parent -> {name: plaintext sha1} for files that landed with their real
+        # content (not for a size override, whose content is unknown).
+        self._remote_sha1: dict[str, dict[str, str]] = {}
+        # "<remote_parent>/<name>" -> revision count of the node currently at that path.
+        self.revisions: dict[str, int] = {}
         self._version = version
         self._authed = authed
 
@@ -73,33 +88,79 @@ class FakeDrive:
         self.upload_calls.append(
             (tuple(str(p) for p in local_paths), remote_parent, file_strategy)
         )
-        result = (
-            self._upload_result
-            if self._upload_result is not None
-            else TransferResult(len(local_paths), 0, 0, [])
-        )
+        bucket = self._remote_files.setdefault(remote_parent, {})
+        skipped: set[str] = set()
+        renamed: dict[str, str] = {}
+        if self._upload_result is not None:
+            result = self._upload_result
+        else:
+            result, skipped, renamed = self._resolve_conflicts(
+                local_paths, bucket, file_strategy
+            )
         # Model what actually lands on the remote: every uploaded file EXCEPT the ones
         # proton-drive reported as failures and the ones configured as silently dropped.
         failed = {f["name"] for f in result.failures}
-        bucket = self._remote_files.setdefault(remote_parent, {})
+        sha1s = self._remote_sha1.setdefault(remote_parent, {})
         for p in local_paths:
             name = Path(p).name
-            if name in failed or name in self._dropped_files:
+            if name in failed or name in skipped or name in self._dropped_files:
                 continue
+            name = renamed.get(name, name)
+            key = f"{remote_parent}/{name}"
+            if file_strategy == "replace" and name in bucket:
+                self.trashed.append(key)
+                self.revisions[key] = 0
+            self.revisions[key] = self.revisions.get(key, 0) + 1
             if name in self._remote_size_overrides:
                 bucket[name] = self._remote_size_overrides[name]
+                sha1s.pop(name, None)
             else:
                 try:
-                    bucket[name] = Path(p).stat().st_size
+                    data = Path(p).read_bytes()
                 except OSError:
-                    bucket[name] = 0
+                    data = b""
+                bucket[name] = len(data)
+                sha1s[name] = hashlib.sha1(data).hexdigest()
         return result
+
+    def _resolve_conflicts(self, local_paths, bucket, file_strategy):
+        """proton-drive's conflict semantics (cli-drive@0.5.0 under --json, #144): an
+        upload onto an existing name with no strategy FAILS as a name conflict; `merge`
+        adds a revision to the existing node; `replace` trashes it and creates a new one
+        (see `upload`); `keep-both` lands under a free alternative name; `skip` leaves it.
+        Returns ``(result, skipped_names, renamed)``."""
+        failures, skipped_names, renamed = [], set(), {}
+        for p in local_paths:
+            name = Path(p).name
+            if name not in bucket or file_strategy in ("merge", "replace"):
+                continue
+            if file_strategy == "skip":
+                skipped_names.add(name)
+            elif file_strategy == "keep-both":
+                stem, dot, ext = name.partition(".")
+                renamed[name] = f"{stem} (1){dot}{ext}"
+            else:
+                failures.append(
+                    {"name": name, "error": f'Name conflict on "{name}" (file) already exists'}
+                )
+        result = TransferResult(
+            len(local_paths) - len(failures) - len(skipped_names),
+            len(skipped_names),
+            len(failures),
+            failures,
+        )
+        return result, skipped_names, renamed
 
     def remote_identities(self, remote_parent):
         self.identity_calls.append(remote_parent)
         bucket = self._remote_files.get(remote_parent, {})
+        sha1s = self._remote_sha1.get(remote_parent, {})
         return {
-            name: RemoteIdentity(claimed_size=size, sha1=None) for name, size in bucket.items()
+            name: RemoteIdentity(
+                claimed_size=size if self.report_claimed_size else None,
+                sha1=sha1s.get(name) if self.report_claimed_size else None,
+            )
+            for name, size in bucket.items()
         }
 
     def download(self, remote_paths, local_folder, file_strategy=None, folder_strategy=None):

@@ -596,10 +596,12 @@ def ls(
     "--resolve",
     type=click.Choice(["remote", "local", "both", "merge", "keep-both", "replace", "skip"]),
     help="How to reconcile a file that changed on BOTH sides since the last sync: "
-    "remote=keep the remote copy (skip the upload), local=overwrite the remote with "
-    "your local copy, both=upload your local copy alongside the remote. The proton-drive "
-    "strategy names merge|keep-both|replace|skip are also accepted (replace=local, "
-    "skip=remote, keep-both=both).",
+    "remote=keep the remote copy (skip the upload), local=replace the remote with "
+    "your local copy (the existing remote file is moved to the trash), both=upload your "
+    "local copy alongside the remote. A file changed only locally needs none of these: "
+    "it is uploaded as a new revision of the remote file. The proton-drive strategy "
+    "names merge|keep-both|replace|skip are also accepted (replace=local, skip=remote, "
+    "keep-both=both; merge adds a revision regardless of what the remote holds).",
 )
 @click.option(
     "--dry-run",
@@ -677,14 +679,26 @@ def push(path: tuple[str, ...], resolve: str | None, dry_run: bool, strict: bool
         click.echo(f"  FAILED {failure['name']}: {failure['error']}")
     if result.failed_items:
         under_delivered = [f for f in result.failures if f.get("kind") == "under-delivered"]
+        unverified = [f for f in result.failures if f.get("kind") == "unverified"]
         phantoms = [f for f in result.failures if f.get("kind") == "phantom"]
         conflicts = [
-            f for f in result.failures if f.get("kind") not in ("under-delivered", "phantom")
+            f
+            for f in result.failures
+            if f.get("kind") not in ("under-delivered", "unverified", "phantom")
         ]
         if under_delivered:
             click.echo(
                 f"  -> {len(under_delivered)} file(s) were reported transferred but did not "
                 "land on Drive; they were NOT indexed and will be retried on the next push."
+            )
+        if unverified:
+            # #144: not a conflict -- --resolve cannot help while the listing carries no
+            # plaintext size, so it is deliberately not suggested.
+            click.echo(
+                f"  -> {len(unverified)} file(s) are on Drive but could not be verified: the "
+                "remote listing reports no plaintext size for them. They were NOT indexed "
+                "and will be retried on the next push. If this persists, report it with the "
+                "output of `proton-drive filesystem list <remote dir> --json`."
             )
         if phantoms:
             # #138: deliberately NOT offered --resolve=remote -- for a phantom the remote

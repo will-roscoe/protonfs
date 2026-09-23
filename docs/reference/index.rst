@@ -480,7 +480,11 @@ whole repo**::
 Pass ``--strict`` to make that an error (exit ``1``) instead. ``--strict`` fails
 before anything is transferred, so a run is all-or-nothing rather than partial.
 Without ``--resolve``, a genuine remote conflict is reported as a named
-per-file failure rather than silently resolved or skipped. Every batch is
+per-file failure rather than silently resolved or skipped. A file that changed
+only locally since this machine last pushed it is not a conflict: it is uploaded
+as a new revision of the existing Drive file, so Drive's version history keeps
+the earlier copy. ``--resolve local`` (``replace``) instead moves the existing
+remote file to the trash and uploads a new one in its place. Every batch is
 re-verified against a live remote listing after upload (matching each file's
 plaintext ``claimedSize``) before it is recorded in the index — proton-drive can
 report a transfer as successful when it did not actually land; an unverified file

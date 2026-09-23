@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import datetime
 import logging
+from enum import Enum
 from pathlib import Path
 
 from protonfs.batching import batches, group_by_parent
@@ -26,6 +27,17 @@ logger = logging.getLogger(__name__)
 #   remote -> skip      (keep the remote copy; skip the conflicting upload)
 #   both   -> keep-both (upload our local copy alongside the remote)
 _RESOLVE_TO_STRATEGY = {"local": "replace", "remote": "skip", "both": "keep-both"}
+
+# #144: proton-drive's upload conflict strategies, as implemented by cli-drive@0.5.0:
+#   merge     -> uploads a NEW REVISION of the existing file node (its version history
+#                keeps every earlier revision)
+#   replace   -> TRASHES the existing node and uploads a fresh one in its place
+#   keep-both -> uploads under a free alternative name
+#   skip      -> leaves the existing node alone
+# With --json (which protonfs always passes) and no strategy, an existing name fails the
+# upload as a name conflict. So re-pushing a file that changed locally needs `merge`, and
+# push picks it automatically when the change is provably this device's alone.
+REVISION_STRATEGY = "merge"
 
 # #22: proton-drive can report a file as transferred that never lands on the remote.
 # Files that fail post-upload verification are tagged with this on their failure entry so
@@ -66,6 +78,27 @@ PHANTOM_ERROR = (
 )
 
 
+# #144: a remote identity with no plaintext `claimedSize` cannot confirm anything beyond
+# "a file of this name exists". offload already refuses to delete on such an identity;
+# push must not record one as delivered either, or it writes the very index entry offload
+# would then decline to act on. The upload still happens -- only the claim of delivery is
+# withheld -- and the file is reported with this kind, left unindexed (or at its previous
+# entry) so status never counts it and the next push retries it.
+UNVERIFIED_KIND = "unverified"
+UNVERIFIED_ERROR = (
+    "on the remote, but its listing reports no plaintext size, so delivery could not be "
+    "verified (unverified; NOT indexed)"
+)
+
+
+class _Verdict(Enum):
+    """Outcome of checking one push candidate against its remote identity."""
+
+    VERIFIED = "verified"
+    REFUTED = "refuted"  # absent, or positively different from the local file
+    UNVERIFIABLE = "unverifiable"  # present, but the listing carries no plaintext size
+
+
 def _is_already_exists(failure: dict) -> bool:
     """True if an upload failure is proton-drive's "file already exists" name-conflict.
 
@@ -76,21 +109,71 @@ def _is_already_exists(failure: dict) -> bool:
     return "already exist" in message or "name conflict" in message
 
 
-def _verify_remote(ident, entry, *, strict_sha1: bool) -> bool:
+def _verify_remote(ident, entry, *, strict_sha1: bool) -> _Verdict:
     """Whether the remote identity ``ident`` confirms the local ``entry`` is on Drive.
 
-    Size must match when the remote reports one (#22). When ``strict_sha1`` (adopting a
-    pre-existing remote file rather than one we just uploaded) and both sides expose a
-    sha1, the digests must match too -- size alone can collide, and adoption must never
-    record diverged content as synced.
+    The plaintext size must match (#22). When ``strict_sha1`` (adopting a pre-existing
+    remote file rather than one we just uploaded) and both sides expose a sha1, the
+    digests must match too -- size alone can collide, and adoption must never record
+    diverged content as synced.
+
+    An identity with no ``claimed_size`` is :attr:`_Verdict.UNVERIFIABLE`, not a pass
+    (#144): it proves only that a file of that name exists, which is the check that let
+    a stale remote copy be indexed as delivered. A sha1 that positively disagrees still
+    refutes it, since that is evidence of a difference rather than an absence of evidence.
     """
     if ident is None:
-        return False
-    if ident.claimed_size is not None and ident.claimed_size != entry.size:
-        return False
+        return _Verdict.REFUTED
     if strict_sha1 and ident.sha1 and entry.sha1 and ident.sha1 != entry.sha1:
-        return False
-    return True
+        return _Verdict.REFUTED
+    if ident.claimed_size is None:
+        return _Verdict.UNVERIFIABLE
+    if ident.claimed_size != entry.size:
+        return _Verdict.REFUTED
+    return _Verdict.VERIFIED
+
+
+def _revision_rels(ctx: RepoContext, rels: list[str], remote_parent: str) -> set[str]:
+    """The files in ``rels`` to upload as a new revision of their existing remote node.
+
+    A file qualifies when this device indexed its content before (``local_state`` is
+    ``present`` with a recorded sha256, at this same remote path) and the remote copy is
+    not provably different from that record. The file is in ``rels`` only because its
+    local content changed, so the change is ours: uploading it as a revision keeps the
+    node, and Drive's version history keeps the copy it replaces.
+
+    A remote copy that is provably different -- its plaintext size or sha1 disagrees with
+    the index -- changed on the remote as well. That is a real conflict and takes the
+    ordinary path, where it surfaces as one. A remote copy whose listing carries no size
+    or digest is not provably different, and a revision destroys nothing, so it is sent;
+    it is then reported unverified by the post-upload check rather than indexed.
+
+    Lists ``remote_parent`` only when at least one file in ``rels`` is indexed.
+    """
+    indexed = {}
+    for rel in rels:
+        entry = ctx.index.get(rel)
+        if (
+            entry is not None
+            and entry.local_state == "present"
+            and entry.sha256
+            and entry.remote_path == f"{remote_parent}/{Path(rel).name}"
+        ):
+            indexed[rel] = entry
+    if not indexed:
+        return set()
+    identities = ctx.drive.remote_identities(remote_parent)
+    revisions = set()
+    for rel, entry in indexed.items():
+        ident = identities.get(Path(rel).name)
+        if ident is None:
+            continue  # nothing of that name remains: an ordinary upload recreates it
+        if ident.claimed_size is not None and ident.claimed_size != entry.size:
+            continue
+        if ident.sha1 and entry.sha1 and ident.sha1 != entry.sha1:
+            continue
+        revisions.add(rel)
+    return revisions
 
 
 # Proton Drive's true root only holds special areas; user files must live under one of these
@@ -187,6 +270,15 @@ def push(
        A name conflict for a file that is absent from the remote listing is now reported
        as a distinct "phantom" failure rather than as a different-file conflict (#138).
 
+    .. versionchanged:: 1.12.3
+       A file that changed locally since this device indexed it is uploaded as a new
+       revision of its remote node (``merge``) when the remote copy is not provably
+       different from the index; before, proton-drive rejected it as a name conflict
+       and it was never re-uploaded without ``--resolve`` (#144). A remote copy whose
+       listing reports no plaintext size is no longer accepted as verified: the file
+       is still uploaded, but reported as an ``unverified`` failure and not indexed
+       (nor adopted), so ``status`` does not count it and the next push retries it.
+
     .. seealso:: :func:`protonfs.commands.pull.pull` for the download direction.
     """
     from protonfs.reporting import get_reporter
@@ -275,9 +367,21 @@ def push(
         # under-delivery rather than a conflict when they fail -- "we could not confirm
         # this" is what actually happened, and it must not read as "the remote differs".
         unattributed_rels: set[str] = set()
-        for batch in batches(rels, batch_size):
+        # #144: a changed file this device uploaded before is a new revision of that node,
+        # not a new file -- see _revision_rels. Only when the user chose no strategy.
+        revision_rels = (
+            _revision_rels(ctx, rels, remote_parent) if strategy is None else set()
+        )
+        jobs = [
+            (batch, strategy)
+            for batch in batches([r for r in rels if r not in revision_rels], batch_size)
+        ] + [
+            (batch, REVISION_STRATEGY)
+            for batch in batches([r for r in rels if r in revision_rels], batch_size)
+        ]
+        for batch, batch_strategy in jobs:
             local_paths = [ctx.root / rel for rel in batch]
-            result = ctx.drive.upload(local_paths, remote_parent, file_strategy=strategy)
+            result = ctx.drive.upload(local_paths, remote_parent, file_strategy=batch_strategy)
             total.skipped_items += result.skipped_items
             done += len(batch)
             reporter.progress(done, len(to_push))
@@ -324,6 +428,8 @@ def push(
         # Adoption candidates (#self-heal) run the same verify, stricter (sha1 too): a
         # remote copy that matches is recorded without re-upload; one that differs is a
         # real name-conflict, reported as such rather than silently overwritten.
+        # #144: an identity with no plaintext size can confirm neither, so it is neither
+        # indexed nor adopted -- see UNVERIFIED_KIND.
         identities = ctx.drive.remote_identities(remote_parent)
         for rel in candidates:
             entry = local[rel]
@@ -331,7 +437,19 @@ def push(
             ident = identities.get(name)
             is_adopt = rel in adopt_rels
             strict = is_adopt or rel in unattributed_rels
-            if not _verify_remote(ident, entry, strict_sha1=strict):
+            verdict = _verify_remote(ident, entry, strict_sha1=strict)
+            if verdict is _Verdict.UNVERIFIABLE:
+                total.failed_items += 1
+                logger.warning(
+                    "push unverified: %s is on the remote but the listing reports no "
+                    "plaintext size for it, so delivery cannot be verified; it was NOT "
+                    "indexed and will be retried on the next push", rel
+                )
+                total.failures.append(
+                    {"name": name, "error": UNVERIFIED_ERROR, "kind": UNVERIFIED_KIND}
+                )
+                continue
+            if verdict is not _Verdict.VERIFIED:
                 total.failed_items += 1
                 if is_adopt and ident is None:
                     # #138: the name is taken but nothing of that name is listable -- a
@@ -352,9 +470,12 @@ def push(
                         {"name": name, "error": CONFLICT_ERROR, "kind": CONFLICT_KIND}
                     )
                 else:
-                    reason = (
-                        "absent" if ident is None else f"size {ident.claimed_size} != {entry.size}"
-                    )
+                    if ident is None:
+                        reason = "absent"
+                    elif ident.claimed_size != entry.size:
+                        reason = f"size {ident.claimed_size} != {entry.size}"
+                    else:
+                        reason = "sha1 differs"
                     logger.warning("push under-delivery: %s not verified (%s)", rel, reason)
                     total.failures.append(
                         {"name": name, "error": UNDERDELIVERED_ERROR, "kind": UNDERDELIVERED_KIND}
