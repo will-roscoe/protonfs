@@ -8,6 +8,8 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-09-23
+
 ### Upgrade notes
 
 - **Breaking — sync-state vocabulary (#150)**: `synced` is renamed `locally-indexed` in `status` output, `status --format json` keys and `ls` output. Without `--remote` nothing is checked on Drive, and the old name read as "verified on Drive". `ls --state synced` is still accepted, with a warning, until the next major release. Exit codes are unchanged
@@ -16,6 +18,10 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 ### Features
 
 - **status**: `--remote` walks Drive and classifies against it; a failed or throttled walk is an error rather than a silent fall-back to the index-only answer. `--format json` gains `"remote": true|false` (#150)
+
+### Features
+
+- **status**: name each sync state for what was actually checked (#156)
 
 ## [1.12.3] - 2026-09-23
 
@@ -626,7 +632,8 @@ the preceding development history and its first tagged release:
   line-matching, git-mutation error wrapping, `pathspec` deprecation, subpath
   prune data-loss fix.
 
-[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v1.12.3...HEAD
+[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v2.0.0...HEAD
+[2.0.0]: https://github.com/will-roscoe/protonfs/compare/v1.12.3...v2.0.0
 [1.12.3]: https://github.com/will-roscoe/protonfs/compare/v1.12.2...v1.12.3
 [1.12.2]: https://github.com/will-roscoe/protonfs/compare/v1.12.1...v1.12.2
 [1.12.1]: https://github.com/will-roscoe/protonfs/compare/v1.12.0...v1.12.1
