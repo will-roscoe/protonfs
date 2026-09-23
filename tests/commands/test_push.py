@@ -494,7 +494,7 @@ def test_push_never_records_synced_while_the_remote_holds_the_older_copy(
     # falls back to the conservative conflict-class state -- which is the point: the file
     # is flagged for attention rather than silently counted as safely on Drive.
     counts = compute_status(ctx, None)
-    assert counts[SyncState.SYNCED.value] == 0
+    assert counts[SyncState.LOCALLY_INDEXED.value] == 0
     assert counts[SyncState.CONFLICT.value] == 1
 
 
@@ -520,7 +520,7 @@ def test_push_uploads_but_does_not_index_a_file_the_listing_cannot_size(
     assert result.failures[0]["kind"] == UNVERIFIED_KIND
     assert ctx.index.get("dump_0001") is None
     counts = compute_status(ctx, None)
-    assert counts[SyncState.SYNCED.value] == 0
+    assert counts[SyncState.LOCALLY_INDEXED.value] == 0
     assert counts[SyncState.LOCAL_ONLY.value] == 1
 
 
@@ -551,7 +551,7 @@ def test_push_keeps_the_previous_entry_when_a_changed_file_cannot_be_verified(
     assert result.failures[0]["kind"] == UNVERIFIED_KIND
     assert ctx.index.get("grow.txt").size == len(first)
     counts = compute_status(ctx, None)
-    assert counts[SyncState.SYNCED.value] == 0
+    assert counts[SyncState.LOCALLY_INDEXED.value] == 0
 
 
 def test_push_retries_an_unverified_file_and_indexes_it_once_the_listing_sizes_it(

@@ -62,7 +62,7 @@ def test_synced_when_hashes_match(tmp_path) -> None:
     index.set("a", _index_entry("h1"))
     local = {"a": _scan_entry("h1")}
     result = classify(local, index)
-    assert result[0].state == SyncState.SYNCED
+    assert result[0].state == SyncState.LOCALLY_INDEXED
 
 
 def test_conflict_when_hashes_differ_and_no_remote_view(tmp_path) -> None:
@@ -123,7 +123,7 @@ def test_empty_remote_sha1_falls_back_to_size_trust_on_first_use(tmp_path) -> No
     local = {"a": _scan_entry("h1", size=10)}
     remote = {"a": _remote(sha1=None, claimed_size=10)}
     result = classify(local, index, remote)
-    assert result[0].state == SyncState.SYNCED
+    assert result[0].state == SyncState.LOCALLY_INDEXED
 
 
 def test_local_modified_prefers_claimed_size_over_encrypted_size(tmp_path) -> None:
@@ -146,11 +146,24 @@ def test_metadata_only_when_index_says_metadata_only_and_no_local_file(tmp_path)
     assert result[0].state == SyncState.METADATA_ONLY
 
 
-def test_remote_only_when_index_says_present_but_local_file_missing(tmp_path) -> None:
+def test_local_deleted_when_index_says_present_but_local_file_missing(tmp_path) -> None:
+    # #150: with no remote view nothing says the file is on Drive, so it is reported by
+    # the one thing that was checked -- it is gone locally -- not as remote-only.
     index = IndexStore(tmp_path)
     index.set("a", _index_entry("h1", local_state="present"))
     result = classify({}, index)
-    assert result[0].state == SyncState.REMOTE_ONLY
+    assert result[0].state == SyncState.LOCAL_DELETED
+
+
+def test_remote_only_is_only_reported_from_a_remote_view(tmp_path) -> None:
+    # #150: remote-only claims the file is on Drive, so it must come from a listing.
+    index = IndexStore(tmp_path)
+    index.set("a", _index_entry("h1", local_state="present"))
+    index.set("m", _index_entry("h2", local_state="metadata-only"))
+    no_view = {e.state for e in classify({}, index)}
+    assert SyncState.REMOTE_ONLY not in no_view
+    with_view = classify({}, index, remote={"new": _remote(claimed_size=1)})
+    assert [e.state for e in with_view if e.rel_path == "new"] == [SyncState.REMOTE_ONLY]
 
 
 def test_local_deleted_when_present_entry_absent_locally_but_on_remote(tmp_path) -> None:
@@ -230,11 +243,19 @@ def test_metadata_only_preserved_when_remote_size_matches(tmp_path) -> None:
     assert result[0].state == SyncState.METADATA_ONLY
 
 
-def test_no_remote_view_keeps_v01_behavior(tmp_path) -> None:
+def test_no_remote_view_reports_a_held_file_missing_locally_as_local_deleted(tmp_path) -> None:
     index = IndexStore(tmp_path)
     index.set("a", _index_entry("h1", local_state="present"))
     result = classify({}, index, remote=None)  # index says present, no local file
-    assert result[0].state == SyncState.REMOTE_ONLY
+    assert result[0].state == SyncState.LOCAL_DELETED
+
+
+def test_synced_is_a_deprecated_alias_of_locally_indexed() -> None:
+    # #150: code written against 1.x keeps importing, but the alias never appears in
+    # iteration (so never as a status line, JSON key or --state choice).
+    assert SyncState.SYNCED is SyncState.LOCALLY_INDEXED
+    assert SyncState.LOCALLY_INDEXED.value == "locally-indexed"
+    assert "synced" not in {s.value for s in SyncState}
 
 
 def test_within_subpath_matches_the_subpath_itself() -> None:

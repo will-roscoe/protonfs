@@ -573,7 +573,7 @@ def test_cli_verbose_count_configures_reporter(tmp_path, monkeypatch, make_fake_
     monkeypatch.setattr("protonfs.context.load_context", lambda *a, **k: ctx)
     captured = {}
 
-    def _fake_compute_status(c, p):
+    def _fake_compute_status(c, p, **kwargs):
         captured["lvl"] = get_reporter().level
         return Counter()
 
@@ -600,7 +600,7 @@ def test_cli_no_verbose_stdout_unchanged(tmp_path, monkeypatch, make_fake_drive)
     ctx.drive = make_fake_drive()
     monkeypatch.setattr("protonfs.context.load_context", lambda *a, **k: ctx)
     result = CliRunner().invoke(main, ["status"])
-    assert "synced: 0" in result.output
+    assert "locally-indexed: 0" in result.output
 
 
 def test_cli_survives_corrupt_repo_config(tmp_path: Path, monkeypatch) -> None:
@@ -631,7 +631,7 @@ def test_cli_global_flag_after_subcommand(tmp_path, monkeypatch, make_fake_drive
     result = CliRunner().invoke(main, ["status", "-v"])
 
     assert result.exit_code == 0, result.output
-    assert "synced: 0" in result.output
+    assert "locally-indexed: 0" in result.output
 
 
 def test_cli_subcommand_flag_before_subcommand(tmp_path, monkeypatch, make_fake_drive) -> None:

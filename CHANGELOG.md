@@ -8,6 +8,15 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 
 ## [Unreleased]
 
+### Upgrade notes
+
+- **Breaking — sync-state vocabulary (#150)**: `synced` is renamed `locally-indexed` in `status` output, `status --format json` keys and `ls` output. Without `--remote` nothing is checked on Drive, and the old name read as "verified on Drive". `ls --state synced` is still accepted, with a warning, until the next major release. Exit codes are unchanged
+- **Breaking — `remote-only` needs a remote view (#150)**: a file this machine held that is now missing locally is reported `local-deleted` when Drive was not checked; it used to be called `remote-only`, which claimed it was on Drive. `remote-only` is now only reported by `status --remote`/`ls --remote`. A bare `pull` restores these files exactly as before
+
+### Features
+
+- **status**: `--remote` walks Drive and classifies against it; a failed or throttled walk is an error rather than a silent fall-back to the index-only answer. `--format json` gains `"remote": true|false` (#150)
+
 ## [1.12.3] - 2026-09-23
 
 ### Bug fixes
@@ -44,7 +53,7 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 
 ### Features
 
-- **status**: add --remote so sync state can be checked against Drive
+- **status**: add --remote so sync state can be checked against Drive *(reverted before this release; shipped in 2.0.0)*
 
 ### Bug fixes
 

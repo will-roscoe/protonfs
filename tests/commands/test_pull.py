@@ -50,7 +50,7 @@ def test_pull_downloads_metadata_only_files_and_updates_index(
 ) -> None:
     # NOTE: seeds local_state="metadata-only", so this exercises the METADATA_ONLY
     # path (renamed from the misleading "...remote_only..." name; see the dedicated
-    # REMOTE_ONLY test below).
+    # locally-deleted test below).
     init_config(tmp_path, "/my-files/test")
     ctx = load_context(tmp_path)
     ctx.index.set(
@@ -77,10 +77,10 @@ def test_pull_downloads_metadata_only_files_and_updates_index(
     assert updated.origin_device == "other-device"  # origin is preserved, not overwritten
 
 
-def test_pull_downloads_true_remote_only_file(tmp_path: Path, make_fake_drive) -> None:
-    # A genuine REMOTE_ONLY: the index says the file is present (local_state !=
-    # metadata-only) but it is absent on disk, so classify -> REMOTE_ONLY and pull
-    # re-downloads it. (v0.1 review gap: no end-to-end REMOTE_ONLY coverage.)
+def test_pull_restores_a_file_deleted_locally(tmp_path: Path, make_fake_drive) -> None:
+    # The index says the file is present (local_state != metadata-only) but it is absent
+    # on disk. With no remote view that classifies LOCAL_DELETED (#150; it was called
+    # REMOTE_ONLY before 2.0) and a bare pull re-downloads it, as it always did.
     init_config(tmp_path, "/my-files/test")
     ctx = load_context(tmp_path)
     ctx.index.set(
@@ -347,7 +347,7 @@ def test_pull_subpath_scopes_true_remote_only_entries_too(
     tmp_path: Path, make_fake_drive
 ) -> None:
     """#96 companion: an index entry recorded `present` but missing on disk classifies
-    REMOTE_ONLY (no remote view) -- out-of-scope ones must not be re-downloaded either."""
+    LOCAL_DELETED (no remote view) -- out-of-scope ones must not be re-downloaded either."""
     init_config(tmp_path, "/my-files/test")
     ctx = load_context(tmp_path)
     ctx.index.set("wanted/dump_0001", _metadata_only_entry("/my-files/test/wanted/dump_0001"))

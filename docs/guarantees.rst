@@ -59,8 +59,8 @@ only acts on what remains, rather than re-doing work already recorded or losing
 track of what happened before the interruption.
 
 Re-running ``push``/``pull`` on files that are already synced is a no-op — they
-classify as ``synced`` and are excluded from the transfer set — so retrying a
-command after a partial failure is always safe to do.
+classify as ``locally-indexed`` and are excluded from the transfer set — so
+retrying a command after a partial failure is always safe to do.
 
 Resumable refresh with throttle backoff
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -116,7 +116,7 @@ A remote copy whose listing carries **no** plaintext ``claimedSize`` proves only
 that a file of that name exists, so it is never accepted as verification. The
 upload still happens, but the file is reported as an ``unverified`` failure (push
 exits ``1``) and is not indexed — a file already in the index keeps its previous
-entry. ``status`` therefore never counts it as ``synced``, and the next push
+entry. ``status`` therefore never counts it as ``locally-indexed``, and the next push
 retries it; once the listing reports a size again, that retry verifies (or
 adopts) it normally. The same identity is one ``offload`` refuses to delete on,
 so push can no longer write an index entry that offload would decline to trust.
@@ -168,27 +168,45 @@ Both commands are thin renderers over the same classifier,
 each path — the local scan, the local index, and (when available) a live remote
 listing — into one of the ``SyncState`` values:
 
-- ``synced`` — local matches the index; nothing pending.
+Without a remote view (plain ``status``/``ls``, the default) nothing is checked
+on Drive, so every state below is a statement about the local files and the index
+— what protonfs last recorded — and never about the remote. The states marked
+*(remote view)* are only produced by ``status --remote``/``ls --remote``, which
+walk Drive first.
+
+- ``locally-indexed`` — local matches the index (and, with a remote view, the
+  remote has not diverged from it). Called ``synced`` before 2.0, a name that read
+  as "verified on Drive" when nothing on Drive had been checked.
 - ``local-only`` — present locally, no index entry (never pushed).
-- ``remote-only`` / ``metadata-only`` — an index entry with no local file, and
-  (without a remote view) treated as such by default; ``metadata-only``
-  specifically means this device deliberately never materialized it (e.g. after
-  ``refresh`` or ``offload``).
-- ``local-modified`` — local content diverged from the index; the remote (when
-  known) has not.
-- ``remote-modified`` — the remote diverged from the index; local has not.
-- ``both-modified`` — both sides diverged from the index *and* a remote view is
-  available to prove that (a resolvable divergence).
-- ``conflict`` — local diverged from the index but there is no remote view to
-  attribute a direction to (no live listing was fetched, or the remote no longer
-  lists the file) — a conservative fallback, never auto-resolved.
-- ``local-deleted`` — synced down as a real file, now absent locally, still
-  present remotely.
-- ``remote-changed`` — a metadata-only entry whose remote size moved.
-- ``remote-deleted`` — an index entry with nothing at that path in a full remote
-  walk.
+- ``metadata-only`` — an index entry this device deliberately never materialized
+  (e.g. after ``refresh`` or ``offload``); with a remote view, the remote still
+  matches it.
+- ``local-deleted`` — a file this device held (the index records it as present)
+  is gone locally. With a remote view the remote still lists it; without one the
+  remote was not checked. Before 2.0 the no-remote-view case was reported as
+  ``remote-only``, which claimed a remote fact nobody had checked.
+- ``conflict`` — local diverged from the index and there is no remote view to
+  attribute a direction to. ``push`` sends it as a new revision when the remote
+  still holds the indexed copy and reports a real conflict otherwise; ``status
+  --remote`` says which before anything is sent.
+- ``remote-only`` *(remote view)* — listed on Drive, absent locally and from the
+  index.
+- ``local-modified`` *(remote view)* — local content diverged from the index; the
+  remote has not.
+- ``remote-modified`` *(remote view)* — the remote diverged from the index; local
+  has not.
+- ``both-modified`` *(remote view)* — both sides diverged from the index (a
+  resolvable divergence).
+- ``remote-changed`` *(remote view)* — a metadata-only entry whose remote copy
+  moved.
+- ``remote-deleted`` *(remote view)* — an index entry with nothing at that path in
+  a full remote walk.
 - ``lfs-pointer`` — an un-smudged git-LFS pointer stub (see above); deliberately
   inert, never treated as actionable drift.
+
+A push that could not verify a file on Drive (``under-delivered`` or
+``unverified``) never moves it to ``locally-indexed``: it stays ``local-only`` or
+``conflict`` until a later push verifies it.
 
 Remote divergence itself (``_remote_diverged``) prefers comparing Proton's
 plaintext ``claimedDigests.sha1`` against the index's stored sha1 when **both**
@@ -205,7 +223,8 @@ and the full table in :doc:`stability`.
 ``pull --resolve``: never silently overwrite a local edit
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 A bare ``pull`` (no ``--resolve``) only ever brings down files that are absent
-locally (``remote-only``/``metadata-only``) — it cannot overwrite a local file
+locally (``metadata-only``, and ``local-deleted`` files this device held) — it
+cannot overwrite a local file
 because it never considers a locally-present file as a pull candidate without a
 remote view. A file that changed on **both** sides since the last sync
 (``both-modified``) or that locally diverged with no provable remote view

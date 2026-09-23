@@ -21,6 +21,24 @@ Versioning follows the policy in :doc:`stability`: within ``1.x``, everything
 documented on that page keeps working; a breaking change to any of it requires a
 major-version bump.
 
+From 1.x to 2.0
+~~~~~~~~~~~~~~~
+2.0 renames the sync-state vocabulary so no state claims something about Drive that
+was not checked (see :doc:`stability`, *Sync states*). Nothing on disk changes and
+no migration runs; only output and filters do:
+
+- ``synced`` is now ``locally-indexed`` -- in ``status`` lines, ``status --format
+  json`` keys and ``ls`` output. ``ls --state synced`` still works, with a warning,
+  until the next major release; a script parsing the output needs the new name.
+- A file this machine held that is now missing locally is ``local-deleted``, not
+  ``remote-only``, when ``status``/``ls`` run without ``--remote``. ``remote-only``
+  is now only reported from a Drive listing. A bare ``pull`` restores these files
+  exactly as before; ``ls --state remote-only`` without ``--remote`` now matches
+  nothing and says so.
+- ``status --remote`` is new: it walks Drive and classifies against it.
+- ``status --format json`` gains a ``"remote": true|false`` field.
+- Exit codes are unchanged: every state keeps its clean/drift/conflict class.
+
 Upgrading proton-drive
 -----------------------
 ``protonfs upgrade`` brings the installed ``proton-drive`` binary to the **highest
