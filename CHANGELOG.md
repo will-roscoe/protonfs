@@ -8,6 +8,8 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-09-23
+
 ### Features
 
 - **manifest**: a remote manifest per synced root, `<remote_root>/.protonfs/manifest.json`, recording every file protonfs verified on Drive (plaintext size, sha256, sha1, the uid of the verified Drive revision) with a `generation` counter. It is a cache, never an authority. It is created only from a full listing (`protonfs verify --repair`). It is kept current by `push`/`rm` when `defaults.manifest` is on (off by default) and never records an unverified upload. `offload` never reads it (#146)
@@ -18,6 +20,10 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 ### Bug fixes
 
 - **offload**, **refresh**, **status**/**ls**: nothing under `.protonfs/` is treated as data, so an older host that indexed the remote manifest cannot offload or report it (#146)
+
+### Features
+
+- **manifest**: keep a remote manifest of what protonfs verified on Drive (#157)
 
 ## [2.0.0] - 2026-09-23
 
@@ -643,7 +649,8 @@ the preceding development history and its first tagged release:
   line-matching, git-mutation error wrapping, `pathspec` deprecation, subpath
   prune data-loss fix.
 
-[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v2.0.0...HEAD
+[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v2.1.0...HEAD
+[2.1.0]: https://github.com/will-roscoe/protonfs/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/will-roscoe/protonfs/compare/v1.12.3...v2.0.0
 [1.12.3]: https://github.com/will-roscoe/protonfs/compare/v1.12.2...v1.12.3
 [1.12.2]: https://github.com/will-roscoe/protonfs/compare/v1.12.1...v1.12.2
