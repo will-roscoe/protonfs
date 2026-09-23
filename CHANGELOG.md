@@ -8,11 +8,17 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-09-23
+
 ### Features
 
 - **offload**: a settle window. A file modified within `--min-age` (default `1d`) is never offloaded and is reported as `skipped_unsettled`; a file pushed while still inside the window is re-verified against Drive even under `--no-verify` (#158)
 - **prune**: new command, a retention policy through offload. It pushes first; then, per directory, it keeps the newest `--keep` (default 10) tracked files and offloads any other file unmodified for `--min-age`. Every deletion keeps offload's live verification and guards, and the run holds the repo lock (#158)
 - **schedule**: `offload` and `prune` jobs with `--min-age`/`--keep`. A new job that would fight an existing one on overlapping files is refused, or added with a warning; the rules are in the command help and docs. Jobs on one repo now share a lock and take turns instead of failing on the repo lock (#158)
+
+### Features
+
+- **schedule**: schedule offload and a retention prune, with a settle rule and job-conflict checks (#159)
 
 ## [2.1.0] - 2026-09-23
 
@@ -655,7 +661,8 @@ the preceding development history and its first tagged release:
   line-matching, git-mutation error wrapping, `pathspec` deprecation, subpath
   prune data-loss fix.
 
-[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v2.1.0...HEAD
+[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v2.2.0...HEAD
+[2.2.0]: https://github.com/will-roscoe/protonfs/compare/v2.1.0...v2.2.0
 [2.1.0]: https://github.com/will-roscoe/protonfs/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/will-roscoe/protonfs/compare/v1.12.3...v2.0.0
 [1.12.3]: https://github.com/will-roscoe/protonfs/compare/v1.12.2...v1.12.3
