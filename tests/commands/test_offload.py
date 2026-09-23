@@ -1,13 +1,21 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
-from protonfs.commands.offload import offload
+from protonfs.commands.offload import offload as _offload
 from protonfs.config import init_config
 from protonfs.context import load_context
 from protonfs.diff import SyncState, classify
 from protonfs.index import IndexEntry
 from protonfs.localscan import hash_file_digests, scan
+
+
+def offload(*args, **kwargs):
+    """offload as run well after the files were written: these tests exercise the other
+    guards, so every file here is past the settle window (#158 has its own tests)."""
+    kwargs.setdefault("now", time.time() + 30 * 86400)
+    return _offload(*args, **kwargs)
 
 
 def _index_entry(remote_path: str, *, local_state: str = "present", size: int = 4) -> IndexEntry:
@@ -273,3 +281,111 @@ def test_offload_reversible_via_classify_metadata_only(tmp_path: Path, make_fake
     diff_entries = classify(local, ctx.index)
     states = {e.rel_path: e.state for e in diff_entries}
     assert states["dump_0001"] == SyncState.METADATA_ONLY
+
+
+# --- #158: the settle window --------------------------------------------------------------
+
+
+DAY = 86400.0
+
+
+def _pushed(tmp_path: Path, make_fake_drive, *, pushed_after: float, age: float):
+    """A file last modified `age` seconds ago, pushed `pushed_after` seconds after that
+    modification, and verified on the remote. Returns (ctx, now)."""
+    import datetime
+    import os
+
+    init_config(tmp_path, "/my-files/test")
+    path = tmp_path / "series.ev"
+    path.write_bytes(b"data")
+    now = time.time()
+    mtime = now - age
+    os.utime(path, (mtime, mtime))
+    ctx = load_context(tmp_path)
+    entry = _synced_entry(path, "/my-files/test/series.ev")
+    entry.mtime = mtime
+    entry.last_synced = datetime.datetime.fromtimestamp(
+        mtime + pushed_after, datetime.timezone.utc
+    ).isoformat()
+    ctx.index.set("series.ev", entry)
+    fake = make_fake_drive()
+    ctx.drive = fake
+    fake.upload([path], "/my-files/test")
+    return ctx, now
+
+
+def test_a_file_modified_within_the_settle_window_is_never_offloaded(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    # Verified on Drive and unchanged since its push -- but touched an hour ago, so it may
+    # still be being written. It stays.
+    ctx, now = _pushed(tmp_path, make_fake_drive, pushed_after=60, age=3600)
+
+    result = _offload(ctx, None, now=now)
+
+    assert result.offloaded == 0
+    assert result.skipped_unsettled == 1
+    assert result.unsettled_paths == ["series.ev"]
+    assert (tmp_path / "series.ev").exists()
+
+
+def test_the_settle_window_can_be_shortened_or_switched_off(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    ctx, now = _pushed(tmp_path, make_fake_drive, pushed_after=60, age=3600)
+
+    result = _offload(ctx, None, now=now, min_age=0)
+
+    assert result.offloaded == 1
+    assert not (tmp_path / "series.ev").exists()
+
+
+def test_no_verify_still_reverifies_a_file_pushed_while_it_was_changing(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    # Pushed a minute after its last write: the index describes a file that was still
+    # inside the settle window. --no-verify must not trust that record; the remote copy
+    # is gone here, so the file is kept.
+    ctx, now = _pushed(tmp_path, make_fake_drive, pushed_after=60, age=3 * DAY)
+    ctx.drive._remote_files["/my-files/test"].clear()
+
+    result = _offload(ctx, None, verify=False, now=now)
+
+    assert result.offloaded == 0
+    assert result.skipped_unverified == 1
+    assert ctx.drive.identity_calls == ["/my-files/test"]
+    assert (tmp_path / "series.ev").exists()
+
+
+def test_no_verify_trusts_a_file_that_had_settled_before_it_was_pushed(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    ctx, now = _pushed(tmp_path, make_fake_drive, pushed_after=2 * DAY, age=3 * DAY)
+
+    result = _offload(ctx, None, verify=False, now=now)
+
+    assert result.offloaded == 1
+    assert ctx.drive.identity_calls == []  # the documented --no-verify behaviour
+
+
+def test_offload_only_considers_the_paths_it_is_given(tmp_path: Path, make_fake_drive) -> None:
+    ctx, now = _pushed(tmp_path, make_fake_drive, pushed_after=2 * DAY, age=3 * DAY)
+
+    result = _offload(ctx, None, now=now, only={"something-else"})
+
+    assert result.offloaded == 0
+    assert (tmp_path / "series.ev").exists()
+
+
+def test_no_verify_reverifies_an_entry_whose_sync_time_cannot_be_read(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    # Without a readable last_synced there is no telling when it was pushed: assume the
+    # worst and check the remote.
+    ctx, now = _pushed(tmp_path, make_fake_drive, pushed_after=2 * DAY, age=3 * DAY)
+    ctx.index.get("series.ev").last_synced = "not a timestamp"
+
+    result = _offload(ctx, None, verify=False, now=now)
+
+    assert result.offloaded == 1
+    assert ctx.drive.identity_calls == ["/my-files/test"]

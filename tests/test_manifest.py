@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -473,8 +474,9 @@ def test_offload_never_reads_the_manifest(tmp_path, make_fake_drive) -> None:
     ctx.drive.download_calls.clear()
     ctx.drive.list_calls.clear()
 
-    offload(ctx, None, verify=True)
+    result = offload(ctx, None, verify=True, now=time.time() + 30 * 86400)
 
+    assert result.offloaded == 1  # it went all the way to deleting the local copy
     assert ctx.drive.download_calls == []
     assert ctx.drive.list_calls == []  # remote_identities of the file's parent only
     assert ctx.drive.identity_calls[-1] == ROOT
@@ -788,7 +790,7 @@ def test_offload_never_touches_the_control_directory(tmp_path, make_fake_drive) 
     ctx.index.set(".protonfs/manifest.json",
                   IndexEntry(2, 0.0, sha256, sha1, MANIFEST_PATH, "d", "present", "t"))
 
-    result = offload(ctx, None, verify=False)
+    result = offload(ctx, None, verify=False, now=time.time() + 30 * 86400)
 
     assert result.offloaded == 0 and result.skipped_modified == 0
     assert stray.exists()

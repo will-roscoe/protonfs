@@ -32,6 +32,7 @@ EXPECTED_TOP_LEVEL_COMMANDS = frozenset(
         "push",
         "pull",
         "offload",
+        "prune",
         "rm",
         "restore",
         "refresh",
@@ -61,7 +62,8 @@ EXPECTED_OPTIONS: dict[str, frozenset[str]] = {
     "ls": frozenset({"--remote", "--trash", "--dirs", "--state", "--format", "--visual"}),
     "push": frozenset({"--resolve", "--dry-run", "--strict"}),
     "pull": frozenset({"--resolve", "--dry-run", "--refresh", "--strict"}),
-    "offload": frozenset({"--no-verify", "--dry-run", "--yes"}),
+    "offload": frozenset({"--no-verify", "--min-age", "--dry-run", "--yes"}),
+    "prune": frozenset({"--keep", "--min-age", "--no-push", "--dry-run", "--yes"}),
     "rm": frozenset({"-r", "--recursive", "-f", "--force", "--yes"}),
     "restore": frozenset(),
     "refresh": frozenset({"--prune"}),
@@ -73,7 +75,8 @@ EXPECTED_OPTIONS: dict[str, frozenset[str]] = {
     "schedule": frozenset(
         {
             "--list", "--add", "--uninstall", "-U", "--all", "--every", "--cron",
-            "--at", "--command", "--path", "--resolve", "--strict", "--label", "--json",
+            "--at", "--command", "--path", "--resolve", "--strict", "--min-age", "--keep",
+            "--label", "--json",
         }
     ),
     "auth": frozenset(),
@@ -92,6 +95,7 @@ EXPECTED_ARGUMENTS: dict[str, tuple[str, ...]] = {
     "push": ("path",),
     "pull": ("path",),
     "offload": ("path",),
+    "prune": ("path",),
     "rm": ("path",),
     "restore": ("path",),
     "refresh": ("path",),

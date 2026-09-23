@@ -153,7 +153,7 @@ def test_cli_offload_prints_every_branch(
     _ctx(tmp_path, monkeypatch, make_fake_drive)
     monkeypatch.setattr(
         "protonfs.commands.offload.offload",
-        lambda ctx, path, verify, dry_run: OffloadResult(
+        lambda ctx, path, verify, dry_run, min_age: OffloadResult(
             offloaded=1,
             skipped_unverified=1,
             skipped_modified=1,
@@ -161,6 +161,8 @@ def test_cli_offload_prints_every_branch(
             offloaded_paths=["a"],
             skipped_paths=["b"],
             modified_paths=["c"],
+            skipped_unsettled=1,
+            unsettled_paths=["d"],
         ),
     )
 
@@ -170,6 +172,8 @@ def test_cli_offload_prints_every_branch(
     assert "offloaded=1 bytes_reclaimed=1024" in result.output
     assert "could not be confirmed on the remote" in result.output
     assert "unsynced local edits" in result.output
+    assert "skipped_unsettled=1" in result.output
+    assert "settle window" in result.output
 
 
 def test_cli_offload_confirmation_abort(

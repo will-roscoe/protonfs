@@ -880,57 +880,30 @@ def pull(
         raise click.exceptions.Exit(1)
 
 
-@main.command()
-@click.argument("path", nargs=-1)
-@click.option(
-    "--no-verify",
-    is_flag=True,
-    help="Skip re-verifying files against the remote before deleting local bytes (unsafe).",
+_MIN_AGE_HELP = (
+    "Settle window: leave alone any file modified more recently than this (e.g. 12h, 1d, "
+    "90m; 0 disables it). A file can still be being written with nobody holding it open."
 )
-@click.option("--dry-run", is_flag=True, help="Preview what would be offloaded; delete nothing.")
-@click.option("--yes", is_flag=True, help="Skip confirmation prompt.")
-@_drive_error_boundary
-def offload(path: tuple[str, ...], no_verify: bool, dry_run: bool, yes: bool) -> None:
-    """Delete local bytes of protonfs-tracked files confirmed present on Drive.
 
-    Accepts any number of PATHs (e.g. from a shell glob). The inverse of `pull`:
-    reclaims local disk space while leaving the Drive copy intact. Reversible -- a
-    later `pull` restores the file in full. By default every file is re-verified
-    against a live remote listing (not just the index) before its local copy is
-    deleted; pass --no-verify to skip that check.
-    """
-    from protonfs.commands.offload import OffloadResult
-    from protonfs.commands.offload import offload as offload_files
-    from protonfs.context import load_context
-    from protonfs.locking import repo_lock
 
-    ctx = load_context()
-    verify = not no_verify
-    subpaths = _normalize_paths(path)
+def _parse_min_age(value: str) -> float:
+    """``--min-age`` to seconds, as a usage error when malformed."""
+    from protonfs.retention import RetentionError, parse_duration
 
-    if not yes and not dry_run:
-        shown = ", ".join(f"'{p}'" for p in subpaths if p) or "'.'"
-        click.confirm(
-            f"Delete local copies of tracked files under {shown} (Drive copies are kept)?",
-            abort=True,
-        )
+    try:
+        return parse_duration(value)
+    except RetentionError as exc:
+        raise click.BadParameter(str(exc), param_hint="--min-age") from exc
 
-    result = OffloadResult()
-    with repo_lock(ctx.root):
-        for subpath in subpaths:
-            part = offload_files(ctx, subpath, verify=verify, dry_run=dry_run)
-            result.offloaded += part.offloaded
-            result.skipped_unverified += part.skipped_unverified
-            result.skipped_modified += part.skipped_modified
-            result.bytes_reclaimed += part.bytes_reclaimed
-            result.offloaded_paths += part.offloaded_paths
-            result.skipped_paths += part.skipped_paths
-            result.modified_paths += part.modified_paths
 
+def _echo_offload_result(result, dry_run: bool) -> None:
+    """The offload summary line and the per-reason detail lists (shared with prune)."""
     verb = "would offload" if dry_run else "offloaded"
     click.echo(
         f"{verb}={result.offloaded} bytes_reclaimed={result.bytes_reclaimed} "
-        f"skipped_unverified={result.skipped_unverified} skipped_modified={result.skipped_modified}"
+        f"skipped_unverified={result.skipped_unverified} "
+        f"skipped_modified={result.skipped_modified} "
+        f"skipped_unsettled={result.skipped_unsettled}"
     )
     for p in result.offloaded_paths:
         click.echo(f"  {'WOULD OFFLOAD' if dry_run else 'offloaded'} {p}")
@@ -948,6 +921,157 @@ def offload(path: tuple[str, ...], no_verify: bool, dry_run: bool, yes: bool) ->
         )
         for p in result.modified_paths:
             click.echo(f"      {p}")
+    if result.skipped_unsettled:
+        click.echo(
+            f"  -> {result.skipped_unsettled} file(s) were modified within the settle window "
+            "(--min-age) and were left untouched; they may still be being written:"
+        )
+        for p in result.unsettled_paths:
+            click.echo(f"      {p}")
+
+
+@main.command()
+@click.argument("path", nargs=-1)
+@click.option(
+    "--no-verify",
+    is_flag=True,
+    help="Skip re-verifying files against the remote before deleting local bytes (unsafe). "
+    "A file pushed while it was still changing is re-verified regardless.",
+)
+@click.option(
+    "--min-age",
+    default="1d",
+    show_default=True,
+    metavar="DURATION",
+    help=_MIN_AGE_HELP,
+)
+@click.option("--dry-run", is_flag=True, help="Preview what would be offloaded; delete nothing.")
+@click.option("--yes", is_flag=True, help="Skip confirmation prompt.")
+@_drive_error_boundary
+def offload(
+    path: tuple[str, ...], no_verify: bool, min_age: str, dry_run: bool, yes: bool
+) -> None:
+    """Delete local bytes of protonfs-tracked files confirmed present on Drive.
+
+    Accepts any number of PATHs (e.g. from a shell glob). The inverse of `pull`:
+    reclaims local disk space while leaving the Drive copy intact. Reversible -- a
+    later `pull` restores the file in full. By default every file is re-verified
+    against a live remote listing (not just the index) before its local copy is
+    deleted; pass --no-verify to skip that check.
+
+    A file modified within the last --min-age (default one day) is never offloaded:
+    with nobody holding it open, it may still be being written.
+    """
+    from protonfs.commands.offload import OffloadResult
+    from protonfs.commands.offload import offload as offload_files
+    from protonfs.context import load_context
+    from protonfs.locking import repo_lock
+
+    min_age_s = _parse_min_age(min_age)
+    ctx = load_context()
+    verify = not no_verify
+    subpaths = _normalize_paths(path)
+
+    if not yes and not dry_run:
+        shown = ", ".join(f"'{p}'" for p in subpaths if p) or "'.'"
+        click.confirm(
+            f"Delete local copies of tracked files under {shown} (Drive copies are kept)?",
+            abort=True,
+        )
+
+    result = OffloadResult()
+    with repo_lock(ctx.root):
+        for subpath in subpaths:
+            result.merge(
+                offload_files(ctx, subpath, verify=verify, dry_run=dry_run, min_age=min_age_s)
+            )
+    _echo_offload_result(result, dry_run)
+
+
+@main.command()
+@click.argument("path", nargs=-1)
+@click.option(
+    "--keep",
+    type=click.IntRange(min=0),
+    default=10,
+    show_default=True,
+    help="Newest files (by modification time) to keep locally in each directory.",
+)
+@click.option(
+    "--min-age",
+    default="1d",
+    show_default=True,
+    metavar="DURATION",
+    help=_MIN_AGE_HELP,
+)
+@click.option("--no-push", is_flag=True, help="Do not push new files first.")
+@click.option(
+    "--dry-run", is_flag=True, help="Preview what would be offloaded; push and delete nothing."
+)
+@click.option("--yes", is_flag=True, help="Skip confirmation prompt.")
+@_drive_error_boundary
+def prune(
+    path: tuple[str, ...], keep: int, min_age: str, no_push: bool, dry_run: bool, yes: bool
+) -> None:
+    """Free local disk by a retention policy, through offload (any number of PATHs).
+
+    Pushes first (unless --no-push), so new files are on Drive before anything is
+    considered. Then, in each directory, the --keep most recently modified tracked files
+    stay local, and any other tracked file unmodified for --min-age is offloaded. A file
+    is offloaded only when BOTH rules release it. Holds the repo lock for the whole run,
+    so it cannot overlap a push.
+
+    Every deletion goes through offload, with its live re-verification against Drive:
+    prune never removes a file offload would refuse (not confirmed on Drive, edited
+    since its last push, or not yet settled).
+
+    Exit code: 0 success (files offload refused are reported, not failed); 1 when the
+    push that ran first failed for some file, or a Drive/lock error; 2 usage error.
+    """
+    from protonfs.commands.offload import OffloadResult
+    from protonfs.commands.prune import prune as prune_files
+    from protonfs.context import load_context
+    from protonfs.drive import TransferResult
+    from protonfs.locking import repo_lock
+
+    min_age_s = _parse_min_age(min_age)
+    ctx = load_context()
+    subpaths = _normalize_paths(path)
+    if not yes and not dry_run:
+        shown = ", ".join(f"'{p}'" for p in subpaths if p) or "'.'"
+        click.confirm(
+            f"Push, then delete local copies of older tracked files under {shown} (keeping "
+            f"the newest {keep} per directory; Drive copies are kept)?",
+            abort=True,
+        )
+
+    pushed = TransferResult(0, 0, 0, [])
+    offloaded = OffloadResult()
+    considered = candidates = 0
+    with repo_lock(ctx.root):
+        for subpath in subpaths:
+            part = prune_files(
+                ctx, subpath, keep, min_age_s, push_first=not no_push, dry_run=dry_run
+            )
+            if part.pushed is not None:
+                _accumulate_transfer(pushed, part.pushed)
+            considered += part.considered
+            candidates += len(part.candidates)
+            offloaded.merge(part.offload)
+    if not no_push and not dry_run:
+        click.echo(
+            f"pushed: transferred={pushed.transferred_items} skipped={pushed.skipped_items} "
+            f"failed={pushed.failed_items}"
+        )
+        for failure in pushed.failures:
+            click.echo(f"  FAILED {failure['name']}: {failure['error']}")
+    click.echo(
+        f"prune: {considered} tracked local file(s); keeping the newest {keep} per "
+        f"directory and anything modified within {min_age} left {candidates} for offload"
+    )
+    _echo_offload_result(offloaded, dry_run)
+    if pushed.failed_items:
+        raise click.exceptions.Exit(1)
 
 
 @main.command()
@@ -1268,8 +1392,11 @@ def completions(shell: str, install: bool, uninstall: bool) -> None:
 @click.option("--cron", "cron_expr", metavar="EXPR", help="Raw 5-field cron expression.")
 @click.option("--at", metavar="HOURS", help="Run daily at these hours (0-23, comma-separated).")
 @click.option(
-    "--command", "command", type=click.Choice(["push", "pull", "sync"]), default="push",
-    show_default=True, help="What the job runs (sync = pull then push).",
+    "--command", "command",
+    type=click.Choice(["push", "pull", "sync", "offload", "prune"]), default="push",
+    show_default=True,
+    help="What the job runs: sync = pull then push; offload = push, then offload the same "
+    "scope; prune = protonfs prune (which pushes first).",
 )
 @click.option(
     # NB: no bare glob characters in this help string -- sphinx-click renders help as RST,
@@ -1284,13 +1411,21 @@ def completions(shell: str, install: bool, uninstall: bool) -> None:
     "--strict", "sched_strict", is_flag=True,
     help="Pass --strict to push/pull, so a run whose --path pattern matches nothing fails.",
 )
+@click.option(
+    "--min-age", "sched_min_age", metavar="DURATION",
+    help="Settle window passed to offload/prune jobs (e.g. 12h, 1d); default: theirs (1d).",
+)
+@click.option(
+    "--keep", "sched_keep", type=click.IntRange(min=0),
+    help="Newest files per directory a prune job keeps; default: prune's (10).",
+)
 @click.option("--label", default="", help="Human label shown in --list.")
 @click.option("--json", "as_json", is_flag=True, help="With --list, emit JSON.")
 def schedule(
     list_, add, uninstall, all_, every, cron_expr, at, command, sched_path,
-    sched_resolve, sched_strict, label, as_json,
+    sched_resolve, sched_strict, sched_min_age, sched_keep, label, as_json,
 ) -> None:
-    """Manage scheduled push/pull cron jobs for this repo.
+    """Manage scheduled cron jobs (push, pull, sync, offload, prune) for this repo.
 
     Bare ``protonfs schedule`` lists the jobs (it never installs implicitly). ``--add``
     installs a job (needs a cadence: ``--every``/``--cron``/``--at``) and prints its id;
@@ -1304,11 +1439,29 @@ def schedule(
 
         protonfs schedule --add --every daily --command pull --path 'mload*/*.ev'
 
+    Jobs on one repo never run at the same time: each waits (up to 30 minutes) for the
+    others, then skips that run. A job that would fight one already scheduled on
+    overlapping files is refused, or added with a warning:
+
+    \b
+    - the same command on the identical scope: refused;
+    - push alongside offload or prune: refused (offload/prune push first themselves);
+    - push alongside pull: refused on the identical scope, warned when the scopes only
+      overlap (use one sync job); likewise sync alongside push or pull;
+    - offload or prune alongside pull or sync: refused (one removes what the other
+      restores);
+    - offload alongside prune: refused (offload would remove what prune keeps);
+    - the same command on overlapping scopes: warned.
+
     .. versionadded:: 1.8.0
 
     .. versionchanged:: 1.11.0
        ``--path`` accepts a glob pattern, re-expanded at run time (#131). Added
        ``--strict``.
+
+    .. versionchanged:: 2.2.0
+       ``offload`` and ``prune`` jobs, ``--min-age``/``--keep``, conflict checks, and one
+       job at a time per repo (#158).
     """
     import json as _json
     from pathlib import Path
@@ -1325,7 +1478,9 @@ def schedule(
         if add:
             job = sched.add_job(
                 repo, every=every, cron=cron_expr, at=at, command=command,
-                path=sched_path, resolve=sched_resolve, strict=sched_strict, label=label,
+                path=sched_path, resolve=sched_resolve, strict=sched_strict,
+                min_age=sched_min_age, keep=sched_keep, label=label,
+                warn=lambda msg: click.echo(f"warning: {msg}", err=True),
             )
             click.echo(f"scheduled job {job.id}: {job.cron}  {job.command}")
             click.echo(f"  wrapper: {job.wrapper_path}")

@@ -18,10 +18,22 @@ mirroring the exact verify-against-remote idiom `commands/push.py` uses after
 upload. Any file that fails this check is left untouched locally and reported as
 ``skipped_unverified``; nothing is ever deleted based on the index alone.
 
+Settle rule (#158)
+------------------
+A file can still be in use with no process holding it open -- a simulation closes a
+dump and keeps appending to its time series for days. So a file modified within the
+last ``min_age`` seconds (see :mod:`protonfs.retention`) is never offloaded, whatever
+the remote holds; it is reported as ``skipped_unsettled``. And a file that was pushed
+while still inside that window is re-verified against the live listing before its
+local copy is removed, even under ``--no-verify``: the index entry written at push
+time described a file that was still changing.
+
 .. versionadded:: 1.0.0
 """
 from __future__ import annotations
 
+import datetime
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -31,13 +43,21 @@ from protonfs.diff import within_subpath
 from protonfs.ignore import IgnoreMatcher
 from protonfs.index import IndexEntry
 from protonfs.localscan import hash_file_digests
+from protonfs.retention import DEFAULT_MIN_AGE, format_age, is_settled, parse_duration
+
+DEFAULT_MIN_AGE_SECONDS = parse_duration(DEFAULT_MIN_AGE)
 
 
 @dataclass
 class OffloadResult:
     """Outcome of an :func:`offload` pass: how many local copies were reclaimed, how
-    many were left untouched (unverified on the remote, or with unsynced local edits),
-    the bytes freed, and the rel-paths behind each count."""
+    many were left untouched (unverified on the remote, with unsynced local edits, or
+    modified too recently to be settled), the bytes freed, and the rel-paths behind
+    each count.
+
+    .. versionchanged:: 2.2.0
+       Added ``skipped_unsettled``/``unsettled_paths`` (#158).
+    """
 
     offloaded: int = 0
     skipped_unverified: int = 0
@@ -46,6 +66,29 @@ class OffloadResult:
     offloaded_paths: list[str] = field(default_factory=list)
     skipped_paths: list[str] = field(default_factory=list)
     modified_paths: list[str] = field(default_factory=list)
+    skipped_unsettled: int = 0
+    unsettled_paths: list[str] = field(default_factory=list)
+
+    def merge(self, other: OffloadResult) -> None:
+        """Add ``other``'s counts and paths into this result."""
+        for name in (
+            "offloaded", "skipped_unverified", "skipped_modified", "bytes_reclaimed",
+            "skipped_unsettled",
+        ):
+            setattr(self, name, getattr(self, name) + getattr(other, name))
+        for name in ("offloaded_paths", "skipped_paths", "modified_paths", "unsettled_paths"):
+            getattr(self, name).extend(getattr(other, name))
+
+
+def _pushed_unsettled(entry: IndexEntry, min_age: float) -> bool:
+    """Whether the index entry was written while its file was still inside the settle
+    window (last sync less than ``min_age`` after the file's last modification). An
+    unreadable timestamp counts as unsettled -- the safe reading."""
+    try:
+        synced = datetime.datetime.fromisoformat(entry.last_synced).timestamp()
+    except (TypeError, ValueError):
+        return True
+    return synced - entry.mtime < min_age
 
 
 def offload(
@@ -54,6 +97,9 @@ def offload(
     verify: bool = True,
     dry_run: bool = False,
     reporter=None,
+    min_age: float = DEFAULT_MIN_AGE_SECONDS,
+    only: set[str] | None = None,
+    now: float | None = None,
 ) -> OffloadResult:
     """Delete the local bytes of tracked files confirmed present on Drive (the inverse
     of :func:`~protonfs.commands.pull.pull`).
@@ -70,7 +116,15 @@ def offload(
     :param dry_run: report what would be freed without deleting anything.
     :param reporter: :class:`~protonfs.reporting.Reporter` to narrate progress through;
         defaults to the process reporter (:func:`~protonfs.reporting.get_reporter`).
+    :param min_age: settle window in seconds: a file modified more recently than this is
+        left alone (``0`` disables it). Defaults to one day.
+    :param only: restrict the pass to these repo-relative paths (``prune`` passes its
+        retention candidates); every check below still applies to each of them.
+    :param now: the current time, for tests; defaults to :func:`time.time`.
     :returns: an :class:`OffloadResult` summarising freed/kept files and bytes.
+
+    .. versionchanged:: 2.2.0
+       Added the settle rule (``min_age``, default one day) and ``only`` (#158).
     """
     from protonfs.reporting import get_reporter
 
@@ -97,9 +151,12 @@ def offload(
             continue
         if not (ctx.root / rel_path).is_file():
             continue
+        if only is not None and rel_path not in only:
+            continue
         candidates.append(rel_path)
 
     result = OffloadResult()
+    now = time.time() if now is None else now
     if not candidates:
         reporter.done("offloaded", files=result.offloaded, reclaimed=result.bytes_reclaimed)
         return result
@@ -111,14 +168,27 @@ def offload(
         # #22/#3: never trust the index alone -- re-list the remote parent and require
         # each candidate to appear there with a matching plaintext size before its local
         # bytes are deleted. `verify=False` is an explicit opt-out (--no-verify) only;
-        # the default is always on.
+        # the default is always on. #158: even then, a file pushed while still unsettled
+        # is re-verified, so the listing is fetched lazily for those.
         identities = ctx.drive.remote_identities(remote_parent) if verify else None
 
         for rel in rels:
             local_path = ctx.root / rel
             entry = ctx.index.get(rel)
-            local_size = local_path.stat().st_size
+            stat = local_path.stat()
+            local_size = stat.st_size
             name = Path(rel).name
+
+            # #158 settle rule, before anything else: a file modified within the window
+            # may still be being written, so it is never a candidate, whatever else holds.
+            if not is_settled(stat.st_mtime, min_age, now):
+                reporter.warn(
+                    f"skip {rel}: modified {format_age(now - stat.st_mtime)} ago, not yet "
+                    f"settled (min-age {format_age(min_age)})"
+                )
+                result.skipped_unsettled += 1
+                result.unsettled_paths.append(rel)
+                continue
 
             # Unconditional data-loss guard (holds even under --no-verify): never delete a
             # file whose local bytes differ from what was last synced. A file edited locally
@@ -132,7 +202,10 @@ def offload(
                 result.modified_paths.append(rel)
                 continue
 
-            if verify:
+            must_verify = verify or _pushed_unsettled(entry, min_age)
+            if must_verify:
+                if identities is None:
+                    identities = ctx.drive.remote_identities(remote_parent)
                 ident = identities.get(name)
                 # An unverifiable identity is NOT a pass. Treating a missing claimed_size
                 # as "fine" is what let a stale remote copy look verified (#147) while
