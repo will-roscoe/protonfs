@@ -374,6 +374,69 @@ def test_push_does_not_stack_a_revision_on_a_remote_copy_that_changed_too(
     assert ctx.index.get("f.txt").size == len(b"ours v1")
 
 
+def test_push_does_not_stack_a_revision_on_a_same_size_remote_with_another_digest(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    # Size alone would call these the same copy; the sha1 says the remote was rewritten.
+    (tmp_path / "f.txt").write_bytes(b"ours v1")
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    fake = make_fake_drive()
+    ctx.drive = fake
+    push(ctx, None, resolve=None, dry_run=False)
+
+    fake._remote_sha1["/my-files/test"]["f.txt"] = "f" * 40  # same size, other content
+    (tmp_path / "f.txt").write_bytes(b"ours v2")
+    result = push(ctx, None, resolve=None, dry_run=False)
+
+    assert all(call[2] is None for call in fake.upload_calls)
+    assert result.failures[0]["kind"] == CONFLICT_KIND
+
+
+def test_push_recreates_a_changed_file_that_is_gone_from_the_remote(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    # Nothing of that name is left to add a revision to, so it is an ordinary upload.
+    (tmp_path / "f.txt").write_bytes(b"v1")
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    fake = make_fake_drive()
+    ctx.drive = fake
+    push(ctx, None, resolve=None, dry_run=False)
+
+    del fake._remote_files["/my-files/test"]["f.txt"]
+    (tmp_path / "f.txt").write_bytes(b"v2 longer")
+    result = push(ctx, None, resolve=None, dry_run=False)
+
+    assert fake.upload_calls[-1][2] is None
+    assert result.transferred_items == 1
+    assert ctx.index.get("f.txt").size == len(b"v2 longer")
+
+
+def test_push_reports_a_skipped_file_whose_remote_digest_differs_as_under_delivered(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    from protonfs.commands.push import UNDERDELIVERED_KIND
+
+    (tmp_path / "f.txt").write_bytes(b"data")
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    fake = make_fake_drive(
+        upload_result=TransferResult(
+            transferred_items=0, skipped_items=1, failed_items=0, failures=[]
+        ),
+        dropped_files={"f.txt"},
+    )
+    fake._remote_files["/my-files/test"] = {"f.txt": 4}
+    fake._remote_sha1["/my-files/test"] = {"f.txt": "0" * 40}
+    ctx.drive = fake
+
+    result = push(ctx, None, resolve="skip", dry_run=False)
+
+    assert result.failures[0]["kind"] == UNDERDELIVERED_KIND
+    assert ctx.index.get("f.txt") is None
+
+
 def test_push_does_not_send_a_revision_for_a_path_this_device_never_held(
     tmp_path: Path, make_fake_drive
 ) -> None:
