@@ -113,16 +113,22 @@ flag/argument name; these names, not just their presence, are frozen.
      - ``0`` done (including dry-run); ``1`` not a protonfs root, lock held by another
        process, or declined confirmation; ``2`` usage error.
    * - ``status``
-     - Summarize sync state (counts by local-only/remote-only/synced/conflict).
+     - Summarize sync state as a count per state (see `Sync states`_).
        Argument: ``PATH...`` (optional, repeatable; e.g. from a shell glob).
-       Option: ``--format [plain|json]``.
-     - ``0`` clean (synced or intentionally remote-only); ``1`` drift present
-       (something to push/pull/prune); ``2`` conflict present (needs a human or
-       ``--resolve``). Conflict outranks drift when both are present. (Usage errors
+       Options: ``--format [plain|json]``, ``--remote`` (added in 2.0.0).
+       Without ``--remote`` nothing is checked on Drive: the comparison is against
+       the local index only, so ``locally-indexed`` means "matches what protonfs
+       last recorded", not "verified present on Drive". ``--format json`` emits
+       ``{"counts": {<state>: n, ...}, "exit_code": n, "remote": bool}``.
+     - ``0`` clean (every file in a *clean* state below); ``1`` drift present
+       (something to push/pull/prune); ``2`` conflict present (a *conflict*-class
+       state below). Conflict outranks drift when both are present. (Usage errors
        also use ``2``, but status's own ``2`` is a data outcome, not a usage error.)
    * - ``ls``
      - List tracked files with their sync state. Argument: ``PATH...`` (optional, repeatable; e.g. from a shell glob).
-       Options: ``--remote``, ``--trash``, ``--dirs``, ``--state`` (repeatable),
+       Options: ``--remote``, ``--trash``, ``--dirs``, ``--state`` (repeatable; any
+       state name below, plus the deprecated alias ``synced`` for ``locally-indexed``,
+       accepted with a warning until the next major release),
        ``--format [table|plain|json]``, ``--visual [treemap|waffle]``.
      - ``0`` success; ``1`` Drive/auth error; ``2`` usage error.
    * - ``push``
@@ -239,6 +245,54 @@ flag/argument name; these names, not just their presence, are frozen.
        (both required). Options: ``--global``, ``--local``.
      - ``0`` success; ``1`` unknown key, ``--global``/``--local`` both given, or no
        shared config yet for the repo; ``2`` usage error.
+
+Sync states
+-----------
+The state names printed by ``status``, emitted as ``status --format json`` keys,
+shown by ``ls`` and accepted by ``ls --state`` are part of this contract, and so is
+the exit-code class each one maps to. Without ``--remote`` no state says anything
+checked on Drive; the states marked *remote view* are only produced by
+``status --remote``/``ls --remote``.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 62 18
+
+   * - State
+     - Meaning
+     - ``status`` exit class
+   * - ``locally-indexed``
+     - Local matches the index (and, with a remote view, the remote agrees).
+       Renamed from ``synced`` in 2.0.0.
+     - clean (``0``)
+   * - ``metadata-only``
+     - Indexed but deliberately not materialised on this machine.
+     - clean (``0``)
+   * - ``lfs-pointer``
+     - An un-smudged git-LFS pointer stub; deliberately left alone.
+     - clean (``0``)
+   * - ``local-only``
+     - Present locally, not in the index.
+     - drift (``1``)
+   * - ``local-deleted``
+     - Held by this machine, now gone locally. Without a remote view the remote
+       was not checked (reported as ``remote-only`` before 2.0.0).
+     - drift (``1``)
+   * - ``remote-only``
+     - *Remote view.* Listed on Drive, absent locally and from the index.
+     - drift (``1``)
+   * - ``local-modified`` / ``remote-modified``
+     - *Remote view.* One side diverged from the index; the other did not.
+     - drift (``1``)
+   * - ``remote-changed`` / ``remote-deleted``
+     - *Remote view.* A file not held locally whose remote copy moved or vanished.
+     - drift (``1``)
+   * - ``conflict``
+     - Local diverged from the index with no remote view to attribute a direction.
+     - conflict (``2``)
+   * - ``both-modified``
+     - *Remote view.* Local and remote both diverged from the index.
+     - conflict (``2``)
 
 Known keys for ``config get``/``config set``: :confval:`remote_root`,
 :confval:`device_id`, :confval:`defaults.on_conflict`, :confval:`defaults.low_io`,

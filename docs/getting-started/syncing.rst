@@ -56,7 +56,8 @@ Uploading data
 
 .. code-block:: bash
 
-   protonfs status              # what is local-only vs synced
+   protonfs status              # what is local-only vs locally-indexed (index only)
+   protonfs status --remote     # the same, checked against Drive
    protonfs push <subpath>      # a subtree
    protonfs push                # everything in scope that is new or changed
 
@@ -113,7 +114,7 @@ The standard loop on any client:
    git pull                          # shared contract
    protonfs refresh                  # reconcile local index with Drive
                                      #   (--prune drops entries for files deleted on Drive)
-   protonfs status                   # local-only / remote-only / synced / conflict
+   protonfs status                   # local-only / locally-indexed / conflict / ...
    protonfs push                     # send local-only and locally-changed files up
    protonfs pull --refresh           # bring remote-only down (if this machine wants them)
 
@@ -140,16 +141,21 @@ risk there.
 ``status`` also sets an **exit code** so an unattended caller can branch without
 parsing the printed counts:
 
-- ``0`` — clean: every file is synced or intentionally remote-only (nothing to reconcile).
+- ``0`` — clean: every file is ``locally-indexed``, ``metadata-only`` (deliberately
+  not materialised here) or an LFS pointer stub (nothing to reconcile).
 - ``1`` — drift: non-conflict divergence exists (something to push, pull, or prune).
-- ``2`` — conflict: at least one file needs a human or a ``--resolve`` strategy.
+- ``2`` — conflict: at least one file changed on both sides (``both-modified``,
+  only with ``--remote``), or changed locally with no remote view to say whether
+  the remote moved too (``conflict``). A bare ``push`` uploads a ``conflict`` file as
+  a new revision when the remote still holds the copy this machine recorded, and
+  reports a real conflict otherwise; ``status --remote`` tells you which first.
 
 Conflict outranks drift when both are present, e.g.:
 
 .. code-block:: bash
 
    protonfs status; case $? in
-     0) echo "in sync" ;;
+     0) echo "matches the index" ;;
      1) echo "drift -- run push/pull" ;;
      2) echo "conflict -- resolve first" ;;
    esac

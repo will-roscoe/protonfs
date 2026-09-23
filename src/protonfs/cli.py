@@ -440,14 +440,27 @@ def deinit(dry_run: bool, yes: bool) -> None:
     show_default=True,
     help="Output format: the classic state-per-line counts, or one JSON object.",
 )
-def status(path: tuple[str, ...], fmt: str) -> None:
-    """Summarize sync state (counts by local-only/remote-only/synced/conflict).
+@click.option(
+    "--remote",
+    is_flag=True,
+    help="Walk Drive and classify against it as well as the local index (slower, but "
+    "catches remote changes that refresh hasn't seen yet). Without it nothing is checked "
+    "on Drive: 'locally-indexed' means the file matches this machine's index.",
+)
+def status(path: tuple[str, ...], fmt: str, remote: bool) -> None:
+    """Summarize sync state as a count per state (locally-indexed, local-only, ...).
+
+    Without ``--remote`` nothing is checked on Drive: every count compares the working
+    tree against this machine's index (what protonfs last recorded). ``locally-indexed``
+    therefore means "matches the index", not "verified on Drive"; ``--remote`` walks
+    Drive and classifies against it too.
 
     Accepts any number of PATHs (e.g. from a shell glob); counts are combined.
     Exit code, so an unattended caller can branch without parsing the counts:
-    0 = clean (everything synced or intentionally remote-only), 1 = drift present
-    (something to push/pull/prune), 2 = conflict present (needs a human or --resolve).
-    Conflict outranks drift when both are present.
+    0 = clean (every file locally-indexed, metadata-only or an LFS pointer stub),
+    1 = drift present (something to push/pull/prune), 2 = conflict present
+    (conflict: a local change with no remote view to attribute it; both-modified:
+    changed on both sides). Conflict outranks drift when both are present.
     """
     from collections import Counter
 
@@ -458,7 +471,7 @@ def status(path: tuple[str, ...], fmt: str) -> None:
     ctx = load_context()
     counts: Counter = Counter()
     for subpath in _normalize_paths(path):
-        counts.update(compute_status(ctx, subpath))
+        counts.update(compute_status(ctx, subpath, remote=remote))
     code = status_exit_code(counts)
     if fmt == "json":
         import json
@@ -468,6 +481,7 @@ def status(path: tuple[str, ...], fmt: str) -> None:
                 {
                     "counts": {state.value: counts.get(state.value, 0) for state in SyncState},
                     "exit_code": code,
+                    "remote": remote,
                 }
             )
         )
@@ -482,7 +496,7 @@ def status(path: tuple[str, ...], fmt: str) -> None:
 # Choice needs no protonfs import at CLI-definition time (startup cost). A unit test
 # asserts this stays equal to diff.SyncState's values.
 _STATE_CHOICES = (
-    "synced",
+    "locally-indexed",
     "local-only",
     "remote-only",
     "metadata-only",
@@ -495,6 +509,28 @@ _STATE_CHOICES = (
     "remote-deleted",
     "lfs-pointer",
 )
+
+# #150: state names retired in 2.0, still accepted by `ls --state` for one major and
+# mapped to their replacement with a warning. Not advertised in --help.
+_DEPRECATED_STATE_ALIASES = {"synced": "locally-indexed"}
+
+
+class _StateChoice(click.Choice):
+    """``--state``'s type: the current state names, plus deprecated aliases that are
+    accepted (with a warning on stderr) but not listed in ``--help`` or completion."""
+
+    def convert(self, value, param, ctx):
+        """Map a deprecated alias to its replacement, else validate as a normal Choice."""
+        replacement = _DEPRECATED_STATE_ALIASES.get(value)
+        if replacement is not None:
+            click.echo(
+                f"warning: --state {value} is deprecated; use --state {replacement}. It "
+                "means the file matches this machine's index, not that it was verified "
+                "on Drive. The old name will be removed in the next major release.",
+                err=True,
+            )
+            return replacement
+        return super().convert(value, param, ctx)
 
 
 @main.command()
@@ -521,7 +557,7 @@ _STATE_CHOICES = (
     "--state",
     "states",
     multiple=True,
-    type=click.Choice(_STATE_CHOICES),
+    type=_StateChoice(_STATE_CHOICES),
     help="Only show files in this sync state (repeatable).",
 )
 @click.option(
@@ -569,6 +605,16 @@ def ls(
             raise click.UsageError("--visual cannot be combined with --format plain/json.")
         if trash:
             raise click.UsageError("--visual has nothing to chart for --trash.")
+
+    if "remote-only" in states and not remote and not trash:
+        # #150: without a walk, a file missing locally is local-deleted; remote-only is
+        # now only ever reported when Drive was actually listed.
+        click.echo(
+            "note: without --remote, remote-only matches nothing: a file deleted locally "
+            "is reported as local-deleted, and remote-only needs a Drive listing. Add "
+            "--remote, or filter on --state local-deleted.",
+            err=True,
+        )
 
     ctx = load_context()
     console = Console()

@@ -378,12 +378,23 @@ status
 .. versionchanged:: 1.1.0
    Added ``--format`` (``plain``/``json``) and multiple ``PATH`` pathspecs.
 
+.. versionchanged:: 2.0.0
+   ``synced`` renamed to ``locally-indexed``; a file deleted locally is
+   ``local-deleted`` rather than ``remote-only`` when Drive is not checked; added
+   ``--remote``; the JSON output gained a ``remote`` field.
+
 Scans the local tree (optionally scoped to ``PATH``), compares it against the
-local index, and prints a count per sync state (``synced``, ``local-only``,
-``remote-only``, ``metadata-only``, ``conflict``, ``local-modified``,
-``remote-modified``, ``both-modified``, ``local-deleted``, ``remote-changed``,
-``remote-deleted``, ``lfs-pointer``). It does not talk to Drive beyond the index
-already on disk — run :ref:`refresh <cmd-refresh>` first for an up-to-date picture of the remote.
+local index, and prints a count per sync state (``locally-indexed``,
+``local-only``, ``remote-only``, ``metadata-only``, ``conflict``,
+``local-modified``, ``remote-modified``, ``both-modified``, ``local-deleted``,
+``remote-changed``, ``remote-deleted``, ``lfs-pointer``).
+
+By default it does not talk to Drive at all, so every count describes the local
+files against the index: ``locally-indexed`` means "matches what this machine last
+recorded", not "verified on Drive". ``--remote`` walks Drive and classifies against
+it as well — slower, and a failed or throttled walk is an error rather than a
+silent fall-back to the index-only answer. ``--format json`` includes
+``"remote": true|false`` so a consumer can tell which answer it got.
 
 Exit code: ``0`` clean, ``1`` drift present, ``2`` conflict present (conflict
 outranks drift) — identical in both formats. See :doc:`../stability` for the
@@ -395,6 +406,7 @@ Examples::
     protonfs status subdir/
     protonfs status; echo "exit=$?"
     protonfs status --format json | jq .counts
+    protonfs status --remote            # classify against a live Drive walk
 
 .. _cmd-ls:
 
@@ -418,10 +430,13 @@ disk; ``0`` for fully offloaded dirs), cumulative **indexed** size (what the ind
 records — the remote-side size), and a per-state count summary. This is the
 storage-breakdown view: ``protonfs ls --dirs`` on a large tree answers "which
 directories are taking space locally vs on Drive" without printing 10,000
-``remote-only`` lines. ``--state STATE`` applies before ``--dirs`` aggregation, so
-the two compose. The ``--dirs`` JSON/columns also carry an ``apparent_bytes``
+``metadata-only`` lines. ``--state STATE`` applies before ``--dirs`` aggregation, so
+the two compose. ``--state synced`` is still accepted as a deprecated alias of
+``locally-indexed`` (with a warning on stderr) and will be removed in the next
+major release. ``remote-only`` is only ever reported with ``--remote``; without it
+a file deleted locally is ``local-deleted``. The ``--dirs`` JSON/columns also carry an ``apparent_bytes``
 field: each directory's true footprint, taking per file whichever of the
-local/indexed size is known (they agree when synced, local for a not-yet-pushed
+local/indexed size is known (they agree when locally-indexed, local for a not-yet-pushed
 file, indexed for an offloaded one). ``--visual {treemap,waffle}`` draws a
 per-directory storage-usage chart instead of the listing, sized by that
 ``apparent_bytes`` footprint so a fresh local-only tree and a fully-offloaded tree
@@ -437,7 +452,7 @@ Examples::
     protonfs ls --remote subdir/
     protonfs ls --trash
     protonfs ls --dirs                       # per-directory storage breakdown
-    protonfs ls --state remote-only --format plain | cut -f1
+    protonfs ls --remote --state remote-only --format plain | cut -f1
     protonfs ls sim/ --dirs --format json    # scriptable per-dir sizes/counts
     protonfs ls --visual treemap             # squarified storage treemap
     protonfs ls sim/ --visual waffle         # proportional waffle chart of sim/
@@ -488,7 +503,7 @@ remote file to the trash and uploads a new one in its place. Every batch is
 re-verified against a live remote listing after upload (matching each file's
 plaintext ``claimedSize``) before it is recorded in the index — proton-drive can
 report a transfer as successful when it did not actually land; an unverified file
-is left unindexed and retried on the next push instead of falsely marked synced.
+is left unindexed and retried on the next push instead of being recorded as delivered.
 A file that is an un-smudged git-LFS pointer stub is never pushed, even if
 misclassified upstream, because that would overwrite real Drive content with a
 131-byte placeholder. See :doc:`../guarantees` for the full mechanism.

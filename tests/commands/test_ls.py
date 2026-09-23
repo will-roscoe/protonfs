@@ -370,3 +370,72 @@ def test_remote_rel_paths_directory_subpath_unchanged(tmp_path: Path, make_fake_
 
     assert ctx.drive.walk_roots == ["/my-files/test/run1"]
     assert set(result) == {"run1/dump_0001", "run1/nested/dump_0002"}
+
+
+# --- #150: `synced` renamed to `locally-indexed`; remote-only needs a remote view ------
+
+
+def _indexed_repo(tmp_path: Path, monkeypatch):
+    """One file recorded in the index exactly as it is on disk (locally-indexed), one
+    local-only file, and the CLI pointed at this repo."""
+    from protonfs.localscan import hash_file_digests
+
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    kept = tmp_path / "kept"
+    kept.write_bytes(b"data")
+    (tmp_path / "fresh").write_bytes(b"new")
+    sha256, sha1 = hash_file_digests(kept)
+    ctx.index.set(
+        "kept",
+        IndexEntry(
+            size=4, mtime=kept.stat().st_mtime, sha256=sha256, sha1=sha1,
+            remote_path="/my-files/test/kept", origin_device="d1",
+            local_state="present", last_synced="2026-07-08T00:00:00+00:00",
+        ),
+    )
+    monkeypatch.setattr("protonfs.context.load_context", lambda *a, **k: ctx)
+    return ctx
+
+
+def test_cli_ls_state_accepts_synced_as_a_deprecated_alias(tmp_path: Path, monkeypatch) -> None:
+    from click.testing import CliRunner
+
+    from protonfs.cli import main
+
+    _indexed_repo(tmp_path, monkeypatch)
+
+    result = CliRunner().invoke(main, ["ls", "--state", "synced", "--format", "plain"])
+
+    assert result.exit_code == 0, result.output
+    assert "kept\tlocally-indexed" in result.output
+    assert "fresh" not in result.output
+    assert "deprecated" in result.output and "locally-indexed" in result.output
+
+
+def test_cli_ls_help_does_not_advertise_the_deprecated_alias() -> None:
+    from click.testing import CliRunner
+
+    from protonfs.cli import main
+
+    result = CliRunner().invoke(main, ["ls", "--help"])
+
+    assert "locally-indexed" in result.output
+    assert "synced" not in result.output
+
+
+def test_cli_ls_state_remote_only_without_remote_explains_why_it_is_empty(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from click.testing import CliRunner
+
+    from protonfs.cli import main
+
+    _indexed_repo(tmp_path, monkeypatch)
+    (tmp_path / "kept").unlink()  # held, then deleted locally
+
+    result = CliRunner().invoke(main, ["ls", "--state", "remote-only", "--format", "plain"])
+
+    assert result.exit_code == 0, result.output
+    assert "local-deleted" in result.output  # the note names where the file went
+    assert "kept\t" not in result.output

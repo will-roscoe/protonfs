@@ -3,10 +3,10 @@
 
 :func:`classify` is the entry point: given what's on disk (a local scan), what the index
 last recorded, and (optionally) what the remote currently lists, it decides a
-:class:`SyncState` for every known path. With no remote view it can only distinguish
-"local has it" / "index has it" / neither; with a remote view it can additionally tell
-local deletions, remote deletions, and remote-side changes apart (see
-:func:`_classify_absent` and :func:`_classify_present`).
+:class:`SyncState` for every known path. With no remote view it can only compare the
+local files against the index; with a remote view it can additionally tell remote
+deletions and remote-side changes apart, and attribute a local change to a direction
+(see :func:`_classify_absent` and :func:`_classify_present`).
 
 .. versionadded:: 1.0.0
 """
@@ -24,27 +24,43 @@ from protonfs.localscan import ScanEntry
 class SyncState(str, Enum):
     """Classification of a single path's sync status, as produced by :func:`classify`.
 
-    :cvar SYNCED: Local matches the index; no remote divergence detected.
+    Without a remote view every state is a statement about the local files and the
+    index (what protonfs last recorded), never about Drive. Only the states marked
+    *remote view* below say something checked against a live listing.
+
+    :cvar LOCALLY_INDEXED: Local matches the index, and (with a remote view) the remote
+        did not diverge from it either. Without a remote view this says nothing about
+        Drive: it is the index that matches, not a verified remote copy (#150).
     :cvar LOCAL_ONLY: Present locally, never recorded in the index.
-    :cvar REMOTE_ONLY: Listed remotely but absent both locally and in the index.
+    :cvar REMOTE_ONLY: *Remote view.* Listed remotely but absent both locally and in the
+        index.
     :cvar METADATA_ONLY: Index has a metadata-only record (never materialized locally)
         and, when a remote view exists, the remote still matches it.
     :cvar CONFLICT: Local diverged from the index and no remote view is available to
         attribute the divergence to a direction.
-    :cvar LOCAL_MODIFIED: Local diverged from the index; remote did not.
-    :cvar REMOTE_MODIFIED: Remote diverged from the index; local did not.
-    :cvar BOTH_MODIFIED: Both local and remote diverged from the index independently.
-    :cvar LOCAL_DELETED: A previously-materialized local file is now gone locally but
-        still present on the remote.
-    :cvar REMOTE_CHANGED: No local file, but the index's remote-side record and the
-        current remote listing disagree.
-    :cvar REMOTE_DELETED: An index entry exists but the remote no longer lists it.
+    :cvar LOCAL_MODIFIED: *Remote view.* Local diverged from the index; remote did not.
+    :cvar REMOTE_MODIFIED: *Remote view.* Remote diverged from the index; local did not.
+    :cvar BOTH_MODIFIED: *Remote view.* Both local and remote diverged from the index
+        independently.
+    :cvar LOCAL_DELETED: A file this machine held (the index records it as present) is
+        gone locally. With a remote view the remote still lists it; without one the
+        remote was not checked.
+    :cvar REMOTE_CHANGED: *Remote view.* No local file, but the index's remote-side
+        record and the current remote listing disagree.
+    :cvar REMOTE_DELETED: *Remote view.* An index entry exists but the remote no longer
+        lists it.
     :cvar LFS_POINTER: Local file is an un-smudged git-LFS pointer stub (#32), short-
         circuited before any content comparison so its stub hash is never mistaken for
         the tracked file's real content.
+
+    .. versionchanged:: 2.0.0
+       ``SYNCED`` (``"synced"``) renamed to ``LOCALLY_INDEXED`` (``"locally-indexed"``),
+       and a present-then-deleted local file with no remote view is ``LOCAL_DELETED``
+       rather than ``REMOTE_ONLY`` (#150). Neither old name described what was checked.
+       ``SyncState.SYNCED`` remains as a deprecated alias of ``LOCALLY_INDEXED``.
     """
 
-    SYNCED = "synced"
+    LOCALLY_INDEXED = "locally-indexed"
     LOCAL_ONLY = "local-only"
     REMOTE_ONLY = "remote-only"
     METADATA_ONLY = "metadata-only"
@@ -56,6 +72,10 @@ class SyncState(str, Enum):
     REMOTE_CHANGED = "remote-changed"
     REMOTE_DELETED = "remote-deleted"
     LFS_POINTER = "lfs-pointer"
+
+    # Deprecated alias (same value, so iteration and JSON never show it): code written
+    # against 1.x keeps importing. Remove in the next major.
+    SYNCED = "locally-indexed"
 
 
 @dataclass
@@ -165,7 +185,7 @@ def _classify_present(
 
     if not local_changed:
         # local matches the index; only the remote could have moved.
-        return SyncState.REMOTE_MODIFIED if remote_changed else SyncState.SYNCED
+        return SyncState.REMOTE_MODIFIED if remote_changed else SyncState.LOCALLY_INDEXED
     # local diverged from the index.
     if remote_entry is None:
         # No provable remote view (no walk, or the remote no longer lists it): we cannot
@@ -180,13 +200,20 @@ def _classify_absent(
     remote_entry: RemoteEntry | None,
     rel_path: str,
 ) -> SyncState:
-    """An index entry with no local file. Without a remote view we keep v0.1 behaviour;
-    with one we can tell a local deletion, a remote deletion, and a remote change apart."""
+    """An index entry with no local file. Without a remote view only the local facts are
+    known: a metadata-only record, or a file this machine held that is now gone locally.
+    With one we can also tell a remote deletion and a remote change apart.
+
+    .. versionchanged:: 2.0.0
+       A held-then-deleted file with no remote view is ``LOCAL_DELETED``, not
+       ``REMOTE_ONLY``: nothing was checked on the remote, so the state must not claim the
+       file is there (#150).
+    """
     if remote is None:
         return (
             SyncState.METADATA_ONLY
             if index_entry.local_state == "metadata-only"
-            else SyncState.REMOTE_ONLY
+            else SyncState.LOCAL_DELETED
         )
     if remote_entry is None:
         return SyncState.REMOTE_DELETED

@@ -1,6 +1,13 @@
 """``protonfs status``: summarise sync state and map it to a script-friendly exit code.
 
+By default the summary compares the working tree against the local index only; it
+never contacts Drive. ``remote=True`` (``status --remote``) walks Drive as well.
+
 .. versionadded:: 1.0.0
+
+.. versionchanged:: 2.0.0
+   ``synced`` is reported as ``locally-indexed``, and ``remote=True`` classifies against
+   a live Drive walk (#150).
 """
 from __future__ import annotations
 
@@ -15,21 +22,26 @@ from protonfs.localscan import scan
 # Exit codes for `protonfs status`, so an unattended caller (a script, a CI step) can
 # branch on the outcome without parsing the printed counts. They are ordered by severity
 # and documented in the CLI help and docs -- treat them as a stable contract.
-STATUS_CLEAN = 0  # every file is synced or intentionally remote-only (nothing to reconcile)
+STATUS_CLEAN = 0  # every file is locally-indexed, metadata-only or an LFS stub (nothing to do)
 STATUS_DRIFT = 1  # non-conflict divergence exists (something to push / pull / prune)
 STATUS_CONFLICT = 2  # at least one genuine conflict a human or --resolve strategy must settle
 
-# States that represent a settled, no-action-needed condition: SYNCED (in step with the
-# remote), METADATA_ONLY (a remote file this device has deliberately not materialised),
-# and LFS_POINTER (#32: an unmaterialised git-LFS pointer stub -- protonfs deliberately
-# does nothing with it, so it is not actionable drift either).
-_QUIESCENT = frozenset({SyncState.SYNCED, SyncState.METADATA_ONLY, SyncState.LFS_POINTER})
+# States that represent a settled, no-action-needed condition: LOCALLY_INDEXED (matches
+# what protonfs last recorded -- and, with a remote view, the remote agrees),
+# METADATA_ONLY (a remote file this device has deliberately not materialised), and
+# LFS_POINTER (#32: an unmaterialised git-LFS pointer stub -- protonfs deliberately does
+# nothing with it, so it is not actionable drift either).
+_QUIESCENT = frozenset(
+    {SyncState.LOCALLY_INDEXED, SyncState.METADATA_ONLY, SyncState.LFS_POINTER}
+)
 # States that represent a genuine conflict: both sides diverged, or a local change with no
 # provable remote view to attribute a direction.
 _CONFLICT = frozenset({SyncState.CONFLICT, SyncState.BOTH_MODIFIED})
 
 
-def compute_status(ctx: RepoContext, subpath: str | None, reporter=None) -> Counter:
+def compute_status(
+    ctx: RepoContext, subpath: str | None, reporter=None, remote: bool = False
+) -> Counter:
     """Summarise sync state as a count of files per :class:`~protonfs.diff.SyncState`.
 
     Scans the working tree (scoped to ``subpath`` when given), classifies each file
@@ -40,7 +52,16 @@ def compute_status(ctx: RepoContext, subpath: str | None, reporter=None) -> Coun
         for the whole tree.
     :param reporter: :class:`~protonfs.reporting.Reporter` to narrate progress through;
         defaults to the process reporter (:func:`~protonfs.reporting.get_reporter`).
+    :param remote: walk Drive and classify against it as well as the index. Off by
+        default because listing is slow and throttle-prone; without it a file is
+        compared only against what protonfs last recorded, so ``locally-indexed`` means
+        "matches the index", not "verified present on Drive". Mirrors ``ls --remote``.
     :returns: a :class:`collections.Counter` keyed by ``SyncState.value``.
+
+    .. note:: A failed or throttled walk raises rather than falling back to the local
+       comparison. Reporting index-only states as though the remote had been checked is
+       the confusion this flag exists to remove, so a partial answer must not be
+       presented as a verified one.
 
     .. seealso:: :func:`status_exit_code` maps this summary to a process exit code.
     """
@@ -51,9 +72,15 @@ def compute_status(ctx: RepoContext, subpath: str | None, reporter=None) -> Coun
     ignore = IgnoreMatcher.from_file(ctx.root)
     scan_root = Path(subpath) if subpath else Path(".")
     local = scan(ctx.root, scan_root, ignore, ctx.index, low_io=ctx.config.defaults.low_io)
+    remote_view = None
+    if remote:
+        from protonfs.commands.ls import remote_rel_paths
+
+        reporter.phase("listing", subpath=subpath or ".")
+        remote_view = remote_rel_paths(ctx, subpath)
+    entries = classify(local, ctx.index, remote_view)
     # #96: classify() sees the whole repo-wide index; the scan above is scoped. Filter
     # so `status SUBPATH` never counts (or exits non-zero for) entries outside SUBPATH.
-    entries = classify(local, ctx.index)
     return Counter(
         entry.state.value for entry in entries if within_subpath(entry.rel_path, subpath)
     )
@@ -64,7 +91,8 @@ def status_exit_code(counts: Counter) -> int:
 
     A conflict is the most severe outcome, so it wins even when ordinary drift is also
     present. Drift is any non-quiescent, non-conflict state (local-only, remote-only,
-    local/remote-modified, local/remote-deleted, remote-changed).
+    local/remote-modified, local/remote-deleted, remote-changed). Clean means every file
+    is locally-indexed, metadata-only or an LFS pointer stub.
     """
     if any(counts.get(state.value, 0) > 0 for state in _CONFLICT):
         return STATUS_CONFLICT
