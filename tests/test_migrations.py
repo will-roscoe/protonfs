@@ -287,3 +287,34 @@ def test_event_log_gitignore_migration(tmp_path: Path) -> None:
     assert any(m.id == "event-log-gitignore" for m in pending_migrations(tmp_path))
     run_migrations(tmp_path, dry_run=False)
     assert "events.log" in (tmp_path / ".protonfs" / ".gitignore").read_text()
+
+
+def test_schedule_state_is_gitignored_and_backfilled(tmp_path: Path) -> None:
+    """`schedule.local.json` and the `schedule/` job files are per-device state.
+
+    They were missing from the managed `.gitignore`, so every scheduled job left its
+    log, lock and script showing as untracked in the enclosing repo. The control-file
+    backfill compares against the template line by line, so an existing repo gets the
+    new lines from `upgrade` without a migration of its own.
+    """
+    import subprocess
+
+    init_config(tmp_path, "/my-files/test")
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    (tmp_path / ".protonfs" / ".gitignore").write_text("index.json\n")
+    assert any(m.id == "control-file-backfill" for m in pending_migrations(tmp_path))
+    run_migrations(tmp_path, dry_run=False)
+
+    sched = tmp_path / ".protonfs" / "schedule"
+    sched.mkdir()
+    for name in ("schedule/1517b0.log", "schedule/d4b2c4.lock", "schedule/d4b2c4.sh",
+                 "schedule.local.json"):
+        (tmp_path / ".protonfs" / name).write_text("")
+    ignored = subprocess.run(
+        ["git", "-C", str(tmp_path), "check-ignore", ".protonfs/schedule.local.json",
+         ".protonfs/schedule/1517b0.log", ".protonfs/schedule/d4b2c4.lock",
+         ".protonfs/schedule/d4b2c4.sh", ".protonfs/config.json"],
+        capture_output=True, text=True,
+    ).stdout.split()
+    assert ".protonfs/config.json" not in ignored  # the shared contract stays tracked
+    assert len(ignored) == 4
