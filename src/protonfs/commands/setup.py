@@ -156,6 +156,8 @@ _PROTONFS_GITIGNORE = (
     "config.local.json\n"
     "events.log\n"
     "events.log.1\n"
+    "schedule.local.json\n"
+    "schedule/\n"
 )
 
 

@@ -11,6 +11,7 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 ### Bug fixes
 
 - **config**: set up a freshly cloned repo instead of failing on its missing device_id (#151)
+- **setup**: gitignore the scheduler's per-device state (`schedule.local.json`, `schedule/`), which showed as untracked in every repo with a scheduled job; `upgrade` backfills existing repos
 
 ## [1.12.0] - 2026-08-17
 
