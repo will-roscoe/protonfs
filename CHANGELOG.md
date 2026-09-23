@@ -8,6 +8,12 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 
 ## [Unreleased]
 
+## [1.12.2] - 2026-09-23
+
+### Bug fixes
+
+- **setup**: gitignore the scheduler's per-device state (#154)
+
 ## [1.12.1] - 2026-08-24
 
 ### Bug fixes
@@ -600,7 +606,8 @@ the preceding development history and its first tagged release:
   line-matching, git-mutation error wrapping, `pathspec` deprecation, subpath
   prune data-loss fix.
 
-[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v1.12.1...HEAD
+[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v1.12.2...HEAD
+[1.12.2]: https://github.com/will-roscoe/protonfs/compare/v1.12.1...v1.12.2
 [1.12.1]: https://github.com/will-roscoe/protonfs/compare/v1.12.0...v1.12.1
 [1.12.0]: https://github.com/will-roscoe/protonfs/compare/v1.11.3...v1.12.0
 [1.11.3]: https://github.com/will-roscoe/protonfs/compare/v1.11.2...v1.11.3
