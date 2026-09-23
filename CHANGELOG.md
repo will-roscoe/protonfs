@@ -8,10 +8,16 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 
 ## [Unreleased]
 
+## [1.12.3] - 2026-09-23
+
 ### Bug fixes
 
 - **push**: a file that changed locally since this machine pushed it is now re-uploaded as a new revision of its Drive file (proton-drive's `merge`), so version history keeps the earlier copy. Before, proton-drive rejected the upload as a name conflict and push reported "a different file already exists", so an appended file was never re-uploaded without `--resolve` (#144). A remote copy that changed too is still reported as a conflict
 - **push**: a remote copy whose listing reports no plaintext size is no longer indexed (or adopted) as delivered. The file is still uploaded, but reported as an `unverified` failure (exit 1) and left out of the index, so `status` never counts it as `synced` and the next push retries it. Closes the last gap where push accepted an identity that `offload` refuses (#144)
+
+### Bug fixes
+
+- **push**: re-upload a changed file as a Drive revision, and never index one the listing cannot size (#155)
 
 ## [1.12.2] - 2026-09-23
 
@@ -611,7 +617,8 @@ the preceding development history and its first tagged release:
   line-matching, git-mutation error wrapping, `pathspec` deprecation, subpath
   prune data-loss fix.
 
-[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v1.12.2...HEAD
+[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v1.12.3...HEAD
+[1.12.3]: https://github.com/will-roscoe/protonfs/compare/v1.12.2...v1.12.3
 [1.12.2]: https://github.com/will-roscoe/protonfs/compare/v1.12.1...v1.12.2
 [1.12.1]: https://github.com/will-roscoe/protonfs/compare/v1.12.0...v1.12.1
 [1.12.0]: https://github.com/will-roscoe/protonfs/compare/v1.11.3...v1.12.0
