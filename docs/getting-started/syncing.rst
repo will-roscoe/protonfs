@@ -56,35 +56,32 @@ Uploading data
 
 .. code-block:: bash
 
-   protonfs status                          # what is local-only vs synced
-   protonfs push <subpath> --resolve replace  # a subtree
-   protonfs push --resolve replace            # everything in scope that is new
+   protonfs status              # what is local-only vs synced
+   protonfs push <subpath>      # a subtree
+   protonfs push                # everything in scope that is new or changed
 
 .. important::
 
-   Prefer ``--resolve replace`` (or another strategy) over a bare ``push``. With
-   no strategy, ``proton-drive`` falls back to an interactive conflict prompt;
-   when its output is captured (which protonfs always does) or the run is
-   headless, that prompt auto-fails per file and those files are skipped — while
-   the run may still report them as transferred. A strategy makes uploads
-   non-interactive and idempotent.
+   A bare ``push`` is the normal form. A file that changed locally since this
+   machine last pushed it is sent as a **new revision** of the same Drive file
+   (Drive keeps the earlier revision in its version history), provided the remote
+   copy is still the one this machine recorded. A file that changed on *both* sides
+   is reported as a conflict instead, and only then is ``--resolve`` needed.
+
+   ``--resolve local`` (``replace``) moves the existing remote file to the trash
+   and uploads a new one in its place, rather than adding a revision. Use it for a
+   genuine conflict you want settled in favour of the local copy, not as a default.
 
 Verifying an upload
 -------------------
 
-``proton-drive`` can under-deliver silently, so confirm the delivered count
-against local before relying on an upload (for example, before deleting local
-copies to reclaim space):
-
-.. code-block:: bash
-
-   eval "$(protonfs shell-init)"     # put proton-drive on PATH with the keyring env
-   remote=$(proton-drive filesystem list <remote-root>/<subpath> --json \
-            | grep -c '"type":"file"')
-   local=$(find <subpath> -type f | wc -l)
-   echo "remote=$remote local=$local"
-   # if short, re-push (replace makes it idempotent):
-   protonfs push <subpath> --resolve replace
+``proton-drive`` can report a file as transferred when it never landed, so push
+re-lists every directory it uploads into and only records a file once the remote
+copy's plaintext size matches the local one. A file that fails that check is
+reported (``under-delivered``, or ``unverified`` when the listing carries no size
+at all), left unrecorded, and retried by the next ``push``. The exit code is ``1``
+whenever any file was not verified; with ``-v``, compare the planned count on the
+``uploading files=N`` line with ``transferred=`` on the summary line.
 
 Removing files
 --------------
@@ -117,7 +114,7 @@ The standard loop on any client:
    protonfs refresh                  # reconcile local index with Drive
                                      #   (--prune drops entries for files deleted on Drive)
    protonfs status                   # local-only / remote-only / synced / conflict
-   protonfs push --resolve replace   # send local-only up
+   protonfs push                     # send local-only and locally-changed files up
    protonfs pull --refresh           # bring remote-only down (if this machine wants them)
 
 Resolving a divergence on pull

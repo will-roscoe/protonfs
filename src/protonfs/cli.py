@@ -596,10 +596,12 @@ def ls(
     "--resolve",
     type=click.Choice(["remote", "local", "both", "merge", "keep-both", "replace", "skip"]),
     help="How to reconcile a file that changed on BOTH sides since the last sync: "
-    "remote=keep the remote copy (skip the upload), local=overwrite the remote with "
-    "your local copy, both=upload your local copy alongside the remote. The proton-drive "
-    "strategy names merge|keep-both|replace|skip are also accepted (replace=local, "
-    "skip=remote, keep-both=both).",
+    "remote=keep the remote copy (skip the upload), local=replace the remote with "
+    "your local copy (the existing remote file is moved to the trash), both=upload your "
+    "local copy alongside the remote. A file changed only locally needs none of these: "
+    "it is uploaded as a new revision of the remote file. The proton-drive strategy "
+    "names merge|keep-both|replace|skip are also accepted (replace=local, skip=remote, "
+    "keep-both=both; merge adds a revision regardless of what the remote holds).",
 )
 @click.option(
     "--dry-run",

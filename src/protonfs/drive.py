@@ -300,10 +300,11 @@ def _warn_if_verification_degraded(
     """Warn (once per process) when a non-empty listing carries no plaintext metadata.
 
     Every local-vs-remote comparison routes through ``claimedSize``/``claimedDigests.sha1``.
-    When neither reaches us, both guards in push's ``_verify_remote`` are skipped and
-    "verified on the remote" silently weakens to "a file of this name exists" -- so a
-    truncated or wrong remote object passes (#137). That is a materially weaker guarantee
-    than the docs describe, and it must not be silent.
+    When neither reaches us, nothing in the listing can be verified: push reports such
+    files as unverified and does not index them (#144), and offload refuses to delete
+    them. Before #144 push instead passed them on name presence alone (#137). Either way
+    the cause must not be silent, so this says once where it comes from; push reports
+    the affected files individually.
 
     Historically this fired because the fields were read from the wrong level of the
     entry (#147) rather than because proton-drive withheld them, so the message points at
@@ -327,9 +328,10 @@ def _warn_if_verification_degraded(
     version = describe_version()
     logger.warning(
         "no claimedSize/claimedDigests on any entry of this listing (proton-drive %s), "
-        "so remote verification is by NAME PRESENCE ONLY -- a wrong or truncated remote "
-        "copy cannot be detected. This is usually a listing shape protonfs does not yet "
-        "parse rather than a missing capability, so please report it with the output of "
+        "so no remote copy in it can be verified: push will report those files as "
+        "unverified and leave them unindexed, and offload will not delete them. This is "
+        "usually a listing shape protonfs does not yet parse rather than a missing "
+        "capability, so please report it with the output of "
         "`proton-drive filesystem list <path> --json`.",
         version or "unknown version",
     )

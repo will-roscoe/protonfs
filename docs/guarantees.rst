@@ -101,6 +101,17 @@ unindexed and reported as a distinct ``under-delivered`` failure (not a
 conflict) — the fix is a plain retry on the next push, not a ``--resolve``
 strategy.
 
+A file this machine pushed before and has since changed locally is uploaded as a
+**new revision** of its existing Drive node (``proton-drive``'s ``merge``
+strategy), so Drive's version history keeps the copy it supersedes. Without a
+strategy ``proton-drive`` rejects any upload onto an existing name, so this is
+what makes a re-push of a changed file possible at all. It is only chosen when
+the remote copy is not provably different from what the index recorded (its
+plaintext size and sha1 do not disagree with the entry); a remote copy that
+changed too is a real conflict and is reported as one, never buried under a new
+revision. A path this machine never held locally (a ``metadata-only`` entry) is
+never treated as a revision of the remote file.
+
 A remote copy whose listing carries **no** plaintext ``claimedSize`` proves only
 that a file of that name exists, so it is never accepted as verification. The
 upload still happens, but the file is reported as an ``unverified`` failure (push

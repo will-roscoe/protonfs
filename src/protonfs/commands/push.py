@@ -28,6 +28,17 @@ logger = logging.getLogger(__name__)
 #   both   -> keep-both (upload our local copy alongside the remote)
 _RESOLVE_TO_STRATEGY = {"local": "replace", "remote": "skip", "both": "keep-both"}
 
+# #144: proton-drive's upload conflict strategies, as implemented by cli-drive@0.5.0:
+#   merge     -> uploads a NEW REVISION of the existing file node (its version history
+#                keeps every earlier revision)
+#   replace   -> TRASHES the existing node and uploads a fresh one in its place
+#   keep-both -> uploads under a free alternative name
+#   skip      -> leaves the existing node alone
+# With --json (which protonfs always passes) and no strategy, an existing name fails the
+# upload as a name conflict. So re-pushing a file that changed locally needs `merge`, and
+# push picks it automatically when the change is provably this device's alone.
+REVISION_STRATEGY = "merge"
+
 # #22: proton-drive can report a file as transferred that never lands on the remote.
 # Files that fail post-upload verification are tagged with this on their failure entry so
 # the CLI can tell them apart from genuine conflicts (the remedy is a plain retry, not
@@ -120,6 +131,49 @@ def _verify_remote(ident, entry, *, strict_sha1: bool) -> _Verdict:
     if ident.claimed_size != entry.size:
         return _Verdict.REFUTED
     return _Verdict.VERIFIED
+
+
+def _revision_rels(ctx: RepoContext, rels: list[str], remote_parent: str) -> set[str]:
+    """The files in ``rels`` to upload as a new revision of their existing remote node.
+
+    A file qualifies when this device indexed its content before (``local_state`` is
+    ``present`` with a recorded sha256, at this same remote path) and the remote copy is
+    not provably different from that record. The file is in ``rels`` only because its
+    local content changed, so the change is ours: uploading it as a revision keeps the
+    node, and Drive's version history keeps the copy it replaces.
+
+    A remote copy that is provably different -- its plaintext size or sha1 disagrees with
+    the index -- changed on the remote as well. That is a real conflict and takes the
+    ordinary path, where it surfaces as one. A remote copy whose listing carries no size
+    or digest is not provably different, and a revision destroys nothing, so it is sent;
+    it is then reported unverified by the post-upload check rather than indexed.
+
+    Lists ``remote_parent`` only when at least one file in ``rels`` is indexed.
+    """
+    indexed = {}
+    for rel in rels:
+        entry = ctx.index.get(rel)
+        if (
+            entry is not None
+            and entry.local_state == "present"
+            and entry.sha256
+            and entry.remote_path == f"{remote_parent}/{Path(rel).name}"
+        ):
+            indexed[rel] = entry
+    if not indexed:
+        return set()
+    identities = ctx.drive.remote_identities(remote_parent)
+    revisions = set()
+    for rel, entry in indexed.items():
+        ident = identities.get(Path(rel).name)
+        if ident is None:
+            continue  # nothing of that name remains: an ordinary upload recreates it
+        if ident.claimed_size is not None and ident.claimed_size != entry.size:
+            continue
+        if ident.sha1 and entry.sha1 and ident.sha1 != entry.sha1:
+            continue
+        revisions.add(rel)
+    return revisions
 
 
 # Proton Drive's true root only holds special areas; user files must live under one of these
@@ -216,11 +270,14 @@ def push(
        A name conflict for a file that is absent from the remote listing is now reported
        as a distinct "phantom" failure rather than as a different-file conflict (#138).
 
-    .. versionchanged:: 1.12.2
-       A remote copy whose listing reports no plaintext size is no longer accepted as
-       verified. The file is still uploaded, but reported as an ``unverified`` failure
-       and not indexed (nor adopted), so ``status`` does not count it and the next push
-       retries it (#144).
+    .. versionchanged:: 1.12.3
+       A file that changed locally since this device indexed it is uploaded as a new
+       revision of its remote node (``merge``) when the remote copy is not provably
+       different from the index; before, proton-drive rejected it as a name conflict
+       and it was never re-uploaded without ``--resolve`` (#144). A remote copy whose
+       listing reports no plaintext size is no longer accepted as verified: the file
+       is still uploaded, but reported as an ``unverified`` failure and not indexed
+       (nor adopted), so ``status`` does not count it and the next push retries it.
 
     .. seealso:: :func:`protonfs.commands.pull.pull` for the download direction.
     """
@@ -310,9 +367,21 @@ def push(
         # under-delivery rather than a conflict when they fail -- "we could not confirm
         # this" is what actually happened, and it must not read as "the remote differs".
         unattributed_rels: set[str] = set()
-        for batch in batches(rels, batch_size):
+        # #144: a changed file this device uploaded before is a new revision of that node,
+        # not a new file -- see _revision_rels. Only when the user chose no strategy.
+        revision_rels = (
+            _revision_rels(ctx, rels, remote_parent) if strategy is None else set()
+        )
+        jobs = [
+            (batch, strategy)
+            for batch in batches([r for r in rels if r not in revision_rels], batch_size)
+        ] + [
+            (batch, REVISION_STRATEGY)
+            for batch in batches([r for r in rels if r in revision_rels], batch_size)
+        ]
+        for batch, batch_strategy in jobs:
             local_paths = [ctx.root / rel for rel in batch]
-            result = ctx.drive.upload(local_paths, remote_parent, file_strategy=strategy)
+            result = ctx.drive.upload(local_paths, remote_parent, file_strategy=batch_strategy)
             total.skipped_items += result.skipped_items
             done += len(batch)
             reporter.progress(done, len(to_push))

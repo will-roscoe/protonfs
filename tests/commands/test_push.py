@@ -341,8 +341,64 @@ def test_push_reuploads_a_file_appended_to_after_its_first_push(
     result = push(ctx, None, resolve=None, dry_run=False)
 
     assert result.transferred_items == 1
+    assert result.failed_items == 0
     assert fake.remote_identities("/my-files/test")["grow.txt"].claimed_size == len(appended)
     assert ctx.index.get("grow.txt").size == len(appended)
+    # Sent as a new revision of the same node, so Drive's version history keeps the
+    # earlier copy; not a replacement, which would trash the node and its history.
+    assert fake.upload_calls[1][2] == "merge"
+    assert fake.revisions["/my-files/test/grow.txt"] == 2
+    assert fake.trashed == []
+
+
+def test_push_does_not_stack_a_revision_on_a_remote_copy_that_changed_too(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    # Both sides moved since the last sync: another host pushed different content. That is
+    # a real conflict and must surface as one, not be buried under our own revision.
+    (tmp_path / "f.txt").write_bytes(b"ours v1")
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    fake = make_fake_drive()
+    ctx.drive = fake
+    push(ctx, None, resolve=None, dry_run=False)
+
+    fake._remote_files["/my-files/test"]["f.txt"] = 99  # their change
+    fake._remote_sha1["/my-files/test"]["f.txt"] = "f" * 40
+    (tmp_path / "f.txt").write_bytes(b"ours v2")
+    result = push(ctx, None, resolve=None, dry_run=False)
+
+    assert all(call[2] is None for call in fake.upload_calls)  # never merged
+    assert fake.revisions["/my-files/test/f.txt"] == 1
+    assert result.failures[0]["kind"] == CONFLICT_KIND
+    assert ctx.index.get("f.txt").size == len(b"ours v1")
+
+
+def test_push_does_not_send_a_revision_for_a_path_this_device_never_held(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    # A metadata-only entry (seeded by refresh, never materialised here) says nothing
+    # about which copy is newer, so a local file appearing at that path is not assumed
+    # to be a revision of the remote one.
+    from protonfs.index import IndexEntry
+
+    (tmp_path / "f.txt").write_bytes(b"local")
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    fake = make_fake_drive()
+    fake._remote_files["/my-files/test"] = {"f.txt": 6}
+    ctx.index.set(
+        "f.txt",
+        IndexEntry(
+            size=6, mtime=0.0, sha256="", sha1="", remote_path="/my-files/test/f.txt",
+            origin_device="other", local_state="metadata-only", last_synced="",
+        ),
+    )
+    ctx.drive = fake
+
+    push(ctx, None, resolve=None, dry_run=False)
+
+    assert all(call[2] is None for call in fake.upload_calls)
 
 
 def test_push_never_records_synced_while_the_remote_holds_the_older_copy(
@@ -425,7 +481,9 @@ def test_push_keeps_the_previous_entry_when_a_changed_file_cannot_be_verified(
     fake.report_claimed_size = False
     result = push(ctx, None, resolve=None, dry_run=False)
 
-    assert len(fake.upload_calls) == 2  # the append was still sent
+    assert len(fake.upload_calls) == 2
+    assert fake.upload_calls[1][2] == "merge"  # the append was still sent, as a revision
+    assert fake.revisions["/my-files/test/grow.txt"] == 2
     assert result.transferred_items == 0
     assert result.failures[0]["kind"] == UNVERIFIED_KIND
     assert ctx.index.get("grow.txt").size == len(first)
@@ -436,6 +494,8 @@ def test_push_keeps_the_previous_entry_when_a_changed_file_cannot_be_verified(
 def test_push_retries_an_unverified_file_and_indexes_it_once_the_listing_sizes_it(
     tmp_path: Path, make_fake_drive
 ) -> None:
+    # The retry finds the first upload already on Drive (a name conflict), and adopts it
+    # once the listing can confirm it is this content.
     (tmp_path / "dump_0001").write_bytes(b"data")
     init_config(tmp_path, "/my-files/test")
     ctx = load_context(tmp_path)
@@ -449,7 +509,7 @@ def test_push_retries_an_unverified_file_and_indexes_it_once_the_listing_sizes_i
     result = push(ctx, None, resolve=None, dry_run=False)
 
     assert len(fake.upload_calls) == 2  # retried, not left behind
-    assert result.transferred_items == 1
+    assert result.adopted_items == 1
     assert result.failed_items == 0
     assert ctx.index.get("dump_0001").size == 4
 
