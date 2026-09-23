@@ -172,7 +172,8 @@ def test_reinstall_same_id_is_idempotent(repo: Path, monkeypatch) -> None:
     # force a deterministic id so we can re-install it
     monkeypatch.setattr("protonfs.commands.schedule._new_id", lambda existing: "aaa111")
     sched.add_job(repo, every="daily", runner=cron)
-    sched.add_job(repo, every="hourly", runner=cron)  # same id -> replaces the line
+    # same id -> replaces the line (a different scope, so it is not a refused duplicate)
+    sched.add_job(repo, every="hourly", path="run1", runner=cron)
     lines = [ln for ln in cron.text.splitlines() if "aaa111" in ln]
     assert len(lines) == 1
     assert lines[0].startswith("0 * * * *")  # the hourly re-install won
@@ -193,7 +194,7 @@ def test_remove_job_by_id_cleans_up(repo: Path) -> None:
 def test_remove_job_by_index(repo: Path) -> None:
     cron = FakeCrontab()
     j1 = sched.add_job(repo, every="daily", runner=cron, now="2026-01-01T00:00:00Z")
-    sched.add_job(repo, every="hourly", runner=cron, now="2026-01-02T00:00:00Z")
+    sched.add_job(repo, every="hourly", path="run2", runner=cron, now="2026-01-02T00:00:00Z")
 
     removed = sched.remove_job(repo, "1", runner=cron)  # 1-based index -> first job
 
@@ -211,7 +212,7 @@ def test_remove_unknown_id_errors(repo: Path) -> None:
 def test_remove_all(repo: Path) -> None:
     cron = FakeCrontab()
     sched.add_job(repo, every="daily", runner=cron, now="2026-01-01T00:00:00Z")
-    sched.add_job(repo, every="hourly", runner=cron, now="2026-01-02T00:00:00Z")
+    sched.add_job(repo, every="hourly", path="run2", runner=cron, now="2026-01-02T00:00:00Z")
 
     removed = sched.remove_all(repo, runner=cron)
 
@@ -349,6 +350,286 @@ def test_cli_schedule_uninstall_all(cli_repo: Path) -> None:
 
     runner = CliRunner()
     runner.invoke(main, ["schedule", "--add", "--every", "hourly"])
-    runner.invoke(main, ["schedule", "--add", "--cron", "0 2 * * *"])
+    runner.invoke(main, ["schedule", "--add", "--cron", "0 2 * * *", "--command", "pull",
+                         "--path", "other"])
     out = runner.invoke(main, ["schedule", "--all"])
     assert out.exit_code == 0 and "removed 2" in out.output
+
+
+# --- #158: offload and prune jobs --------------------------------------------------------
+
+
+def test_offload_job_pushes_its_scope_then_offloads_it(repo: Path) -> None:
+    job = sched.add_job(
+        repo, every="daily", command="offload", path="mload*", min_age="12h",
+        resolve="local", runner=FakeCrontab(),
+    )
+    text = Path(job.wrapper_path).read_text()
+
+    push_line = next(ln for ln in text.splitlines() if "-v push" in ln)
+    offload_line = next(ln for ln in text.splitlines() if "-v offload" in ln)
+    assert text.index(push_line) < text.index(offload_line)
+    assert '"mload*"' in push_line and "--resolve=local" in push_line
+    assert "--min-age" not in push_line  # push takes no retention options
+    assert '"mload*"' in offload_line and "--yes" in offload_line
+    assert "--min-age=12h" in offload_line and "--resolve" not in offload_line
+
+
+def test_prune_job_runs_prune_with_its_retention_options(repo: Path) -> None:
+    job = sched.add_job(
+        repo, every="daily", command="prune", path="sim", min_age="2d", keep=5,
+        runner=FakeCrontab(),
+    )
+    text = Path(job.wrapper_path).read_text()
+
+    assert '-v prune --yes "sim" --min-age=2d --keep=5' in text
+    assert "-v push" not in text  # prune pushes first itself
+    assert (job.min_age, job.keep) == ("2d", 5)
+
+
+def test_prune_job_without_options_uses_the_commands_defaults(repo: Path) -> None:
+    job = sched.add_job(repo, every="daily", command="prune", runner=FakeCrontab())
+    text = Path(job.wrapper_path).read_text()
+
+    assert "-v prune --yes || rc=$?" in text
+    assert "--keep" not in text and "--min-age" not in text
+
+
+@pytest.mark.parametrize(
+    "command,kwargs,message",
+    [
+        ("push", {"min_age": "1d"}, "--min-age applies to offload and prune"),
+        ("offload", {"keep": 3}, "--keep applies to prune jobs only"),
+        ("prune", {"min_age": "12"}, "invalid duration"),
+        ("prune", {"keep": -1}, "--keep must be 0 or more"),
+        ("prune", {"resolve": "local"}, "a prune job does not take them"),
+        ("prune", {"strict": True}, "a prune job does not take them"),
+    ],
+)
+def test_add_job_refuses_options_the_command_would_ignore(
+    repo: Path, command: str, kwargs: dict, message: str
+) -> None:
+    with pytest.raises(sched.ScheduleError, match=message):
+        sched.add_job(repo, every="daily", command=command, runner=FakeCrontab(), **kwargs)
+    assert sched.list_jobs(repo) == []
+
+
+def test_job_from_a_manifest_predating_retention_options_still_loads(repo: Path) -> None:
+    import json
+
+    job = sched.add_job(repo, every="daily", runner=FakeCrontab())
+    manifest_path = repo / ".protonfs" / sched.MANIFEST_FILE_NAME
+    document = json.loads(manifest_path.read_text())
+    del document["jobs"][job.id]["min_age"]
+    del document["jobs"][job.id]["keep"]
+    manifest_path.write_text(json.dumps(document))
+
+    loaded = sched.list_jobs(repo)[0]
+    assert (loaded.min_age, loaded.keep) == (None, None)
+
+
+# --- #158: one job at a time per repo ------------------------------------------------------
+
+
+def test_every_wrapper_shares_the_repo_lock_and_keeps_its_own(repo: Path) -> None:
+    cron = FakeCrontab()
+    a = sched.add_job(repo, every="daily", command="push", path="a", runner=cron)
+    b = sched.add_job(repo, every="daily", command="prune", path="b", runner=cron)
+    shared = str(repo / ".protonfs" / "schedule" / sched.ROOT_LOCK_NAME)
+
+    for job in (a, b):
+        text = Path(job.wrapper_path).read_text()
+        assert "flock -n 9" in text  # never overlaps itself
+        assert f"flock -w {sched.ROOT_LOCK_WAIT_SECONDS} 8" in text  # takes turns
+        assert f'8>"{shared}"' in text
+        assert f'9>"{repo / ".protonfs" / "schedule" / job.id}.lock"' in text
+
+
+def _fake_protonfs(tmp_path: Path) -> Path:
+    """A stand-in `protonfs` that logs when each invocation starts and ends."""
+    events = tmp_path / "events.log"
+    script = tmp_path / "bin" / "protonfs"
+    script.parent.mkdir()
+    script.write_text(
+        "#!/bin/bash\n"
+        f'echo "start $$ $*" >> "{events}"\n'
+        "sleep 0.5\n"
+        f'echo "end $$ $*" >> "{events}"\n'
+    )
+    script.chmod(0o755)
+    return script
+
+
+@pytest.mark.skipif(
+    __import__("shutil").which("flock") is None, reason="needs util-linux flock"
+)
+def test_two_jobs_on_one_repo_never_run_at_the_same_time(repo: Path, tmp_path: Path) -> None:
+    # Real wrappers, run concurrently: the second waits for the first instead of both
+    # running (and one failing on protonfs's own repo lock).
+    fake = _fake_protonfs(tmp_path)
+    cron = FakeCrontab()
+    first = sched.add_job(
+        repo, every="daily", command="push", path="a", protonfs_bin=str(fake), runner=cron
+    )
+    second = sched.add_job(
+        repo, every="daily", command="prune", path="b", protonfs_bin=str(fake), runner=cron
+    )
+
+    procs = [subprocess.Popen(["bash", j.wrapper_path]) for j in (first, second)]
+    for proc in procs:
+        assert proc.wait(timeout=30) == 0
+
+    events = (tmp_path / "events.log").read_text().split("\n")
+    kinds = [line.split(" ", 1)[0] for line in events if line]
+    assert kinds == ["start", "end", "start", "end"]  # strictly one after the other
+
+
+@pytest.mark.skipif(
+    __import__("shutil").which("flock") is None, reason="needs util-linux flock"
+)
+def test_a_wrapper_propagates_a_failing_command_into_its_log(
+    repo: Path, tmp_path: Path
+) -> None:
+    failing = tmp_path / "protonfs-fail"
+    failing.write_text("#!/bin/bash\nexit 3\n")
+    failing.chmod(0o755)
+    job = sched.add_job(
+        repo, every="daily", command="offload", protonfs_bin=str(failing), runner=FakeCrontab()
+    )
+
+    subprocess.run(["bash", job.wrapper_path], check=False, timeout=30)
+
+    assert "end rc=3" in Path(job.log_path).read_text()
+
+
+# --- #158: conflict checks (pure) ------------------------------------------------------------
+
+
+def _job(command: str, path: str | None = None, job_id: str = "old001") -> sched.ScheduledJob:
+    return sched.ScheduledJob(
+        id=job_id, cron="0 0 * * *", command=command, path=path, resolve=None, repo="/r",
+        list_timeout=1, transfer_timeout=1, batch_size=1, label="", created_at="t",
+        log_path="/l",
+    )
+
+
+@pytest.mark.parametrize(
+    "a,b,expected",
+    [
+        (None, None, "identical"),
+        (None, "run1", "overlap"),
+        ("./run1/", "run1", "identical"),
+        ("run1", "run1/x.ev", "overlap"),
+        ("run1", "run10", "disjoint"),
+        ("mload*", "mload004", "overlap"),
+        ("mload*", "other*", "disjoint"),
+        ("mload*/*.ev", "mload*/*.sink", "disjoint"),
+        ("mload*/*.ev", "mload004/run.ev", "overlap"),
+        ("mload*", "mload00*", "overlap"),
+        ("a/**", "b", "overlap"),  # ** can span segments: treated as overlapping
+        ("*.ev", "run*", "overlap"),
+    ],
+)
+def test_scope_relation(a, b, expected: str) -> None:
+    assert sched.scope_relation(a, b) == expected
+    assert sched.scope_relation(b, a) == expected
+
+
+@pytest.mark.parametrize(
+    "new,new_path,old,old_path,level,needle",
+    [
+        # duplicates
+        ("push", None, "push", None, "error", "already runs `push`"),
+        ("prune", "sim", "prune", "sim/", "error", "already runs `prune`"),
+        # push alongside offload/prune: those push first already
+        ("push", "sim", "offload", "sim", "error", "schedule `offload` alone"),
+        ("prune", None, "push", "sim", "error", "schedule `prune` alone"),
+        # push + pull: identical is an error, overlap a warning, both point at sync
+        ("pull", "sim", "push", "sim", "error", "--command sync"),
+        ("pull", "sim/run1", "push", "sim", "warning", "--command sync"),
+        ("sync", "sim", "push", "sim", "error", "keep just that one"),
+        # offload/prune + pull/sync: one removes what the other restores
+        ("pull", "sim", "offload", "sim/*", "error", "fight each other"),
+        ("prune", "sim", "sync", None, "error", "fight each other"),
+        # offload + prune
+        ("offload", "sim", "prune", "sim", "error", "offload would remove the newest"),
+        # same command, overlapping scopes
+        ("push", "sim/run1", "push", "sim", "warning", "repeat each other's work"),
+    ],
+)
+def test_check_conflicts_rules(new, new_path, old, old_path, level, needle) -> None:
+    conflicts = sched.check_conflicts(new, new_path, [_job(old, old_path)])
+
+    assert [c.level for c in conflicts] == [level]
+    assert needle in conflicts[0].message
+    assert conflicts[0].job_id == "old001"
+
+
+@pytest.mark.parametrize(
+    "new,new_path,old,old_path",
+    [
+        ("push", "a", "pull", "b"),  # disjoint scopes never conflict
+        ("prune", "mload*", "pull", "other*"),
+        ("pull", "a", "pull", "b"),
+    ],
+)
+def test_check_conflicts_ignores_disjoint_scopes(new, new_path, old, old_path) -> None:
+    assert sched.check_conflicts(new, new_path, [_job(old, old_path)]) == []
+
+
+def test_check_conflicts_reports_each_clashing_job() -> None:
+    existing = [_job("push", "sim", "aaa"), _job("pull", "other", "bbb"),
+                _job("pull", "sim/x", "ccc")]
+
+    conflicts = sched.check_conflicts("offload", "sim", existing)
+
+    assert [(c.job_id, c.level) for c in conflicts] == [("aaa", "error"), ("ccc", "error")]
+
+
+def test_add_job_refuses_an_error_conflict_and_installs_nothing(repo: Path) -> None:
+    cron = FakeCrontab()
+    sched.add_job(repo, every="daily", command="pull", path="sim", runner=cron)
+    before = cron.text
+
+    with pytest.raises(sched.ScheduleError, match="refusing to add this job"):
+        sched.add_job(repo, every="daily", command="prune", path="sim", runner=cron)
+
+    assert cron.text == before
+    assert len(sched.list_jobs(repo)) == 1
+
+
+def test_add_job_reports_a_warning_and_still_installs(repo: Path) -> None:
+    warnings: list[str] = []
+    sched.add_job(repo, every="daily", command="push", path="sim", runner=FakeCrontab())
+
+    sched.add_job(
+        repo, every="daily", command="pull", path="sim/run1", runner=FakeCrontab(),
+        warn=warnings.append,
+    )
+
+    assert len(sched.list_jobs(repo)) == 2
+    assert len(warnings) == 1 and "sync" in warnings[0]
+
+
+def test_cli_schedule_conflict_is_a_usage_error_and_a_warning_goes_to_stderr(
+    cli_repo: Path,
+) -> None:
+    from click.testing import CliRunner
+
+    from protonfs.cli import main
+
+    runner = CliRunner()
+    base = ["schedule", "--add", "--every", "daily"]
+    assert runner.invoke(main, [*base, "--command", "push", "--path", "sim"]).exit_code == 0
+
+    refused = runner.invoke(main, [*base, "--command", "offload", "--path", "sim"])
+    warned = runner.invoke(main, [*base, "--command", "pull", "--path", "sim/run1"])
+    prune = runner.invoke(
+        main, [*base, "--command", "prune", "--path", "other", "--keep", "3", "--min-age", "6h"]
+    )
+
+    assert refused.exit_code == 2 and "schedule `offload` alone" in refused.output
+    assert warned.exit_code == 0 and "warning:" in warned.output
+    assert prune.exit_code == 0, prune.output
+    listed = runner.invoke(main, ["schedule", "--list", "--json"]).output
+    assert '"keep": 3' in listed and '"min_age": "6h"' in listed

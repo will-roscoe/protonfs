@@ -160,6 +160,19 @@ It is held to these rules (``src/protonfs/manifest.py``):
   manifest failure never fails the ``push``/``rm`` that triggered it: it is
   reported as a warning, and the command's own result stands.
 
+Settle window: nothing still being written is deleted
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+A file can still be in use when no process holds it open, so ``offload`` (and
+``prune``, which deletes only through it) never removes a file whose local
+modification time is within ``--min-age`` (default one day) of the run
+(``src/protonfs/commands/offload.py``, ``src/protonfs/retention.py``). This check
+comes before every other one. A file that was pushed while it was still inside
+that window is re-verified against the live listing before deletion, even under
+``--no-verify``, because the record written at push time described a file that
+was still changing. ``prune`` additionally keeps the newest ``--keep`` files of
+each directory whatever their age, and it can only narrow the set ``offload``
+considers, never widen it.
+
 Git-LFS pointer-stub protection
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 A repo migrated off git-LFS can still contain un-smudged pointer stubs (tiny

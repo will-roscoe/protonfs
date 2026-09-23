@@ -630,6 +630,58 @@ Examples::
     protonfs offload subdir/                  # prompts for confirmation
     protonfs offload --dry-run
     protonfs offload --yes --no-verify         # unsafe: trust the index alone
+    protonfs offload --min-age 12h sim/        # settle window of 12 hours
+
+Settle window
+~~~~~~~~~~~~~
+.. versionadded:: 2.2.0
+
+A file can still be in use when no process holds it open. A simulation writes a
+dump, closes it, and may keep appending to its time series for days. So ``offload``
+never removes a file modified more recently than ``--min-age`` (default ``1d``;
+``0`` disables the window). Such files are reported as ``skipped_unsettled``,
+whatever the remote holds. The age is measured from the file's local modification
+time when offload runs.
+
+A file that was *pushed* while it was still inside the window is re-verified against
+the live listing before deletion, even under ``--no-verify``. The index entry
+written at push time described a file that was still changing, so the index alone
+is not trusted for it. "Pushed inside the window" means the entry's ``last_synced``
+time is less than ``--min-age`` after the file's recorded ``mtime``; an entry whose
+timestamp cannot be read counts as inside the window.
+
+.. _cmd-prune:
+
+prune
+-----
+.. click:: protonfs.cli:prune
+   :prog: protonfs prune
+
+.. versionadded:: 2.2.0
+
+A retention policy for freeing local disk, built on :ref:`offload <cmd-offload>`:
+
+#. **Push first** (unless ``--no-push``), so new files are on Drive before
+   anything is considered.
+#. **Choose candidates.** A *tracked* file is one the index records as held
+   locally, that is not excluded by ``.protonfs/ignore``/``include``, and that lies
+   within ``PATH``. Tracked files are grouped by their immediate parent directory.
+   In each directory the ``--keep`` most recently modified files (by local
+   modification time; ties broken by path) stay local, and any *other* file that
+   has not been modified for ``--min-age`` becomes a candidate. A file must be
+   released by **both** rules.
+#. **Offload the candidates**, with offload's live verification and all of its
+   guards. prune can only narrow what offload considers, never widen it: a file that
+   is not confirmed on Drive, has changed since its last push, or is not yet
+   settled is refused and reported.
+
+The repo lock is held for the whole run, so a prune can never overlap a push.
+
+Examples::
+
+    protonfs prune sim/ --keep 10 --min-age 1d   # the defaults, spelled out
+    protonfs prune --dry-run                      # what would be offloaded
+    protonfs prune 'mload*' --keep 3 --no-push
 
 .. _cmd-rm:
 
@@ -868,8 +920,9 @@ schedule
 .. click:: protonfs.cli:schedule
    :prog: protonfs schedule
 
-Installs, lists, and removes cron jobs that run :ref:`push <cmd-push>`/
-:ref:`pull <cmd-pull>` on a schedule. Bare ``protonfs schedule`` lists this machine's
+Installs, lists, and removes cron jobs that run :ref:`push <cmd-push>`,
+:ref:`pull <cmd-pull>`, both (``sync``), :ref:`offload <cmd-offload>` or
+:ref:`prune <cmd-prune>` on a schedule. Bare ``protonfs schedule`` lists this machine's
 jobs (it never installs implicitly); ``--add`` with a cadence
 (``--every hourly|daily|weekly|<N>h|<N>m``, or a raw ``--cron`` expression, or
 ``--at`` hours) installs one and prints a short id; ``--uninstall <id>`` (``-U``, also
@@ -880,10 +933,66 @@ absolute ``proton-drive`` path (cron has no useful ``PATH``) and tuned list/tran
 timeouts, logging to ``.protonfs/schedule/<id>.log``. Jobs are recorded per-device in
 ``.protonfs/schedule.local.json`` (gitignored). ``--command sync`` runs pull then push.
 
+``--command offload`` pushes the job's scope, then offloads it. ``--command prune``
+runs ``protonfs prune``, which pushes first itself. Both pass ``--min-age`` through,
+and prune also ``--keep``; without them the commands' own defaults apply (``1d``,
+``10``). An option the command would ignore (``--keep`` on a non-prune job,
+``--min-age`` on push/pull/sync, ``--resolve``/``--strict`` on prune) is refused.
+
 .. versionadded:: 1.8.0
 
 .. versionchanged:: 1.11.0
    ``--path`` accepts a glob pattern, re-expanded on every run. Added ``--strict``.
+
+.. versionchanged:: 2.2.0
+   ``offload`` and ``prune`` jobs, ``--min-age``/``--keep``, conflict checks, and one
+   job at a time per repo.
+
+One job at a time per repo
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Every wrapper takes two locks. Its own lock (``flock -n``) means a job never
+overlaps itself: a run that finds the previous one still going logs a skip. The
+repo's shared schedule lock, ``.protonfs/schedule/repo.lock`` (``flock -w``), means
+different jobs on one repo take turns. A job waits up to 30 minutes for another to
+finish, then logs a skip and exits ``0``; its next run tries again. So a nightly
+prune can never overlap a scheduled push, and neither fails on protonfs's own
+repo lock.
+
+Conflicting jobs
+~~~~~~~~~~~~~~~~
+``--add`` compares the new job with the jobs already scheduled for the repo. Only
+jobs whose scopes overlap are compared. Two scopes overlap when one contains the
+other (``sim`` contains ``sim/run1/*.ev``) or when their patterns could match the
+same path; when unsure, protonfs assumes they overlap.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 40 15 45
+
+   * - New job vs existing job, overlapping scopes
+     - Result
+     - Why
+   * - Same command, identical scope
+     - refused
+     - a duplicate
+   * - ``push`` with ``offload`` or ``prune``
+     - refused
+     - offload and prune jobs already push their scope first; schedule them alone
+   * - ``push`` with ``pull`` (or ``sync`` with either)
+     - refused if identical, warning if overlapping
+     - opposite directions on the same files; one ``sync`` job does both, in order
+   * - ``offload``/``prune`` with ``pull``/``sync``
+     - refused
+     - one removes local copies the other brings back
+   * - ``offload`` with ``prune``
+     - refused
+     - offload would remove the newest files prune keeps
+   * - Same command, overlapping but not identical scopes
+     - warning
+     - the two repeat each other's work on the shared files
+
+A refused job is a usage error (exit ``2``) and nothing is installed. A warning is
+printed on stderr and the job is installed.
 
 Scoping a job with a pattern
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -917,6 +1026,7 @@ Examples::
     protonfs schedule --add --every daily --at 1,3,5   # nightly at 01/03/05h
     protonfs schedule --add --cron "0 */6 * * *" --command sync
     protonfs schedule --add --every daily --command pull --path 'mload*/*.ev'
+    protonfs schedule --add --every daily --command prune --path sim --keep 10 --min-age 1d
     protonfs schedule --list
     protonfs schedule --uninstall a1d3ae
     protonfs schedule --all                            # remove every job

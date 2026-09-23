@@ -155,10 +155,21 @@ flag/argument name; these names, not just their presence, are frozen.
    * - ``offload``
      - Delete local bytes of protonfs-tracked files confirmed present on Drive.
        Argument: ``PATH...`` (optional, repeatable; e.g. from a shell glob). Options: ``--no-verify``, ``--dry-run``,
-       ``--yes``.
-     - ``0`` success (files that could not be verified or have unsynced edits are
-       reported and left untouched -- this is not treated as failure); ``1`` Drive/lock
-       error or declined confirmation; ``2`` usage error.
+       ``--yes``, ``--min-age DURATION`` (added in 2.2.0; default ``1d``): a file
+       modified more recently than this is never offloaded.
+     - ``0`` success (files that could not be verified, have unsynced edits, or are
+       not yet settled are reported and left untouched -- this is not treated as
+       failure); ``1`` Drive/lock error or declined confirmation; ``2`` usage error.
+   * - ``prune``
+     - Push, then offload by a retention policy: per directory keep the newest
+       ``--keep`` tracked files, and offload any other file unmodified for
+       ``--min-age``. Every deletion goes through ``offload``. Argument: ``PATH...``
+       (optional, repeatable). Options: ``--keep N`` (default ``10``), ``--min-age
+       DURATION`` (default ``1d``), ``--no-push``, ``--dry-run``, ``--yes``. Added in
+       2.2.0.
+     - ``0`` success (files offload refuses are reported, not failed); ``1`` the
+       push that runs first failed for a file, a Drive/lock error, or a declined
+       confirmation; ``2`` usage error.
    * - ``rm``
      - Remove a file/directory from Drive (trash by default, ``-f`` for permanent).
        Argument: ``PATH...`` (one or more required). Options: ``-r``/``--recursive``,
@@ -226,14 +237,18 @@ flag/argument name; these names, not just their presence, are frozen.
      - ``0`` success; ``2`` usage error (unknown shell, or both ``--install`` and
        ``--uninstall``).
    * - ``schedule``
-     - Install/list/remove cron jobs running push/pull on a schedule. ``--add`` (with
-       ``--every``/``--cron``/``--at``, ``--command``, ``--path``, ``--resolve``,
-       ``--strict``, ``--label``); ``--uninstall <id|index>`` (``-U``),
-       ``--uninstall --all``; bare or ``--list`` lists. Added in 1.8.0. ``--path`` accepts
-       a glob pattern (re-expanded by protonfs on every run) and ``--strict`` was added in
-       1.11.0.
-     - ``0`` success; ``2`` usage error (bad cadence, unknown id, not a repo, or
-       conflicting mode flags).
+     - Install/list/remove cron jobs running protonfs on a schedule. ``--add`` (with
+       ``--every``/``--cron``/``--at``, ``--command [push|pull|sync|offload|prune]``,
+       ``--path``, ``--resolve``, ``--strict``, ``--min-age``, ``--keep``,
+       ``--label``); ``--uninstall <id|index>`` (``-U``), ``--uninstall --all``; bare or
+       ``--list`` lists. Added in 1.8.0. ``--path`` accepts a glob pattern (re-expanded
+       by protonfs on every run) and ``--strict`` was added in 1.11.0. The ``offload``
+       and ``prune`` commands, ``--min-age``/``--keep``, the job-conflict checks and
+       one-job-at-a-time per repo were added in 2.2.0.
+     - ``0`` success (including a job added with a conflict *warning*); ``2`` usage
+       error (bad cadence, unknown id, not a repo, conflicting mode flags, an option
+       the command does not take, or a job refused because it conflicts with one
+       already scheduled).
    * - ``auth login`` / ``auth logout``
      - Passthrough to ``proton-drive auth <action>`` with inherited stdio. Argument:
        ``ACTION`` (choice: ``login``/``logout``/``status``).

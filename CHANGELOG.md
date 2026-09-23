@@ -8,6 +8,12 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 
 ## [Unreleased]
 
+### Features
+
+- **offload**: a settle window. A file modified within `--min-age` (default `1d`) is never offloaded and is reported as `skipped_unsettled`; a file pushed while still inside the window is re-verified against Drive even under `--no-verify` (#158)
+- **prune**: new command, a retention policy through offload. It pushes first; then, per directory, it keeps the newest `--keep` (default 10) tracked files and offloads any other file unmodified for `--min-age`. Every deletion keeps offload's live verification and guards, and the run holds the repo lock (#158)
+- **schedule**: `offload` and `prune` jobs with `--min-age`/`--keep`. A new job that would fight an existing one on overlapping files is refused, or added with a warning; the rules are in the command help and docs. Jobs on one repo now share a lock and take turns instead of failing on the repo lock (#158)
+
 ## [2.1.0] - 2026-09-23
 
 ### Features
