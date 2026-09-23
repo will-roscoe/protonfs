@@ -44,6 +44,7 @@ EXPECTED_TOP_LEVEL_COMMANDS = frozenset(
         "auth",
         "config",
         "trash",
+        "verify",
     }
 )
 
@@ -80,6 +81,7 @@ EXPECTED_OPTIONS: dict[str, frozenset[str]] = {
     "config.set": frozenset({"--global", "--local"}),
     "trash.list": frozenset(),
     "trash.empty": frozenset({"--yes"}),
+    "verify": frozenset({"--repair"}),
 }
 
 EXPECTED_ARGUMENTS: dict[str, tuple[str, ...]] = {
@@ -104,6 +106,7 @@ EXPECTED_ARGUMENTS: dict[str, tuple[str, ...]] = {
     "config.set": ("key", "value"),
     "trash.list": (),
     "trash.empty": (),
+    "verify": (),
 }
 
 

@@ -83,10 +83,14 @@ def offload(
     # exist locally right now. This is what keeps offload from ever touching a
     # git-tracked source file, a config, or any other file the index has never
     # heard of -- those simply never make it into `candidates`.
+    from protonfs.manifest import is_control_path
+
     candidates: list[str] = []
     for rel_path, entry in ctx.index.all().items():
         if entry.local_state != "present":
             continue
+        if is_control_path(rel_path):
+            continue  # #146: protonfs's own state (an older host may have indexed it)
         if not within_subpath(rel_path, subpath):
             continue
         if ignore.matches(rel_path):

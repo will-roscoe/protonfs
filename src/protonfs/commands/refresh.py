@@ -15,6 +15,7 @@ from protonfs.diff import SyncState, classify, within_subpath
 from protonfs.ignore import IgnoreMatcher
 from protonfs.index import IndexEntry
 from protonfs.localscan import ScanEntry, scan
+from protonfs.manifest import is_control_path
 
 
 @dataclass
@@ -71,6 +72,11 @@ def refresh(
         re-listed the frontier directories, so the partial listing cannot distinguish
         a genuinely deleted remote file from one simply not re-listed yet.
 
+    .. versionchanged:: 2.1.0
+       A complete whole-root pass records the remote manifest's generation in the index,
+       as the point this index was reconciled with (#146), and never seeds anything
+       under the remote ``.protonfs/`` control directory.
+
     .. seealso:: :mod:`protonfs.refreshstate` for the resumable-frontier persistence.
     """
     from protonfs.reporting import get_reporter
@@ -99,6 +105,8 @@ def refresh(
         seeded_here = False
         for file_entry in dir_files:
             full_rel = f"{subpath}/{file_entry.rel_path}" if subpath else file_entry.rel_path
+            if is_control_path(full_rel):
+                continue  # #146: the remote manifest lives here; it is not data
             if ctx.index.get(full_rel) is None and full_rel not in local:
                 ctx.index.set(
                     full_rel,
@@ -128,6 +136,10 @@ def refresh(
     def _save_progress(frontier: list) -> None:
         if persist:
             refreshstate.save_frontier(ctx.root, remote_root, frontier)
+
+    # #146: note which manifest generation this pass reconciles against BEFORE walking, so
+    # the index never claims to be newer than what the walk actually saw.
+    manifest_seen = _manifest_before_walk(ctx) if persist and not subpath else None
 
     reporter.phase("walking remote", root=remote_root)
     entries = ctx.drive.walk(
@@ -178,6 +190,8 @@ def refresh(
                 ctx.index.remove(entry.rel_path)
                 result.pruned += 1
 
+    if manifest_seen is not None:
+        ctx.index.set_manifest_state(*manifest_seen)
     if persist:
         ctx.index.save()
     reporter.done(
@@ -187,3 +201,21 @@ def refresh(
         deleted=result.remote_deleted,
     )
     return result
+
+
+def _manifest_before_walk(ctx: RepoContext) -> tuple[int, str] | None:
+    """``(generation, revision)`` of the remote manifest, or None if this repo does not
+    maintain one, it has none, or it cannot be read. Best effort: refresh's own job (the
+    walk) never depends on it, and a repo that has not opted in pays nothing for it."""
+    from protonfs import manifest
+    from protonfs.drive import DriveError
+
+    if not manifest.maintenance_enabled(ctx):
+        return None
+    try:
+        handle = manifest.RemoteManifest.load(ctx)
+    except (manifest.ManifestError, DriveError):
+        return None
+    if handle is None:
+        return None
+    return handle.manifest.generation, handle.revision or ""

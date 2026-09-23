@@ -689,7 +689,7 @@ def test_push_interrupt_saves_progress_and_exits_130(tmp_path, monkeypatch, make
     ctx.drive = make_fake_drive()
     monkeypatch.setattr("protonfs.context.load_context", lambda *a, **k: ctx)
 
-    def fake_push_files(ctx, subpath, resolve, dry_run, reporter=None):
+    def fake_push_files(ctx, subpath, resolve, dry_run, reporter=None, **kwargs):
         # Simulate one file getting indexed, then the user interrupting mid-run.
         ctx.index.set(
             "dump_0001",

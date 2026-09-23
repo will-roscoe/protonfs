@@ -128,6 +128,38 @@ aggregate count with no per-file attribution, so each file in that batch must
 match the remote strictly (size, and sha1 where both sides have one) before it
 is indexed.
 
+Remote manifest: a cache, never an authority
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+A repo can keep a manifest of what protonfs verified on Drive at
+``<remote_root>/.protonfs/manifest.json`` (see :ref:`verify <cmd-verify>`), so a
+host can learn what is on the remote from one small download instead of a walk.
+It is held to these rules (``src/protonfs/manifest.py``):
+
+- **It lags, never leads.** An entry is written only after the upload it describes
+  was verified against a live listing (the same check as above), and an
+  unverified upload is never recorded. The manifest is only ever *created* from a
+  full listing (``verify --repair``); ``push``/``rm`` only update an existing one,
+  so it never looks complete while missing history. A crash between an upload and
+  the manifest write leaves it behind, which ``verify`` reports and
+  ``verify --repair`` fixes.
+- **It never authorises a delete.** ``offload`` keeps its own live verification
+  and never reads the manifest. Nothing under the remote or local ``.protonfs/``
+  directory is ever treated as data: not seeded by ``refresh``, not classified,
+  not offloaded.
+- **Its readers only read.** ``pull`` on an empty index seeds from it, says that
+  files it does not list are not included, and verifies every download itself, so
+  a stale entry costs a reported failure, never a silent one.
+- **Concurrent writers.** Each write checks the manifest's Drive revision first and
+  replays its changes onto a newer copy another host wrote, then confirms its own
+  revision is the active one afterwards. The proton-drive CLI has no conditional
+  write, so a narrow race can still drop another host's update from the newest
+  revision. That leaves the manifest behind, which is the direction it is
+  allowed to be wrong in, and Drive's version history keeps every revision
+  written.
+- **Maintenance is opt-in** (:confval:`defaults.manifest`, off by default) and a
+  manifest failure never fails the ``push``/``rm`` that triggered it: it is
+  reported as a warning, and the command's own result stands.
+
 Git-LFS pointer-stub protection
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 A repo migrated off git-LFS can still contain un-smudged pointer stubs (tiny

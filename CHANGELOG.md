@@ -8,6 +8,17 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 
 ## [Unreleased]
 
+### Features
+
+- **manifest**: a remote manifest per synced root, `<remote_root>/.protonfs/manifest.json`, recording every file protonfs verified on Drive (plaintext size, sha256, sha1, the uid of the verified Drive revision) with a `generation` counter. It is a cache, never an authority. It is created only from a full listing (`protonfs verify --repair`). It is kept current by `push`/`rm` when `defaults.manifest` is on (off by default) and never records an unverified upload. `offload` never reads it (#146)
+- **verify**: new command. It checks the manifest against a full remote listing (exit 1 when entries are missing from Drive or differ), reports files the manifest does not list, and says which generation this host's index was reconciled with. `--repair` rewrites the manifest to match Drive (#146)
+- **pull**: with an empty index (a fresh clone), seeds the index from the remote manifest when there is one, instead of stopping with "run refresh first", and says that files the manifest does not list are not included. In a repo that maintains a manifest, notes when another host has changed it since this index was reconciled (#146)
+- **config**: `defaults.manifest` / `PROTONFS_MANIFEST`, and `PROTONFS_NO_MANIFEST` to switch every manifest read and write off on one host (#146)
+
+### Bug fixes
+
+- **offload**, **refresh**, **status**/**ls**: nothing under `.protonfs/` is treated as data, so an older host that indexed the remote manifest cannot offload or report it (#146)
+
 ## [2.0.0] - 2026-09-23
 
 ### Upgrade notes

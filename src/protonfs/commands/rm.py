@@ -40,6 +40,7 @@ def rm(
     force: bool,
     confirmed: bool,
     reporter=None,
+    manifest_forget: list | None = None,
 ) -> None:
     """Remove ``rel_path`` from Drive: trash it (recoverable) or, with ``force``,
     permanently delete it (trash then delete).
@@ -51,8 +52,14 @@ def rm(
     :param confirmed: skip the interactive confirmation (the ``--yes`` flag).
     :param reporter: :class:`~protonfs.reporting.Reporter` to narrate progress through;
         defaults to the process reporter (:func:`~protonfs.reporting.get_reporter`).
+    :param manifest_forget: a list to append the removed path to, for the caller to drop
+        from the remote manifest once (#146); ``None`` updates the manifest here.
     :raises click.ClickException: on a directory without ``recursive``, or a Drive error
         (including a same-basename trash ambiguity that blocks a safe permanent delete).
+
+    .. versionchanged:: 2.1.0
+       Removes the path (and anything under it) from the remote manifest when the repo
+       maintains one (#146).
     """
     from protonfs.reporting import get_reporter
 
@@ -97,4 +104,11 @@ def rm(
     for indexed_rel in list(ctx.index.all()):
         if indexed_rel == rel_path or indexed_rel.startswith(rel_path + "/"):
             ctx.index.remove(indexed_rel)
+    # #146: the file is off the remote now, so the manifest must stop promising it.
+    if manifest_forget is not None:
+        manifest_forget.append(rel_path)
+    else:
+        from protonfs import manifest
+
+        manifest.update(ctx, forget=[rel_path], reporter=reporter)
     ctx.index.save()

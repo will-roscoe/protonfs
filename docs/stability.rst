@@ -148,9 +148,10 @@ flag/argument name; these names, not just their presence, are frozen.
        Options: ``--resolve [remote|local|both]`` (``replace`` accepted as an alias for
        ``remote``), ``--dry-run``, ``--refresh``, ``--strict``.
      - ``0`` all transferred/skipped (including the "index empty, run refresh first"
-       early-exit message, and a pattern that matched nothing, which is reported and
-       skipped); ``1`` one or more files failed to transfer, a pattern matched nothing
-       under ``--strict``, or a Drive/lock error; ``2`` usage error.
+       early-exit message -- which since 2.1.0 appears only when the remote has no
+       manifest to seed the index from -- and a pattern that matched nothing, which is
+       reported and skipped); ``1`` one or more files failed to transfer, a pattern
+       matched nothing under ``--strict``, or a Drive/lock error; ``2`` usage error.
    * - ``offload``
      - Delete local bytes of protonfs-tracked files confirmed present on Drive.
        Argument: ``PATH...`` (optional, repeatable; e.g. from a shell glob). Options: ``--no-verify``, ``--dry-run``,
@@ -189,6 +190,13 @@ flag/argument name; these names, not just their presence, are frozen.
      - Discover remote files and seed the local index (metadata-only). Argument:
        ``PATH`` (optional). Option: ``--prune``.
      - ``0`` success; ``1`` Drive/lock error; ``2`` usage error.
+   * - ``verify``
+     - Check the remote manifest (``<remote_root>/.protonfs/manifest.json``) against a
+       full listing of the remote; ``--repair`` rewrites it to match (and is the only
+       way one is created). Option: ``--repair``. Added in 2.1.0.
+     - ``0`` every manifest entry matches Drive, there is no manifest, or ``--repair``
+       rewrote it; ``1`` entries are missing from Drive or differ in size/sha1, the
+       manifest cannot be read or written, or a Drive/lock error; ``2`` usage error.
    * - ``install-drive``
      - Download and verify the official proton-drive CLI binary. Options:
        ``--version``, ``--skip-keyring``.
@@ -296,8 +304,9 @@ checked on Drive; the states marked *remote view* are only produced by
 
 Known keys for ``config get``/``config set``: :confval:`remote_root`,
 :confval:`device_id`, :confval:`defaults.on_conflict`, :confval:`defaults.low_io`,
-:confval:`defaults.event_log`, :confval:`defaults.progress_style`. Each is defined in
-the Configuration section of :doc:`reference/index`.
+:confval:`defaults.event_log`, :confval:`defaults.progress_style`,
+:confval:`defaults.manifest` (added in 2.1.0). Each is defined in the Configuration
+section of :doc:`reference/index`.
 
 Config files and precedence
 -----------------------------
@@ -310,6 +319,7 @@ Layered configuration, highest precedence first:
    relocates the ``~/.config`` base; ``$PROTONFS_CONFIG`` overrides the full path
    outright.
 #. Built-in defaults (``defaults.on_conflict=skip``, ``defaults.low_io=false``,
+   ``defaults.manifest=false``,
    ``defaults.event_log=false``, ``defaults.progress_style=inline``).
 
 ``config get`` always reports the fully resolved value across all four layers.
@@ -341,6 +351,12 @@ Environment variables
    * - :envvar:`PROTONFS_PROGRESS_STYLE`
      - Per-key override for the resolved :confval:`defaults.progress_style` config value
        (``inline``/``lines``).
+   * - :envvar:`PROTONFS_MANIFEST`
+     - Per-key override for the resolved :confval:`defaults.manifest` config value
+       (boolean: ``1``/``true``/``yes``/``on``). Added in 2.1.0.
+   * - :envvar:`PROTONFS_NO_MANIFEST`
+     - Set (to any truthy value) to switch every remote-manifest read and write off on
+       this host, whatever :confval:`defaults.manifest` says. Added in 2.1.0.
    * - :envvar:`PROTONFS_DRIVE_BIN`
      - Path/name of the ``proton-drive`` binary to invoke, in place of the default.
    * - :envvar:`PROTONFS_DRIVE_VERSION`

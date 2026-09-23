@@ -45,8 +45,9 @@ KNOWN_KEYS = (
     "defaults.low_io",
     "defaults.event_log",
     "defaults.progress_style",
+    "defaults.manifest",
 )
-_BOOL_KEYS = {"defaults.low_io", "defaults.event_log"}
+_BOOL_KEYS = {"defaults.low_io", "defaults.event_log", "defaults.manifest"}
 _CHOICE_KEYS = {"defaults.progress_style": ("inline", "lines")}
 
 
