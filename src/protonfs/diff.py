@@ -141,9 +141,14 @@ def classify(
        :func:`within_subpath` -- filter this result when the scan/walk that produced
        ``local``/``remote`` was itself scoped to a subpath.
     """
+    from protonfs.manifest import is_control_path
+
     known_paths = set(local) | set(index.all())
     if remote is not None:
         known_paths |= set(remote)
+    # #146: `.protonfs/` holds protonfs's own state on both sides (the remote manifest
+    # lives there). It is never data, whatever a listing or an older host's index says.
+    known_paths = {p for p in known_paths if not is_control_path(p)}
 
     results: list[DiffEntry] = []
     for rel_path in sorted(known_paths):

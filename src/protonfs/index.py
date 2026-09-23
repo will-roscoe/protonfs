@@ -120,6 +120,12 @@ class IndexStore:
 
     .. seealso:: :func:`protonfs.migrations.run_migrations` persists a stale on-disk
         index at the current schema as one of the repo-state migrations.
+
+    .. versionchanged:: 2.1.0
+       Records which remote-manifest generation the index was last reconciled with
+       (:attr:`manifest_state`), as an optional top-level ``manifest`` key. It is not a
+       schema change: an older protonfs ignores the key, and dropping it on save only
+       makes the index look stale, never current (#146).
     """
 
     def __init__(self, repo_root: Path) -> None:
@@ -130,6 +136,7 @@ class IndexStore:
         """
         self._path = repo_root / ".protonfs" / INDEX_FILE_NAME
         self._entries: dict[str, IndexEntry] = {}
+        self._manifest: dict | None = None
         self._load()
 
     def _load(self) -> None:
@@ -148,6 +155,12 @@ class IndexStore:
             )
         entries = _migrate(version, entries)
         self._entries = {rel_path: IndexEntry.from_dict(data) for rel_path, data in entries.items()}
+        manifest = raw.get("manifest") if version else None
+        if isinstance(manifest, dict) and isinstance(manifest.get("generation"), int):
+            self._manifest = {
+                "generation": manifest["generation"],
+                "revision": str(manifest.get("revision") or ""),
+            }
 
     def save(self) -> None:
         """Persist the index atomically at the current schema version.
@@ -161,6 +174,8 @@ class IndexStore:
             "schema_version": INDEX_SCHEMA_VERSION,
             "entries": {rel_path: entry.to_dict() for rel_path, entry in self._entries.items()},
         }
+        if self._manifest is not None:
+            document["manifest"] = dict(self._manifest)
         data = json.dumps(document, indent=2, sort_keys=True) + "\n"
         # Write to a temp file in the SAME directory (same filesystem, so os.replace is a
         # true atomic rename) and swap it onto the real path. A reader — or a crash — never
@@ -194,3 +209,20 @@ class IndexStore:
     def all(self) -> dict[str, IndexEntry]:
         """Return a shallow copy of the full ``{rel_path: entry}`` map."""
         return dict(self._entries)
+
+    @property
+    def manifest_state(self) -> dict | None:
+        """``{"generation": int, "revision": str}`` of the remote manifest this index was
+        last reconciled with, or ``None`` if it never was (#146).
+
+        .. versionadded:: 2.1.0
+        """
+        return dict(self._manifest) if self._manifest is not None else None
+
+    def set_manifest_state(self, generation: int, revision: str) -> None:
+        """Record the manifest generation/revision this index now reflects (in memory
+        until :meth:`save`).
+
+        .. versionadded:: 2.1.0
+        """
+        self._manifest = {"generation": int(generation), "revision": revision or ""}

@@ -148,6 +148,10 @@ class RemoteEntry:
     :ivar size: the encrypted ``totalStorageSize`` (slightly larger than plaintext).
     :ivar claimed_size: proton's decrypted ``claimedSize`` (files only), or ``None``.
     :ivar sha1: proton's plaintext ``claimedDigests.sha1`` (files only), or ``None``.
+    :ivar revision: the uid of the file's active revision (files only), or ``None``.
+
+    .. versionchanged:: 2.1.0
+       Added ``revision``.
 
     .. note:: Prefer ``claimed_size``/``sha1`` over ``size`` for any local-vs-remote
         comparison -- a local byte size matches ``claimed_size`` exactly, whereas
@@ -163,6 +167,7 @@ class RemoteEntry:
     # byte size matches `claimed_size` exactly, with no encryption-overhead tolerance.
     claimed_size: int | None = None
     sha1: str | None = None
+    revision: str | None = None
 
 
 @dataclass
@@ -174,10 +179,17 @@ class RemoteIdentity:
     ~0.008% + padding larger. Always compare local files against these claimed* fields --
     a local byte size matches `claimed_size` exactly, with no encryption-overhead tolerance.
     Either field may be None if proton-drive did not report it.
+
+    ``revision`` is the uid of the node's active revision: re-uploading a file as a new
+    revision (``-f merge``) changes it, so it identifies which copy of a path Drive holds.
+
+    .. versionchanged:: 2.1.0
+       Added ``revision``.
     """
 
     claimed_size: int | None
     sha1: str | None
+    revision: str | None = None
 
 
 def binary_path() -> str:
@@ -480,6 +492,22 @@ def claimed_identity(entry: dict) -> tuple[int | None, str | None]:
     return rev.get("claimedSize"), digests.get("sha1")
 
 
+def revision_uid(entry: dict) -> str | None:
+    """The uid of a `filesystem list` entry's active revision, or None if unreadable.
+
+    Drive keeps a version history per file: an upload with ``-f merge`` adds a revision to
+    the existing node, so this uid changes whenever the file's content does, while the
+    node itself stays put.
+
+    .. versionadded:: 2.1.0
+    """
+    rev = active_revision(entry)
+    if not rev:
+        return None
+    uid = rev.get("uid")
+    return uid if isinstance(uid, str) and uid else None
+
+
 def decrypted_name(entry: dict) -> str | None:
     """The decrypted filename of a `filesystem list` entry, or None if its name could
     not be decrypted (``name.ok`` is false). Central helper so every consumer parses
@@ -757,7 +785,9 @@ class DriveClient:
             if name is None:
                 continue
             claimed_size, sha1 = claimed_identity(entry)
-            identities[name] = RemoteIdentity(claimed_size=claimed_size, sha1=sha1)
+            identities[name] = RemoteIdentity(
+                claimed_size=claimed_size, sha1=sha1, revision=revision_uid(entry)
+            )
         # bound method, NOT called: only resolved if a warning is actually emitted
         _warn_if_verification_degraded(identities, self.drive_version)
         return identities
@@ -813,6 +843,7 @@ class DriveClient:
                         size=entry.get("totalStorageSize", 0),
                         claimed_size=claimed_size,
                         sha1=sha1,
+                        revision=revision_uid(entry),
                     )
                     results.append(file_entry)
                     dir_files.append(file_entry)

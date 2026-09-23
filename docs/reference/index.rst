@@ -244,6 +244,19 @@ contract (see :doc:`../stability`).
 
    .. versionadded:: 1.0.0
 
+.. envvar:: PROTONFS_MANIFEST
+
+   Per-key override for :confval:`defaults.manifest`.
+
+   .. versionadded:: 2.1.0
+
+.. envvar:: PROTONFS_NO_MANIFEST
+
+   Set (to any truthy value) to switch every remote-manifest read and write off on
+   this host, whatever :confval:`defaults.manifest` says.
+
+   .. versionadded:: 2.1.0
+
 .. envvar:: PROTONFS_NO_KEYRING_BOOTSTRAP
 
    Set (to any truthy value) to disable protonfs's Secret Service/keyring bootstrap
@@ -318,6 +331,17 @@ Configuration file and keys
    :envvar:`PROTONFS_PROGRESS_STYLE`.
 
    .. versionadded:: 1.3.0
+
+.. confval:: defaults.manifest
+   :type: bool
+   :default: false
+
+   Keep the remote manifest (see :ref:`verify <cmd-verify>`) current on ``push`` and
+   ``rm``. Only an existing manifest is updated; ``protonfs verify --repair`` creates
+   one. Set it in the shared ``config.json`` so every host maintains it. Overridable
+   via :envvar:`PROTONFS_MANIFEST`.
+
+   .. versionadded:: 2.1.0
 
 .. _reference-subcommands:
 
@@ -677,6 +701,71 @@ Examples::
     protonfs refresh                      # seed everything not yet known
     protonfs refresh subdir/ --prune       # scope to a subtree, drop remote-deleted entries
 
+.. versionchanged:: 2.1.0
+   When the repo maintains a remote manifest (:confval:`defaults.manifest`), a
+   complete whole-root pass records the manifest generation it reconciled against.
+   Nothing under the remote ``.protonfs/`` directory is ever seeded.
+
+.. _cmd-verify:
+
+verify
+------
+.. click:: protonfs.cli:verify
+   :prog: protonfs verify
+
+.. versionadded:: 2.1.0
+
+The **remote manifest** is one JSON object per synced root, at
+``<remote_root>/.protonfs/manifest.json``. It records every file protonfs uploaded
+(or adopted) and verified on Drive: plaintext size, sha256, sha1, and the uid of the
+Drive revision that was verified. A ``generation`` counter goes up on every write,
+and each write is uploaded as a new revision of the manifest itself, so Drive's
+version history keeps every earlier one.
+
+It is a cache, not an authority:
+
+- Entries are written only after the upload they describe was verified, so the
+  manifest can lag Drive but never runs ahead of it. A crash, or a host running an
+  older protonfs, leaves it *behind*, never ahead.
+- It is only ever **created** by ``verify --repair`` from a full listing, so it
+  starts complete. ``push`` and ``rm`` keep an existing manifest current when
+  :confval:`defaults.manifest` is on. They never start one mid-history, because
+  such a manifest would look complete while missing everything uploaded before it.
+- Nothing destructive trusts it. ``offload`` always verifies against a live listing
+  and never reads the manifest.
+- Changes made outside protonfs (the web UI, another client) are invisible to it
+  until something walks the remote. ``verify`` is that walk.
+
+``verify`` reports:
+
+- entries the manifest lists that Drive lacks, or holds at a different size or sha1
+  (faults: exit ``1``);
+- files on Drive the manifest does not list (tolerated, since the manifest may lag);
+- entries whose content matches but whose Drive revision has moved on;
+- files Drive listed without a plaintext size, which cannot be compared.
+
+It also says which manifest generation this machine's index was last reconciled
+with. ``--repair`` rewrites the manifest to match the listing. It keeps a sha256
+only where this machine's index, or the manifest itself, recorded one for exactly
+that content; otherwise the sha256 is left unknown rather than guessed. It leaves
+out any file Drive lists without a plaintext size.
+
+Readers: ``pull`` on an empty index (a fresh clone) seeds the index from the
+manifest instead of stopping with "run refresh first", and says that files the
+manifest does not list are not included. When the repo maintains a manifest,
+``pull`` also notes when the manifest has changed since this index was
+reconciled, so another host has pushed files this index may not list yet.
+
+Enabling it on an existing repo::
+
+    protonfs verify --repair                          # build it from a full listing
+    protonfs config set defaults.manifest true        # keep it current on push/rm
+    git add .protonfs/config.json && git commit -m "maintain the protonfs manifest"
+    protonfs refresh                                  # on each host: record its generation
+
+Set :envvar:`PROTONFS_NO_MANIFEST` on a host to switch every manifest read and write
+off there, whatever the repo config says.
+
 .. _cmd-install-drive:
 
 install-drive
@@ -915,7 +1004,8 @@ config
 Reads or writes protonfs's layered configuration. Known keys:
 :confval:`remote_root`, :confval:`device_id`, :confval:`defaults.on_conflict`,
 :confval:`defaults.low_io`, :confval:`defaults.event_log`,
-:confval:`defaults.progress_style` (each defined in the `Configuration`_ section above).
+:confval:`defaults.progress_style`, :confval:`defaults.manifest` (each defined in the
+`Configuration`_ section above).
 
 .. _cmd-config-get:
 

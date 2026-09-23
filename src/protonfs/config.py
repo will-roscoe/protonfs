@@ -61,6 +61,7 @@ _ENV_DEFAULTS_OVERRIDES = {
     "event_log": "PROTONFS_EVENT_LOG",
     "progress_style": "PROTONFS_PROGRESS_STYLE",
     "batch_size": "PROTONFS_BATCH_SIZE",
+    "manifest": "PROTONFS_MANIFEST",
 }
 
 
@@ -80,12 +81,19 @@ class Defaults:
         per-repo or via ``$PROTONFS_BATCH_SIZE``. Lower it on a slow/throttled link so each
         transfer call stays under ``$PROTONFS_TRANSFER_TIMEOUT`` (a large batch that times
         out is retried whole, so smaller batches also lose less work per throttle-retry).
+    :ivar manifest: Keep the remote manifest (``<remote_root>/.protonfs/manifest.json``)
+        current on ``push``/``rm``; overridable per-repo or via ``$PROTONFS_MANIFEST``.
+        Off by default. Only an existing manifest is ever updated -- one is created by
+        ``protonfs verify --repair`` from a full remote listing (#146).
 
     .. versionchanged:: 1.3.0
        Added the ``event_log`` and ``progress_style`` defaults.
 
     .. versionchanged:: 1.6.0
        Added the ``batch_size`` default.
+
+    .. versionchanged:: 2.1.0
+       Added the ``manifest`` default.
     """
 
     on_conflict: str = "skip"
@@ -93,6 +101,7 @@ class Defaults:
     event_log: bool = False
     progress_style: str = "inline"
     batch_size: int = DEFAULT_BATCH_SIZE
+    manifest: bool = False
 
 
 @dataclass
@@ -159,6 +168,7 @@ class Config:
                 event_log=defaults_data.get("event_log", False),
                 progress_style=defaults_data.get("progress_style", "inline"),
                 batch_size=defaults_data.get("batch_size", DEFAULT_BATCH_SIZE),
+                manifest=defaults_data.get("manifest", False),
             ),
         )
 
@@ -348,7 +358,7 @@ def _env_layer() -> dict:
         value = os.environ.get(env_name)
         if value is None:
             continue
-        if key in ("low_io", "event_log"):
+        if key in ("low_io", "event_log", "manifest"):
             defaults_layer[key] = _parse_bool_env(value)
         elif key == "batch_size":
             # A non-positive size makes batches() produce no chunks; clamp to >= 1. A

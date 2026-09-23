@@ -52,6 +52,7 @@ class FakeDrive:
         self.parent_name_calls: list[str] = []
         self.walk_roots: list[str] = []
         self.identity_calls: list[str] = []
+        self.list_calls: list[str] = []
         # configured responses
         self._walk_entries = walk_entries or []
         self._walk_by_root = walk_by_root
@@ -75,6 +76,12 @@ class FakeDrive:
         self._remote_sha1: dict[str, dict[str, str]] = {}
         # "<remote_parent>/<name>" -> revision count of the node currently at that path.
         self.revisions: dict[str, int] = {}
+        # "<remote_parent>/<name>" -> uid of the node's active revision (a fresh uid per
+        # landed upload, as Drive assigns one per revision), and the landed bytes, so a
+        # later download returns what was uploaded (#146: the remote manifest).
+        self.revision_uids: dict[str, str] = {}
+        self._remote_content: dict[str, bytes] = {}
+        self._revision_counter = 0
         self._version = version
         self._authed = authed
 
@@ -111,9 +118,12 @@ class FakeDrive:
                 self.trashed.append(key)
                 self.revisions[key] = 0
             self.revisions[key] = self.revisions.get(key, 0) + 1
+            self._revision_counter += 1
+            self.revision_uids[key] = f"rev-{self._revision_counter}"
             if name in self._remote_size_overrides:
                 bucket[name] = self._remote_size_overrides[name]
                 sha1s.pop(name, None)
+                self._remote_content.pop(key, None)
             else:
                 try:
                     data = Path(p).read_bytes()
@@ -121,6 +131,7 @@ class FakeDrive:
                     data = b""
                 bucket[name] = len(data)
                 sha1s[name] = hashlib.sha1(data).hexdigest()
+                self._remote_content[key] = data
         return result
 
     def _resolve_conflicts(self, local_paths, bucket, file_strategy):
@@ -159,9 +170,34 @@ class FakeDrive:
             name: RemoteIdentity(
                 claimed_size=size if self.report_claimed_size else None,
                 sha1=sha1s.get(name) if self.report_claimed_size else None,
+                revision=self.revision_uids.get(f"{remote_parent}/{name}"),
             )
             for name, size in bucket.items()
         }
+
+    def list_with_backoff(self, remote_path, **_kwargs):
+        """Raw `filesystem list` entries for one directory: sub-folders (created, or
+        implied by files landed beneath them) and files, in cli-drive@0.8.0's shape."""
+        path = remote_path.rstrip("/")
+        self.list_calls.append(path)
+        folders = {name for parent, name in self.created_folders if parent.rstrip("/") == path}
+        for parent in self._remote_files:
+            if parent.startswith(path + "/"):
+                folders.add(parent[len(path) + 1:].split("/", 1)[0])
+        entries = [
+            {"name": {"ok": True, "value": name}, "type": "folder"} for name in sorted(folders)
+        ]
+        sha1s = self._remote_sha1.get(path, {})
+        for name, size in self._remote_files.get(path, {}).items():
+            rev = {"uid": self.revision_uids.get(f"{path}/{name}")}
+            if self.report_claimed_size:
+                rev["claimedSize"] = size
+                if name in sha1s:
+                    rev["claimedDigests"] = {"sha1": sha1s[name]}
+            entries.append(
+                {"name": {"ok": True, "value": name}, "type": "file", "activeRevision": rev}
+            )
+        return entries
 
     def download(self, remote_paths, local_folder, file_strategy=None, folder_strategy=None):
         self.download_calls.append((tuple(remote_paths), str(local_folder), file_strategy))
@@ -175,7 +211,8 @@ class FakeDrive:
             name = remote_path.rsplit("/", 1)[-1]
             if name in failed or name in self._download_dropped_files:
                 continue
-            (Path(local_folder) / name).write_bytes(b"downloaded")
+            content = self._remote_content.get(remote_path, b"downloaded")
+            (Path(local_folder) / name).write_bytes(content)
         return result
 
     def create_folder(self, parent_path, name):

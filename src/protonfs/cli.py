@@ -707,9 +707,24 @@ def push(path: tuple[str, ...], resolve: str | None, dry_run: bool, strict: bool
             "(push uploads local files -- check the path or your shell glob)"
         )
     result = TransferResult(0, 0, 0, [])
+    manifest_updates: dict = {}
     with repo_lock(ctx.root), _resumable_on_interrupt(ctx, "push"):
-        for subpath in subpaths:
-            _accumulate_transfer(result, push_files(ctx, subpath, resolve, dry_run))
+        try:
+            for subpath in subpaths:
+                _accumulate_transfer(
+                    result,
+                    push_files(
+                        ctx, subpath, resolve, dry_run, manifest_updates=manifest_updates
+                    ),
+                )
+        finally:
+            # #146: one manifest write per run, not per PATH, and also after an
+            # interruption: every entry collected so far was verified on Drive.
+            if manifest_updates:
+                from protonfs import manifest
+
+                if manifest.update(ctx, record=manifest_updates) is not None:
+                    ctx.index.save()
     if result.transferred_items + result.skipped_items + result.failed_items == 0:
         # An existing path that yields no candidates (nothing changed, or everything under
         # it is excluded by the ignore rules) would otherwise print only the bare zero
@@ -813,24 +828,43 @@ def pull(
        than depending on the shell to expand it first (#131) -- so a scheduled job can
        carry a pattern that keeps matching as new runs appear, and so a pattern can name
        offloaded files that no filesystem glob could find. Added ``--strict``.
+
+    .. versionchanged:: 2.1.0
+       With an empty index, the index is seeded from the remote manifest when the root
+       has one, instead of stopping with "run refresh first" (#146).
     """
+    from protonfs import manifest
     from protonfs.commands.pull import pull as pull_files
     from protonfs.context import load_context
     from protonfs.drive import TransferResult
     from protonfs.locking import repo_lock
 
     ctx = load_context()
-    if not refresh and not ctx.index.all():
-        click.echo("index empty; run `protonfs refresh` first (or `pull --refresh`)")
-        return
-    # #131: match patterns against the INDEX namespace (see the docstring) -- a filesystem
-    # glob would silently miss exactly the offloaded files pull exists to bring back.
-    subpaths, unmatched = _resolve_pathspecs(
-        path, lambda p: _expand_pattern_index(list(ctx.index.all()), p)
-    )
-    _report_unmatched(unmatched, strict, "pull")
     result = TransferResult(0, 0, 0, [])
     with repo_lock(ctx.root), _resumable_on_interrupt(ctx, "pull"):
+        if not refresh and not ctx.index.all():
+            # #146: a fresh clone can learn what is on Drive from the remote manifest
+            # (one small download) instead of needing a full refresh walk first.
+            seeded = manifest.seed_index(ctx)
+            if seeded is None:
+                click.echo("index empty; run `protonfs refresh` first (or `pull --refresh`)")
+                return
+            click.echo(
+                f"index empty; seeded {seeded[0]} file(s) from the remote manifest "
+                f"(generation {seeded[1]}). Files the manifest does not list are not "
+                "included; `protonfs refresh` lists the remote in full."
+            )
+        elif not refresh:
+            note = manifest.staleness_note(ctx)
+            if note:
+                click.echo(note, err=True)
+        # #131: match patterns against the INDEX namespace (see the docstring) -- a
+        # filesystem glob would silently miss exactly the offloaded files pull exists to
+        # bring back.
+        subpaths, unmatched = _resolve_pathspecs(
+            path, lambda p: _expand_pattern_index(list(ctx.index.all()), p)
+        )
+        _report_unmatched(unmatched, strict, "pull")
         for subpath in subpaths:
             _accumulate_transfer(
                 result,
@@ -929,11 +963,20 @@ def rm(path: tuple[str, ...], recursive: bool, force: bool, yes: bool) -> None:
     from protonfs.locking import repo_lock
 
     ctx = load_context()
+    removed: list[str] = []
     with repo_lock(ctx.root):
-        # No None-mapping here: unlike the scan-scoped commands, rm has no
-        # "whole repo" default -- each given path is removed as-is.
-        for subpath in dict.fromkeys(path):
-            rm_path(ctx, subpath, recursive, force, confirmed=yes)
+        try:
+            # No None-mapping here: unlike the scan-scoped commands, rm has no
+            # "whole repo" default -- each given path is removed as-is.
+            for subpath in dict.fromkeys(path):
+                rm_path(ctx, subpath, recursive, force, confirmed=yes, manifest_forget=removed)
+        finally:
+            # #146: one manifest write for the whole run, covering what was removed.
+            if removed:
+                from protonfs import manifest
+
+                if manifest.update(ctx, forget=removed) is not None:
+                    ctx.index.save()
 
 
 @main.command()
@@ -980,7 +1023,8 @@ def refresh(path: tuple[str, ...], prune: bool) -> None:
             click.echo(f"      {p}")
         click.echo(
             "    -> `protonfs pull <path>` to take the remote version, "
-            "or `protonfs push --resolve=local <path>` to keep (and re-upload) your local copy."
+            "or `protonfs push --resolve=local <path>` to keep your local copy (it replaces "
+            "the remote file, which is moved to Drive's trash)."
         )
     if result.remote_deleted:
         verb = "pruned" if prune else "found"
@@ -991,6 +1035,106 @@ def refresh(path: tuple[str, ...], prune: bool) -> None:
             click.echo("    -> `protonfs refresh --prune` to drop them from your local index.")
     if result.seeded:
         click.echo(f"Run `protonfs pull` to download the {result.seeded} discovered file(s).")
+
+
+_VERIFY_SHOWN = 20  # paths listed per category before summarising the rest
+
+
+def _echo_paths(label: str, paths: list[str]) -> None:
+    """Print a category count and up to :data:`_VERIFY_SHOWN` of its paths."""
+    if not paths:
+        return
+    click.echo(f"{label}: {len(paths)}")
+    for rel in paths[:_VERIFY_SHOWN]:
+        click.echo(f"  {rel}")
+    if len(paths) > _VERIFY_SHOWN:
+        click.echo(f"  ... and {len(paths) - _VERIFY_SHOWN} more")
+
+
+@main.command()
+@click.option(
+    "--repair",
+    is_flag=True,
+    help="Rewrite the remote manifest to match a full listing of the remote (creating it "
+    "if the root has none).",
+)
+@_drive_error_boundary
+def verify(repair: bool) -> None:
+    """Check the remote manifest against a full listing of the remote.
+
+    The manifest (.protonfs/manifest.json under the remote root) records every file
+    protonfs verified on Drive, so a host can read what is there without walking the
+    tree. It is a cache: this command walks the whole remote and reports entries Drive
+    contradicts (missing, or a different size/sha1) and files the manifest does not list.
+    --repair rewrites the manifest from that listing, and is how one is first created.
+
+    Exit code: 0 when every manifest entry matches Drive (or there is no manifest, or
+    --repair rewrote it); 1 when entries are missing or differ, or on a Drive error.
+    """
+    from protonfs import manifest
+    from protonfs.commands.verify import verify as verify_manifest
+    from protonfs.context import load_context
+    from protonfs.locking import repo_lock
+
+    ctx = load_context()
+    try:
+        if repair:
+            with repo_lock(ctx.root):
+                outcome = verify_manifest(ctx, repair=True)
+        else:
+            outcome = verify_manifest(ctx)
+    except manifest.ManifestError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    report = outcome.report
+    found = report.manifest
+    if found is None:
+        click.echo("manifest: none on the remote")
+    else:
+        click.echo(
+            f"manifest: generation {found.generation}, {len(found.entries)} entries "
+            f"(updated {found.updated or 'unknown'} by {found.updated_by or 'unknown'})"
+        )
+    state = outcome.index_state
+    if state is None:
+        click.echo("index: not reconciled with a manifest yet (`protonfs refresh` records it)")
+    elif found is not None and state["generation"] == found.generation:
+        click.echo(f"index: reconciled with generation {state['generation']} (current)")
+    else:
+        click.echo(
+            f"index: reconciled with generation {state['generation']}; the manifest has "
+            "changed since (`protonfs pull --refresh` catches up)"
+        )
+    click.echo(f"remote: {report.remote_files} file(s) listed")
+    _echo_paths("missing (in the manifest, not on Drive)", report.missing)
+    _echo_paths("differs (size or sha1 disagree with Drive)", report.differs)
+    _echo_paths("untracked (on Drive, not in the manifest)", report.untracked)
+    _echo_paths("revision moved (same content, a newer Drive revision)", report.revision_moved)
+    _echo_paths("not compared (Drive listed no plaintext size)", report.unsized)
+
+    if repair:
+        click.echo(
+            f"repaired: manifest generation {outcome.repaired_generation}, "
+            f"{outcome.repaired_entries} entries"
+        )
+        if outcome.skipped_unsized:
+            click.echo(
+                f"  left out {len(outcome.skipped_unsized)} file(s) whose listing carries no "
+                "plaintext size, so they could not be verified"
+            )
+        if not manifest.maintenance_enabled(ctx):
+            click.echo(
+                "note: defaults.manifest is off, so push and rm will not keep this manifest "
+                "current. Enable it with `protonfs config set defaults.manifest true` and "
+                "commit .protonfs/config.json."
+            )
+        return
+    if found is None:
+        click.echo("`protonfs verify --repair` builds one from this listing.")
+        return
+    if report.faults:
+        click.echo("-> `protonfs verify --repair` rewrites the manifest to match Drive.")
+        raise click.exceptions.Exit(1)
 
 
 @main.command("install-drive")

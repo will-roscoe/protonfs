@@ -246,6 +246,7 @@ def push(
     resolve: str | None,
     dry_run: bool,
     reporter=None,
+    manifest_updates: dict | None = None,
 ) -> TransferResult:
     """Upload local-only and locally-changed files to Drive.
 
@@ -263,6 +264,10 @@ def push(
         persisting anything.
     :param reporter: :class:`~protonfs.reporting.Reporter` to narrate progress through;
         defaults to the process reporter (:func:`~protonfs.reporting.get_reporter`).
+    :param manifest_updates: a dict to collect the remote-manifest entries for every file
+        this push verified, for the caller to write once (#146; the CLI pushes several
+        paths per run). ``None`` writes them at the end of this call instead, when the
+        repo maintains a manifest.
     :returns: a :class:`~protonfs.drive.TransferResult` of what was uploaded/skipped.
     :raises protonfs.drive.DriveError: on a Drive or lock failure.
 
@@ -279,8 +284,14 @@ def push(
        is still uploaded, but reported as an ``unverified`` failure and not indexed
        (nor adopted), so ``status`` does not count it and the next push retries it.
 
+    .. versionchanged:: 2.1.0
+       Every verified upload or adoption is recorded in the remote manifest when the repo
+       maintains one (``defaults.manifest``); a failure to update it is a warning, never
+       a push failure (#146).
+
     .. seealso:: :func:`protonfs.commands.pull.pull` for the download direction.
     """
+    from protonfs import manifest
     from protonfs.reporting import get_reporter
 
     reporter = reporter or get_reporter()
@@ -330,6 +341,7 @@ def push(
     total = TransferResult(0, 0, 0, [])
     done = 0  # files handed to proton-drive so far, for reporter.progress (#93)
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    verified: dict = {} if manifest_updates is None else manifest_updates
 
     for parent, rels in groups.items():
         remote_parent = (
@@ -481,19 +493,20 @@ def push(
                         {"name": name, "error": UNDERDELIVERED_ERROR, "kind": UNDERDELIVERED_KIND}
                     )
                 continue
-            ctx.index.set(
-                rel,
-                IndexEntry(
-                    size=entry.size,
-                    mtime=entry.mtime,
-                    sha256=entry.sha256,
-                    sha1=entry.sha1,
-                    remote_path=f"{remote_parent}/{name}",
-                    origin_device=ctx.config.device_id,
-                    local_state="present",
-                    last_synced=now,
-                ),
+            indexed = IndexEntry(
+                size=entry.size,
+                mtime=entry.mtime,
+                sha256=entry.sha256,
+                sha1=entry.sha1,
+                remote_path=f"{remote_parent}/{name}",
+                origin_device=ctx.config.device_id,
+                local_state="present",
+                last_synced=now,
             )
+            ctx.index.set(rel, indexed)
+            # #146: only now -- verified against a live listing -- may the manifest
+            # promise this file; it records the Drive revision that was verified.
+            verified[rel] = manifest.entry_for_index(indexed, ident.revision, now)
             if is_adopt:
                 total.adopted_items += 1
             else:
@@ -503,6 +516,8 @@ def push(
         # connection) resumes from here on the next run instead of re-doing everything.
         # Composed with #1's atomic writes, each of these saves is crash-safe.
         ctx.index.save()
+    if manifest_updates is None and verified:
+        manifest.update(ctx, record=verified, reporter=reporter)
     ctx.index.save()
     reporter.progress(len(to_push), len(to_push), force=True)
     reporter.done(
