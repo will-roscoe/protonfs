@@ -8,6 +8,10 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 
 ## [Unreleased]
 
+### Bug fixes
+
+- **schedule**: a push job whose scope merely overlaps an offload or prune job is a warning, not an error; only the identical scope is refused. A repo-wide push alongside a prune of finished runs is the normal setup, and the two already take turns under the repo lock
+
 ## [2.2.0] - 2026-09-23
 
 ### Features
