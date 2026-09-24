@@ -8,6 +8,8 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-09-24
+
 ### Features
 
 - **manifest**: `defaults.manifest` is on by default. A repo without a manifest yet is warned by `push`/`rm` until `protonfs verify --repair` builds one; set it to `false` to opt out
@@ -15,6 +17,14 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 ### Bug fixes
 
 - **schedule**: a push job whose scope merely overlaps an offload or prune job is a warning, not an error; only the identical scope is refused. A repo-wide push alongside a prune of finished runs is the normal setup, and the two already take turns under the repo lock
+
+### Features
+
+- **manifest**: maintain the remote manifest by default (#161)
+
+### Bug fixes
+
+- **schedule**: warn, not refuse, when a push job only overlaps an offload or prune (#162)
 
 ## [2.2.1] - 2026-09-24
 
@@ -679,7 +689,8 @@ the preceding development history and its first tagged release:
   line-matching, git-mutation error wrapping, `pathspec` deprecation, subpath
   prune data-loss fix.
 
-[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v2.2.1...HEAD
+[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v2.3.0...HEAD
+[2.3.0]: https://github.com/will-roscoe/protonfs/compare/v2.2.1...v2.3.0
 [2.2.1]: https://github.com/will-roscoe/protonfs/compare/v2.2.0...v2.2.1
 [2.2.0]: https://github.com/will-roscoe/protonfs/compare/v2.1.0...v2.2.0
 [2.1.0]: https://github.com/will-roscoe/protonfs/compare/v2.0.0...v2.1.0
