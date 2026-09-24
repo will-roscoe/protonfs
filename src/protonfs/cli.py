@@ -606,16 +606,6 @@ def ls(
         if trash:
             raise click.UsageError("--visual has nothing to chart for --trash.")
 
-    if "remote-only" in states and not remote and not trash:
-        # #150: without a walk, a file missing locally is local-deleted; remote-only is
-        # now only ever reported when Drive was actually listed.
-        click.echo(
-            "note: without --remote, remote-only matches nothing: a file deleted locally "
-            "is reported as local-deleted, and remote-only needs a Drive listing. Add "
-            "--remote, or filter on --state local-deleted.",
-            err=True,
-        )
-
     ctx = load_context()
     console = Console()
     subpaths = _normalize_paths(path)

@@ -285,13 +285,11 @@ def pull(
 
     # Safe to bring down as-is: absent locally (remote-only / metadata-only), plus -- when we
     # have a remote view -- files the remote changed while the local copy stayed in sync.
-    # #150: with no remote view, a file this machine held that is now gone locally is
-    # classified local-deleted (it used to be called remote-only), and a bare pull still
-    # restores it exactly as before. With a remote view it is left alone, as it always was.
-    absent_locally = (SyncState.REMOTE_ONLY, SyncState.METADATA_ONLY) + (
-        (SyncState.LOCAL_DELETED,) if remote is None else ()
-    )
-    to_pull = [e.rel_path for e in diff_entries if e.state in absent_locally]
+    to_pull = [
+        e.rel_path
+        for e in diff_entries
+        if e.state in (SyncState.REMOTE_ONLY, SyncState.METADATA_ONLY)
+    ]
     if resolve is not None:
         to_pull += [e.rel_path for e in diff_entries if e.state == SyncState.REMOTE_MODIFIED]
 

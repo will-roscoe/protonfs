@@ -298,11 +298,12 @@ checked on Drive; the states marked *remote view* are only produced by
      - Present locally, not in the index.
      - drift (``1``)
    * - ``local-deleted``
-     - Held by this machine, now gone locally. Without a remote view the remote
-       was not checked (reported as ``remote-only`` before 2.0.0).
+     - *Remote view.* Held by this machine, now gone locally, still listed on Drive.
      - drift (``1``)
    * - ``remote-only``
-     - *Remote view.* Listed on Drive, absent locally and from the index.
+     - Absent locally, with the copy on Drive: listed on Drive and absent from the
+       index (remote view), or held by this machine and now gone locally, as the
+       index records (no remote view).
      - drift (``1``)
    * - ``local-modified`` / ``remote-modified``
      - *Remote view.* One side diverged from the index; the other did not.

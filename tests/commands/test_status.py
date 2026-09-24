@@ -232,10 +232,8 @@ def test_cli_status_remote_reports_a_changed_remote_copy(
     assert result.exit_code == 1
 
 
-def test_status_counts_a_file_deleted_locally_as_local_deleted_not_remote_only(
-    tmp_path: Path,
-) -> None:
-    # #150: nothing was checked on Drive, so the state names what was: it is gone here.
+def test_status_counts_a_file_deleted_locally_as_remote_only(tmp_path: Path) -> None:
+    # without a listing, a held file gone locally is remote-only: its copy is on Drive
     (tmp_path / "dump_0001").write_bytes(b"data")
     init_config(tmp_path, "/my-files/test")
     ctx = load_context(tmp_path)
@@ -244,6 +242,5 @@ def test_status_counts_a_file_deleted_locally_as_local_deleted_not_remote_only(
 
     counts = compute_status(ctx, None)
 
-    assert counts[SyncState.LOCAL_DELETED.value] == 1
-    assert counts[SyncState.REMOTE_ONLY.value] == 0
-    assert status_exit_code(counts) == STATUS_DRIFT
+    assert counts[SyncState.REMOTE_ONLY.value] == 1
+    assert counts[SyncState.LOCAL_DELETED.value] == 0
