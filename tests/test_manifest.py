@@ -794,3 +794,17 @@ def test_offload_never_touches_the_control_directory(tmp_path, make_fake_drive) 
 
     assert result.offloaded == 0 and result.skipped_modified == 0
     assert stray.exists()
+
+
+def test_refresh_does_not_read_the_manifest_of_a_repo_that_opted_out(
+    tmp_path, make_fake_drive, monkeypatch
+) -> None:
+    from protonfs.commands.refresh import _manifest_before_walk
+
+    ctx = _ctx(tmp_path, make_fake_drive, enabled=False)
+
+    def _must_not_load(cls, _ctx):
+        raise AssertionError("an opted-out repo read the manifest")
+
+    monkeypatch.setattr(manifest.RemoteManifest, "load", classmethod(_must_not_load))
+    assert _manifest_before_walk(ctx) is None
