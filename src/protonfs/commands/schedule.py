@@ -366,8 +366,10 @@ def check_conflicts(
 
     - **Duplicate** -- the same command on the identical scope: error.
     - **push + offload/prune** -- offload and prune jobs already push their scope
-      first, so a separate push job on it is redundant and races them: error; schedule
-      the offload/prune alone.
+      first. On the identical scope a separate push job is redundant: error; schedule
+      the offload/prune alone. On overlapping scopes (a push over the whole repo and a
+      prune over finished runs, say) it is a warning: the push still covers files the
+      prune does not, and the repo lock keeps the two from running at once.
     - **push + pull** -- identical scope: error; overlapping scopes: warning. Both
       directions on the same files churn; ``sync`` does both in one job, in order.
       A ``sync`` job alongside a push or pull on the same files is judged the same way.
@@ -411,10 +413,16 @@ def check_conflicts(
             )))
         elif "push" in pair and pair & set(_REMOVES_LOCAL):
             remover = next(c for c in (command, job.command) if c in _REMOVES_LOCAL)
-            conflicts.append(Conflict("error", job.id, (
-                f"a `{remover}` job already pushes {where} before it removes anything; "
-                f"schedule `{remover}` alone"
-            )))
+            if relation == "identical":
+                conflicts.append(Conflict("error", job.id, (
+                    f"a `{remover}` job already pushes {where} before it removes anything; "
+                    f"schedule `{remover}` alone"
+                )))
+            else:
+                conflicts.append(Conflict("warning", job.id, (
+                    f"the `{remover}` job pushes {where} first, so the push job repeats "
+                    "that on the shared files; the jobs take turns under the repo lock"
+                )))
         elif ("push" in mine and "pull" in theirs) or ("pull" in mine and "push" in theirs):
             level = "error" if relation == "identical" else "warning"
             if "sync" in pair:
