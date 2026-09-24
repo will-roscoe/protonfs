@@ -403,9 +403,8 @@ status
    Added ``--format`` (``plain``/``json``) and multiple ``PATH`` pathspecs.
 
 .. versionchanged:: 2.0.0
-   ``synced`` renamed to ``locally-indexed``; a file deleted locally is
-   ``local-deleted`` rather than ``remote-only`` when Drive is not checked; added
-   ``--remote``; the JSON output gained a ``remote`` field.
+   ``synced`` renamed to ``locally-indexed``; added ``--remote``; the JSON output
+   gained a ``remote`` field.
 
 Scans the local tree (optionally scoped to ``PATH``), compares it against the
 local index, and prints a count per sync state (``locally-indexed``,
@@ -457,8 +456,7 @@ directories are taking space locally vs on Drive" without printing 10,000
 ``metadata-only`` lines. ``--state STATE`` applies before ``--dirs`` aggregation, so
 the two compose. ``--state synced`` is still accepted as a deprecated alias of
 ``locally-indexed`` (with a warning on stderr) and will be removed in the next
-major release. ``remote-only`` is only ever reported with ``--remote``; without it
-a file deleted locally is ``local-deleted``. The ``--dirs`` JSON/columns also carry an ``apparent_bytes``
+major release. The ``--dirs`` JSON/columns also carry an ``apparent_bytes``
 field: each directory's true footprint, taking per file whichever of the
 local/indexed size is known (they agree when locally-indexed, local for a not-yet-pushed
 file, indexed for an offloaded one). ``--visual {treemap,waffle}`` draws a

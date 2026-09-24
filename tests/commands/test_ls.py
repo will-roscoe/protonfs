@@ -424,7 +424,7 @@ def test_cli_ls_help_does_not_advertise_the_deprecated_alias() -> None:
     assert "synced" not in result.output
 
 
-def test_cli_ls_state_remote_only_without_remote_explains_why_it_is_empty(
+def test_cli_ls_state_remote_only_without_remote_lists_a_file_deleted_locally(
     tmp_path: Path, monkeypatch
 ) -> None:
     from click.testing import CliRunner
@@ -437,5 +437,4 @@ def test_cli_ls_state_remote_only_without_remote_explains_why_it_is_empty(
     result = CliRunner().invoke(main, ["ls", "--state", "remote-only", "--format", "plain"])
 
     assert result.exit_code == 0, result.output
-    assert "local-deleted" in result.output  # the note names where the file went
-    assert "kept\t" not in result.output
+    assert "kept\t" in result.output

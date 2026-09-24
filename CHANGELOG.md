@@ -12,6 +12,16 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 
 - **schedule**: a push job whose scope merely overlaps an offload or prune job is a warning, not an error; only the identical scope is refused. A repo-wide push alongside a prune of finished runs is the normal setup, and the two already take turns under the repo lock
 
+## [2.2.1] - 2026-09-24
+
+### Bug fixes
+
+- **status/ls**: a file this machine held that is now gone locally is `remote-only` again when Drive is not listed, as before 2.0.0, and `pull` restores it as before; 2.0.0 had renamed it `local-deleted`. `local-deleted` is back to meaning a local deletion seen against a Drive listing
+
+### Bug fixes
+
+- **status**: report a held file gone locally as remote-only again without a listing (#160)
+
 ## [2.2.0] - 2026-09-23
 
 ### Features
@@ -665,7 +675,8 @@ the preceding development history and its first tagged release:
   line-matching, git-mutation error wrapping, `pathspec` deprecation, subpath
   prune data-loss fix.
 
-[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v2.2.0...HEAD
+[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v2.2.1...HEAD
+[2.2.1]: https://github.com/will-roscoe/protonfs/compare/v2.2.0...v2.2.1
 [2.2.0]: https://github.com/will-roscoe/protonfs/compare/v2.1.0...v2.2.0
 [2.1.0]: https://github.com/will-roscoe/protonfs/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/will-roscoe/protonfs/compare/v1.12.3...v2.0.0
