@@ -8,6 +8,10 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 
 ## [Unreleased]
 
+### Bug fixes
+
+- **status/ls**: a file this machine held that is now gone locally is `remote-only` again when Drive is not listed, as before 2.0.0, and `pull` restores it as before; 2.0.0 had renamed it `local-deleted`. `local-deleted` is back to meaning a local deletion seen against a Drive listing
+
 ## [2.2.0] - 2026-09-23
 
 ### Features
