@@ -543,7 +543,10 @@ def test_scope_relation(a, b, expected: str) -> None:
         ("prune", "sim", "prune", "sim/", "error", "already runs `prune`"),
         # push alongside offload/prune: those push first already
         ("push", "sim", "offload", "sim", "error", "schedule `offload` alone"),
-        ("prune", None, "push", "sim", "error", "schedule `prune` alone"),
+        ("prune", "sim", "push", "sim/", "error", "schedule `prune` alone"),
+        # ...but a push over more than the prune covers is still needed: warning
+        ("prune", "sim/done_*", "push", None, "warning", "take turns"),
+        ("push", None, "offload", "sim/run1", "warning", "take turns"),
         # push + pull: identical is an error, overlap a warning, both point at sync
         ("pull", "sim", "push", "sim", "error", "--command sync"),
         ("pull", "sim/run1", "push", "sim", "warning", "--command sync"),

@@ -8,6 +8,14 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 
 ## [Unreleased]
 
+### Features
+
+- **manifest**: `defaults.manifest` is on by default. A repo without a manifest yet is warned by `push`/`rm` until `protonfs verify --repair` builds one; set it to `false` to opt out
+
+### Bug fixes
+
+- **schedule**: a push job whose scope merely overlaps an offload or prune job is a warning, not an error; only the identical scope is refused. A repo-wide push alongside a prune of finished runs is the normal setup, and the two already take turns under the repo lock
+
 ## [2.2.1] - 2026-09-24
 
 ### Bug fixes
