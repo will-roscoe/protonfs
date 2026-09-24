@@ -8,6 +8,10 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 
 ## [Unreleased]
 
+### Features
+
+- **manifest**: `defaults.manifest` is on by default. A repo without a manifest yet is warned by `push`/`rm` until `protonfs verify --repair` builds one; set it to `false` to opt out
+
 ## [2.2.0] - 2026-09-23
 
 ### Features

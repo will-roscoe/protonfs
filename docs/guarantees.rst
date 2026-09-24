@@ -156,7 +156,7 @@ It is held to these rules (``src/protonfs/manifest.py``):
   revision. That leaves the manifest behind, which is the direction it is
   allowed to be wrong in, and Drive's version history keeps every revision
   written.
-- **Maintenance is opt-in** (:confval:`defaults.manifest`, off by default) and a
+- **Maintenance is on by default** (:confval:`defaults.manifest`) and a
   manifest failure never fails the ``push``/``rm`` that triggered it: it is
   reported as a warning, and the command's own result stands.
 

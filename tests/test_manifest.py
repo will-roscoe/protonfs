@@ -555,12 +555,12 @@ def test_manifest_config_key_and_env_override(tmp_path, monkeypatch) -> None:
     from protonfs.commands.config import config_get, config_set
 
     init_config(tmp_path, ROOT)
+    assert load_context(tmp_path).config.defaults.manifest is True  # on by default
+    config_set(tmp_path, "defaults.manifest", "false")
     assert load_context(tmp_path).config.defaults.manifest is False
-    config_set(tmp_path, "defaults.manifest", "true")
+    assert config_get(tmp_path, "defaults.manifest") == "False"
+    monkeypatch.setenv("PROTONFS_MANIFEST", "1")
     assert load_context(tmp_path).config.defaults.manifest is True
-    assert config_get(tmp_path, "defaults.manifest") == "True"
-    monkeypatch.setenv("PROTONFS_MANIFEST", "0")
-    assert load_context(tmp_path).config.defaults.manifest is False
 
 
 # --- edges ---------------------------------------------------------------------------------

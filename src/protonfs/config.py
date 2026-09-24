@@ -101,7 +101,7 @@ class Defaults:
     event_log: bool = False
     progress_style: str = "inline"
     batch_size: int = DEFAULT_BATCH_SIZE
-    manifest: bool = False
+    manifest: bool = True
 
 
 @dataclass
@@ -168,7 +168,7 @@ class Config:
                 event_log=defaults_data.get("event_log", False),
                 progress_style=defaults_data.get("progress_style", "inline"),
                 batch_size=defaults_data.get("batch_size", DEFAULT_BATCH_SIZE),
-                manifest=defaults_data.get("manifest", False),
+                manifest=defaults_data.get("manifest", True),
             ),
         )
 

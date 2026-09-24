@@ -334,7 +334,7 @@ Configuration file and keys
 
 .. confval:: defaults.manifest
    :type: bool
-   :default: false
+   :default: true
 
    Keep the remote manifest (see :ref:`verify <cmd-verify>`) current on ``push`` and
    ``rm``. Only an existing manifest is updated; ``protonfs verify --repair`` creates
@@ -342,6 +342,10 @@ Configuration file and keys
    via :envvar:`PROTONFS_MANIFEST`.
 
    .. versionadded:: 2.1.0
+
+   .. versionchanged:: 2.3.0
+      On by default. A repo with no manifest yet gets a warning from ``push``/``rm``
+      until ``protonfs verify --repair`` has built one.
 
 .. _reference-subcommands:
 
