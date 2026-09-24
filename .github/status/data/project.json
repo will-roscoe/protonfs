@@ -1,9 +1,9 @@
 {
   "source": "project",
-  "updated": "2026-09-24T08:45:36Z",
+  "updated": "2026-09-24T08:54:02Z",
   "name": "protonfs",
   "description": "Sync a local directory tree with Proton Drive via the official Proton Drive CLI, with conflict-aware push/pull and a local sync manifest.",
-  "version": "2.2.1",
+  "version": "2.3.0",
   "links": {
     "pypi": "https://pypi.org/project/protonfs/",
     "docs": "https://will-roscoe.github.io/protonfs",
