@@ -335,7 +335,7 @@ Layered configuration, highest precedence first:
    relocates the ``~/.config`` base; ``$PROTONFS_CONFIG`` overrides the full path
    outright.
 #. Built-in defaults (``defaults.on_conflict=skip``, ``defaults.low_io=false``,
-   ``defaults.manifest=false``,
+   ``defaults.manifest=true``,
    ``defaults.event_log=false``, ``defaults.progress_style=inline``).
 
 ``config get`` always reports the fully resolved value across all four layers.

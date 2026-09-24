@@ -555,12 +555,12 @@ def test_manifest_config_key_and_env_override(tmp_path, monkeypatch) -> None:
     from protonfs.commands.config import config_get, config_set
 
     init_config(tmp_path, ROOT)
+    assert load_context(tmp_path).config.defaults.manifest is True  # on by default
+    config_set(tmp_path, "defaults.manifest", "false")
     assert load_context(tmp_path).config.defaults.manifest is False
-    config_set(tmp_path, "defaults.manifest", "true")
+    assert config_get(tmp_path, "defaults.manifest") == "False"
+    monkeypatch.setenv("PROTONFS_MANIFEST", "1")
     assert load_context(tmp_path).config.defaults.manifest is True
-    assert config_get(tmp_path, "defaults.manifest") == "True"
-    monkeypatch.setenv("PROTONFS_MANIFEST", "0")
-    assert load_context(tmp_path).config.defaults.manifest is False
 
 
 # --- edges ---------------------------------------------------------------------------------
@@ -794,3 +794,17 @@ def test_offload_never_touches_the_control_directory(tmp_path, make_fake_drive) 
 
     assert result.offloaded == 0 and result.skipped_modified == 0
     assert stray.exists()
+
+
+def test_refresh_does_not_read_the_manifest_of_a_repo_that_opted_out(
+    tmp_path, make_fake_drive, monkeypatch
+) -> None:
+    from protonfs.commands.refresh import _manifest_before_walk
+
+    ctx = _ctx(tmp_path, make_fake_drive, enabled=False)
+
+    def _must_not_load(cls, _ctx):
+        raise AssertionError("an opted-out repo read the manifest")
+
+    monkeypatch.setattr(manifest.RemoteManifest, "load", classmethod(_must_not_load))
+    assert _manifest_before_walk(ctx) is None
