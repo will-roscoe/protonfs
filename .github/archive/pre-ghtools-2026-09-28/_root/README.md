@@ -1,14 +1,14 @@
 <p align="left">
   <a href="https://github.com/will-roscoe/protonfs">
     <img
-      src="https://github.com/will-roscoe/protonfs/raw/ghtools-status/status.svg"
+      src="https://raw.githubusercontent.com/will-roscoe/protonfs/main/.github/status/status.svg"
       alt="protonfs — version, links, test/coverage/lint/docs status, Python support and build matrix"
       width="900">
   </a>
 </p>
 
 
-<!-- ghtools:sync overview START — generated from docs/_shared/overview.rst, do not edit here -->
+<!-- SYNC:overview START - generated from docs/_shared/overview.rst, do not edit here -->
 
 Sync a local directory tree with [Proton Drive](https://proton.me/drive), via the official [Proton Drive CLI](https://github.com/ProtonDriveApps/sdk/tree/main/cli), with conflict-aware push/pull and a local sync manifest.
 
@@ -47,7 +47,7 @@ protonfs status            # confirm everything is in sync (exit 0 == clean)
 
 On a headless server, run `protonfs doctor --fix` before `auth login` to prepare the keyring first.
 
-<!-- ghtools:sync overview END -->
+<!-- SYNC:overview END -->
 
 More: **[full documentation](https://will-roscoe.github.io/protonfs)** ·
 [task guide](https://will-roscoe.github.io/protonfs/getting-started/guide.html) ·
