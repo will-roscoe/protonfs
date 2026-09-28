@@ -1,0 +1,11 @@
+{
+  "build": "passing",
+  "coverage": null,
+  "run": {
+    "commit": "fe4e20a61f4167d5d6bb96c508f856c6eb800489",
+    "id": "36396565199",
+    "url": "https://github.com/will-roscoe/protonfs/actions/runs/36396565199"
+  },
+  "source": "docs",
+  "updated": "2026-09-28T08:20:58Z"
+}
