@@ -2,7 +2,7 @@
 # .github/scripts/release_gate.sh — the full pre-release gate (issue #11).
 #
 # CI already gates every auto-created version tag on the test matrix + coverage
-# floor (auto-release.yml calls ci.yml before tagging). What CI cannot run is the
+# floor (the ghtools workflow runs the tests before it tags). What CI cannot run is the
 # LIVE suite: it needs an authenticated proton-drive session and a throwaway
 # remote dir, which never belong in CI. This script is the manual complement —
 # run it before any milestone/manual tag (and periodically before merging

@@ -33,6 +33,7 @@ apt = ["graphviz"]                           # apt-get
 rows = ["python", "builds", "extra"]            # the proton-drive pin row
 extra = ["proton-drive"]                     # published by proton-drive-badge.yml
 enabled = true                               # ghtools publishes the status card to its own branch
+logo = "docs/_static/logo.svg"                # the card shows the project logo
 
 [[readme.block]]
 name = "overview"
