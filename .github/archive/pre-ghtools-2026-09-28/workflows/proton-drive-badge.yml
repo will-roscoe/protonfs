@@ -74,19 +74,15 @@ jobs:
             echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
 
-      # Publish the pin/latest as the card's "proton-drive" status fragment (status.extra in
-      # .github/ghtools.toml) on the ghtools-status branch; nothing is committed to main.
-      - uses: will-roscoe/.ghtools/.github/actions/setup-ghtools@v1
-        if: steps.commit.outputs.changed == 'true'
-      - name: Publish the status fragment
+      # Persist the proton-drive pin/latest as a status fragment (for future graphic
+      # extensions) only when it actually changed, avoiding daily timestamp-only
+      # commits. The current template does not render this fragment, so status.svg
+      # stays byte-identical; update.sh still commits the refreshed data fragment.
+      - name: Update status fragment
         if: steps.commit.outputs.changed == 'true'
         env:
           PIN: ${{ steps.pin.outputs.pin }}
           LATEST: ${{ steps.pin.outputs.latest }}
         run: |
-          set -euo pipefail
-          state=ok
-          if [ "$PIN" != "$LATEST" ]; then state=warn; fi
-          ghtools status set proton-drive --label "PROTON DRIVE" --item "Pinned=$PIN" \
-            --item "Latest=$LATEST" --state "$state" --out "$RUNNER_TEMP/proton-drive.json"
-          ghtools status publish "$RUNNER_TEMP/proton-drive.json"
+          python3 .github/status/collect.py proton-drive
+          bash .github/status/update.sh .github/status/data/proton_drive.json

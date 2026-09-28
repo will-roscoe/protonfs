@@ -1,0 +1,39 @@
+# ghtools settings: https://github.com/will-roscoe/.ghtools#configuration
+
+branch = "main"                              # the remote's default branch
+profile = "python"                           # pyproject.toml [project]
+
+[version]
+source = "tag"                               # [tool.hatch.version] source = "vcs"
+
+[release]
+publish = ["github", "pypi"]                 # pypa/gh-action-pypi-publish in workflows
+
+[ci]
+python = ["3.9", "3.10", "3.11", "3.12", "3.13"] # test matrix
+runners = ["ubuntu-latest", "ubuntu-24.04-arm", "macos-latest", "macos-15-intel"] # runs-on values in workflows
+install = "-e .[dev]"                        # pip install in workflows
+gates = ["ruff", "interrogate", "readme-sync"] # README sync markers
+
+[ci.coverage]
+package = "src/protonfs"                     # --cov in workflows
+floor = 80                                   # --cov-fail-under in workflows
+codecov = true                               # codecov-action in workflows
+
+[docs]
+enabled = true                               # docs/conf.py
+dir = "docs"                                 # docs/conf.py
+install = ".[docs]"                          # pip install in docs workflow
+apidoc = "src/protonfs"                      # sphinx-apidoc in docs workflow
+strict = true                                # warnings fail in the existing Sphinx call
+pages = true                                 # actions/deploy-pages in workflows
+apt = ["graphviz"]                           # apt-get
+
+[status]
+rows = ["python", "builds", "extra"]            # the proton-drive pin row
+extra = ["proton-drive"]                     # published by proton-drive-badge.yml
+enabled = true                               # ghtools publishes the status card to its own branch
+
+[[readme.block]]
+name = "overview"
+source = "docs/_shared/overview.rst"
