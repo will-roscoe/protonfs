@@ -159,8 +159,8 @@ upgrade` to bring the proton-drive binary and any repo state current (docs:
 [Upgrading](https://will-roscoe.github.io/protonfs/upgrading.html)).
 
 Merges to `main` auto-tag a release, but only after the full test matrix passes
-with an 80% coverage floor on the exact commit being tagged (`auto-release.yml`
-calls the CI workflow before creating the tag). Before milestone or manual tags,
+with an 80% coverage floor on the exact commit being tagged (the `ghtools` workflow
+runs the tests before its release job creates the tag). Before milestone or manual tags,
 also run the live suite against a **disposable** Drive directory — it exercises
 real uploads/downloads that CI never can:
 
