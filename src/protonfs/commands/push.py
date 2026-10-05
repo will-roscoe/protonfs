@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import datetime
 import logging
+import time
 from enum import Enum
 from pathlib import Path
 
@@ -247,6 +248,8 @@ def push(
     dry_run: bool,
     reporter=None,
     manifest_updates: dict | None = None,
+    min_age: float = 0.0,
+    now: float | None = None,
 ) -> TransferResult:
     """Upload local-only and locally-changed files to Drive.
 
@@ -268,6 +271,11 @@ def push(
         this push verified, for the caller to write once (#146; the CLI pushes several
         paths per run). ``None`` writes them at the end of this call instead, when the
         repo maintains a manifest.
+    :param min_age: settle window in seconds: a file modified more recently than this is
+        held back, reported, and counted in ``unsettled_items`` instead of uploaded, so a
+        file still being written is never sent part-way (#168). ``0`` (the default) holds
+        nothing back.
+    :param now: the current time, for tests; defaults to :func:`time.time`.
     :returns: a :class:`~protonfs.drive.TransferResult` of what was uploaded/skipped.
     :raises protonfs.drive.DriveError: on a Drive or lock failure.
 
@@ -288,6 +296,9 @@ def push(
        Every verified upload or adoption is recorded in the remote manifest when the repo
        maintains one (``defaults.manifest``); a failure to update it is a warning, never
        a push failure (#146).
+
+    .. versionchanged:: 2.4.0
+       Added the settle window (``min_age``, off by default) and ``now`` (#168).
 
     .. seealso:: :func:`protonfs.commands.pull.pull` for the download direction.
     """
@@ -322,8 +333,21 @@ def push(
             SyncState.BOTH_MODIFIED,
         )
     ]
+    held: list[str] = []
+    if min_age > 0:
+        from protonfs.retention import format_age, is_settled
+
+        clock = time.time() if now is None else now
+        held = [rel for rel in to_push if not is_settled(local[rel].mtime, min_age, clock)]
+        for rel in held:
+            reporter.warn(
+                f"hold {rel}: modified within the settle window "
+                f"(min-age {format_age(min_age)}), not pushed yet"
+            )
+        held_set = set(held)
+        to_push = [rel for rel in to_push if rel not in held_set]
     if dry_run or not to_push:
-        return TransferResult(len(to_push), 0, 0, [])
+        return TransferResult(len(to_push), 0, 0, [], unsettled_items=len(held))
 
     reporter.phase("uploading", files=len(to_push))
 
@@ -338,9 +362,9 @@ def push(
     strategy = _RESOLVE_TO_STRATEGY.get(resolve, resolve)
     batch_size = ctx.config.defaults.batch_size
     groups = group_by_parent(to_push)
-    total = TransferResult(0, 0, 0, [])
+    total = TransferResult(0, 0, 0, [], unsettled_items=len(held))
     done = 0  # files handed to proton-drive so far, for reporter.progress (#93)
-    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    synced_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
     verified: dict = {} if manifest_updates is None else manifest_updates
 
     for parent, rels in groups.items():
@@ -501,12 +525,12 @@ def push(
                 remote_path=f"{remote_parent}/{name}",
                 origin_device=ctx.config.device_id,
                 local_state="present",
-                last_synced=now,
+                last_synced=synced_at,
             )
             ctx.index.set(rel, indexed)
             # #146: only now -- verified against a live listing -- may the manifest
             # promise this file; it records the Drive revision that was verified.
-            verified[rel] = manifest.entry_for_index(indexed, ident.revision, now)
+            verified[rel] = manifest.entry_for_index(indexed, ident.revision, synced_at)
             if is_adopt:
                 total.adopted_items += 1
             else:

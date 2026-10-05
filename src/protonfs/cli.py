@@ -339,6 +339,7 @@ def _accumulate_transfer(total, part) -> None:
     total.skipped_items += part.skipped_items
     total.failed_items += part.failed_items
     total.failures += part.failures
+    total.unsettled_items += part.unsettled_items
 
 
 @click.group(cls=PositionalFlagGroup)
@@ -649,8 +650,18 @@ def ls(
     is_flag=True,
     help="Fail (exit 1) if a PATH pattern matches nothing, instead of skipping it.",
 )
+@click.option(
+    "--min-age",
+    default="0",
+    show_default=True,
+    metavar="DURATION",
+    help="Settle window (e.g. 30m, 2h): hold back files modified more recently than this, "
+    "so a file still being written is never uploaded part-way. 0 holds nothing back.",
+)
 @_drive_error_boundary
-def push(path: tuple[str, ...], resolve: str | None, dry_run: bool, strict: bool) -> None:
+def push(
+    path: tuple[str, ...], resolve: str | None, dry_run: bool, strict: bool, min_age: str
+) -> None:
     """Upload local-only/changed files to Drive (any number of PATHs).
 
     Each PATH may be a directory, a single file, or a glob pattern. A quoted pattern
@@ -673,12 +684,17 @@ def push(path: tuple[str, ...], resolve: str | None, dry_run: bool, strict: bool
        rather than depending on the shell to expand it first (#131) -- so a scheduled job
        can carry a pattern that keeps matching as new directories appear. Added
        ``--strict``.
+
+    .. versionchanged:: 2.4.0
+       Added ``--min-age``: a file modified within the window is held back and counted as
+       ``unsettled=`` in the summary, then pushed by a later run once it has settled (#168).
     """
     from protonfs.commands.push import push as push_files
     from protonfs.context import load_context
     from protonfs.drive import TransferResult
     from protonfs.locking import repo_lock
 
+    min_age_s = _parse_min_age(min_age)
     ctx = load_context()
     # #131: expand protonfs-side glob patterns against the local tree first -- push only
     # ever acts on files physically present, so the filesystem IS the right namespace here
@@ -704,7 +720,8 @@ def push(path: tuple[str, ...], resolve: str | None, dry_run: bool, strict: bool
                 _accumulate_transfer(
                     result,
                     push_files(
-                        ctx, subpath, resolve, dry_run, manifest_updates=manifest_updates
+                        ctx, subpath, resolve, dry_run, manifest_updates=manifest_updates,
+                        min_age=min_age_s,
                     ),
                 )
         finally:
@@ -715,16 +732,20 @@ def push(path: tuple[str, ...], resolve: str | None, dry_run: bool, strict: bool
 
                 if manifest.update(ctx, record=manifest_updates) is not None:
                     ctx.index.save()
-    if result.transferred_items + result.skipped_items + result.failed_items == 0:
+    if (
+        result.transferred_items + result.skipped_items + result.failed_items
+        + result.unsettled_items == 0
+    ):
         # An existing path that yields no candidates (nothing changed, or everything under
         # it is excluded by the ignore rules) would otherwise print only the bare zero
         # summary. Say so in plain language -- and at DEFAULT verbosity, which the Reporter
         # cannot do (reporter.done() renders only at -v and above).
         click.echo("nothing to push")
     adopted = f" adopted={result.adopted_items}" if result.adopted_items else ""
+    unsettled = f" unsettled={result.unsettled_items}" if result.unsettled_items else ""
     click.echo(
         f"transferred={result.transferred_items}{adopted} "
-        f"skipped={result.skipped_items} failed={result.failed_items}"
+        f"skipped={result.skipped_items} failed={result.failed_items}{unsettled}"
     )
     for failure in result.failures:
         click.echo(f"  FAILED {failure['name']}: {failure['error']}")
@@ -1403,7 +1424,8 @@ def completions(shell: str, install: bool, uninstall: bool) -> None:
 )
 @click.option(
     "--min-age", "sched_min_age", metavar="DURATION",
-    help="Settle window passed to offload/prune jobs (e.g. 12h, 1d); default: theirs (1d).",
+    help="Settle window passed to push, offload and prune jobs (e.g. 30m, 1d); default: "
+    "push holds nothing back, offload/prune use 1d.",
 )
 @click.option(
     "--keep", "sched_keep", type=click.IntRange(min=0),

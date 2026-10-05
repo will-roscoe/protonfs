@@ -111,6 +111,51 @@ def test_cli_push_reports_failures_and_exits_1(
     assert "--resolve=remote|local|both" in result.output
 
 
+def test_cli_push_passes_min_age_and_reports_held_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, make_fake_drive
+) -> None:
+    _ctx(tmp_path, monkeypatch, make_fake_drive)
+    seen: dict = {}
+
+    def fake_push(ctx, path, resolve, dry_run, **kwargs):
+        seen.update(kwargs)
+        return TransferResult(1, 0, 0, [], unsettled_items=2)
+
+    monkeypatch.setattr("protonfs.commands.push.push", fake_push)
+
+    result = CliRunner().invoke(main, ["push", "--min-age", "2h"])
+
+    assert result.exit_code == 0, result.output
+    assert seen["min_age"] == 7200
+    assert "transferred=1 skipped=0 failed=0 unsettled=2" in result.output
+
+
+def test_cli_push_summary_omits_unsettled_without_held_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, make_fake_drive
+) -> None:
+    _ctx(tmp_path, monkeypatch, make_fake_drive)
+    monkeypatch.setattr(
+        "protonfs.commands.push.push",
+        lambda ctx, path, resolve, dry_run, **kwargs: TransferResult(1, 0, 0, []),
+    )
+
+    result = CliRunner().invoke(main, ["push"])
+
+    assert result.exit_code == 0, result.output
+    assert "unsettled" not in result.output
+
+
+def test_cli_push_rejects_a_malformed_min_age(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, make_fake_drive
+) -> None:
+    _ctx(tmp_path, monkeypatch, make_fake_drive)
+
+    result = CliRunner().invoke(main, ["push", "--min-age", "12"])
+
+    assert result.exit_code == 2
+    assert "invalid duration '12'" in result.output
+
+
 # --- pull failure branch --------------------------------------------------------------
 
 

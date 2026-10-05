@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import time
 from pathlib import Path
 
 import pytest
@@ -1172,3 +1174,80 @@ def test_push_cli_empty_directory_reports_nothing_to_push(
     assert result.exit_code == 0
     assert "nothing to push" in result.output
     assert fake.upload_calls == []
+
+
+# --- settle window (#168) --------------------------------------------------------------
+
+
+def _aged(path: Path, seconds_ago: float, now: float) -> None:
+    os.utime(path, (now - seconds_ago, now - seconds_ago))
+
+
+def test_push_min_age_holds_back_a_file_modified_within_the_window(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    now = time.time()
+    (tmp_path / "run1").mkdir()
+    (tmp_path / "run1" / "run101.ev").write_bytes(b"still growing")
+    (tmp_path / "run1" / "run1_00001").write_bytes(b"finished dump")
+    _aged(tmp_path / "run1" / "run1_00001", 7200, now)
+    _aged(tmp_path / "run1" / "run101.ev", 60, now)
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    fake = make_fake_drive()
+    ctx.drive = fake
+
+    result = push(ctx, None, resolve=None, dry_run=False, min_age=3600, now=now)
+
+    assert (result.transferred_items, result.unsettled_items) == (1, 1)
+    assert [Path(p).name for call in fake.upload_calls for p in call[0]] == ["run1_00001"]
+    assert ctx.index.get("run1/run1_00001") is not None
+    assert ctx.index.get("run1/run101.ev") is None
+
+
+def test_push_uploads_a_held_file_once_it_has_settled(tmp_path: Path, make_fake_drive) -> None:
+    now = time.time()
+    (tmp_path / "run101.ev").write_bytes(b"final")
+    _aged(tmp_path / "run101.ev", 60, now)
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.drive = make_fake_drive()
+
+    first = push(ctx, None, resolve=None, dry_run=False, min_age=3600, now=now)
+    second = push(ctx, None, resolve=None, dry_run=False, min_age=3600, now=now + 3600)
+
+    assert (first.transferred_items, first.unsettled_items) == (0, 1)
+    assert (second.transferred_items, second.unsettled_items) == (1, 0)
+    assert ctx.index.get("run101.ev") is not None
+
+
+def test_push_dry_run_counts_held_files_apart_from_the_upload_count(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    now = time.time()
+    (tmp_path / "old_00001").write_bytes(b"a")
+    (tmp_path / "new.ev").write_bytes(b"b")
+    _aged(tmp_path / "old_00001", 7200, now)
+    _aged(tmp_path / "new.ev", 10, now)
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    fake = make_fake_drive()
+    ctx.drive = fake
+
+    result = push(ctx, None, resolve=None, dry_run=True, min_age=3600, now=now)
+
+    assert (result.transferred_items, result.unsettled_items) == (1, 1)
+    assert fake.upload_calls == []
+
+
+def test_push_without_min_age_uploads_a_file_modified_just_now(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    (tmp_path / "run101.ev").write_bytes(b"just written")
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.drive = make_fake_drive()
+
+    result = push(ctx, None, resolve=None, dry_run=False)
+
+    assert (result.transferred_items, result.unsettled_items) == (1, 0)

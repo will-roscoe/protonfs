@@ -137,7 +137,9 @@ flag/argument name; these names, not just their presence, are frozen.
        local tree).
        Options: ``--resolve [remote|local|both]`` (the proton-drive strategy names
        ``merge|keep-both|replace|skip`` remain accepted as synonyms), ``--dry-run``,
-       ``--strict``.
+       ``--strict``, ``--min-age DURATION`` (settle window, default ``0``; added in
+       2.4.0). A file held back by ``--min-age`` is counted as ``unsettled=`` and is not
+       a failure.
      - ``0`` all transferred/skipped (including a pattern that matched nothing, which is
        reported and skipped); ``1`` one or more files failed to transfer, a pattern
        matched nothing under ``--strict``, or a Drive/lock error; ``2`` usage error.
@@ -244,7 +246,8 @@ flag/argument name; these names, not just their presence, are frozen.
        ``--list`` lists. Added in 1.8.0. ``--path`` accepts a glob pattern (re-expanded
        by protonfs on every run) and ``--strict`` was added in 1.11.0. The ``offload``
        and ``prune`` commands, ``--min-age``/``--keep``, the job-conflict checks and
-       one-job-at-a-time per repo were added in 2.2.0.
+       one-job-at-a-time per repo were added in 2.2.0; ``--min-age`` on a ``push`` job in
+       2.4.0.
      - ``0`` success (including a job added with a conflict *warning*); ``2`` usage
        error (bad cadence, unknown id, not a repo, conflicting mode flags, an option
        the command does not take, or a job refused because it conflicts with one
