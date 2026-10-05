@@ -301,3 +301,31 @@ def test_save_swaps_via_os_replace(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     src, dst = calls[0]
     assert dst.endswith("index.json")
     assert src != dst  # replaced from a distinct temp file
+
+
+def test_a_new_index_is_recorded_at_the_current_check_level(tmp_path: Path) -> None:
+    # #169: everything in an index this protonfs creates was judged by its own checks.
+    store = IndexStore(tmp_path)
+    assert store.check_level == index_mod.CHECK_LEVEL
+    store.set("a/b", _entry())
+    store.save()
+
+    on_disk = json.loads((tmp_path / ".protonfs" / "index.json").read_text())
+    assert on_disk["check_level"] == index_mod.CHECK_LEVEL
+    assert on_disk["schema_version"] == index_mod.INDEX_SCHEMA_VERSION  # not a schema change
+
+
+def test_an_index_written_by_an_earlier_release_is_at_check_level_0(tmp_path: Path) -> None:
+    # 2.3.0 wrote no check level: its entries were judged by whatever checks the release
+    # that wrote each one had, so none of them can be assumed to meet the current ones.
+    (tmp_path / ".protonfs").mkdir()
+    (tmp_path / ".protonfs" / "index.json").write_text(json.dumps({
+        "schema_version": index_mod.INDEX_SCHEMA_VERSION,
+        "entries": {"a/b": _entry().to_dict()},
+    }))
+
+    store = IndexStore(tmp_path)
+    assert store.check_level == 0
+    store.set_check_level(index_mod.CHECK_LEVEL)
+    store.save()
+    assert IndexStore(tmp_path).check_level == index_mod.CHECK_LEVEL

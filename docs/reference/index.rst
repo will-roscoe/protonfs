@@ -810,6 +810,35 @@ manifest does not list are not included. When the repo maintains a manifest,
 ``pull`` also notes when the manifest has changed since this index was
 reconciled, so another host has pushed files this index may not list yet.
 
+.. versionchanged:: 2.4.0
+   ``--index`` checks this machine's **index** instead of the manifest (#169).
+
+``verify --index`` compares every index entry with a listing of its remote
+directory: one listing per directory, plaintext size always, sha1 where both sides
+have one. It reads no local file, so it is practical on a host whose filesystem is
+too slow for ``status --remote``. Directories holding offloaded (metadata-only)
+entries are listed first, since Drive holds those files' only copy. Each entry is
+``ok``, ``missing``, ``remote-larger``, ``remote-smaller``, ``digest-differs``,
+``unsized`` (Drive listed no plaintext size) or ``unlisted`` (its directory's listing
+failed). Without ``--repair`` nothing changes.
+
+``verify --index --repair`` applies what the check proves, and only that:
+
+- a present entry whose file is still here, and whose Drive copy is missing or
+  differs, is dropped from the index. The file is then local-only: never counted as
+  synced or offloaded, and uploaded by the next ``push``;
+- an entry whose file is gone (or is only a git-LFS pointer stub), and whose Drive
+  copy is larger than recorded (a stub indexed as content, #32), is rewritten to
+  describe Drive's copy, metadata-only, so ``pull`` restores it;
+- a metadata-only entry that matches and has no sha1 yet gains Drive's;
+- a copy only Drive holds that is shorter, different or gone is reported and left
+  exactly as it was: rewriting the entry would hide the loss.
+
+When every entry was checked, the index is recorded at the current **check level**
+(a top-level ``check_level`` key in ``index.json``). ``upgrade`` runs the same
+re-verification on an index below the current level: one an earlier release wrote,
+or one recorded before a release made a check stricter.
+
 Enabling it on an existing repo::
 
     protonfs verify --repair                          # build it from a full listing
@@ -852,6 +881,13 @@ protonfs release supports (SHA-512-verified before an atomic swap; a newer
 upstream release is reported but never installed), verifies the session survived
 the swap, and -- inside a protonfs root -- runs any pending repo-state
 migrations. See :doc:`../upgrading` for the full upgrade story.
+
+.. versionchanged:: 2.4.0
+   An index recorded under an older check level is re-verified against Drive, as
+   ``verify --index --repair`` does, once per level (#169). It lists every indexed
+   remote directory, so it can take minutes on a large repo. If Drive throttles or
+   the repo is locked, the failure is reported, the rest of the upgrade stands, and
+   the next ``upgrade`` tries again.
 
 Examples::
 

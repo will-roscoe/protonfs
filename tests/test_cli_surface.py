@@ -84,7 +84,7 @@ EXPECTED_OPTIONS: dict[str, frozenset[str]] = {
     "config.set": frozenset({"--global", "--local"}),
     "trash.list": frozenset(),
     "trash.empty": frozenset({"--yes"}),
-    "verify": frozenset({"--repair"}),
+    "verify": frozenset({"--repair", "--index"}),
 }
 
 EXPECTED_ARGUMENTS: dict[str, tuple[str, ...]] = {

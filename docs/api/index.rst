@@ -15,6 +15,7 @@ Module overview
    protonfs.drive
    protonfs.ignore
    protonfs.index
+   protonfs.indexcheck
    protonfs.install
    protonfs.lfs
    protonfs.localscan

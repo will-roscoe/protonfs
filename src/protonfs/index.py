@@ -40,6 +40,17 @@ _VANISHED_ERRNOS = frozenset({errno.ENOENT, errno.ESTALE})
 #   v2 = each entry gains a `sha1` field (proton's plaintext content digest; "" = unknown).
 INDEX_SCHEMA_VERSION = 2
 
+# How strict the checks are that this release applies before it records an index entry.
+# Bump it in the same change that makes a check stricter (see CONTRIBUTING.md): an index
+# recorded under a lower level is then re-verified against Drive by
+# `protonfs upgrade` (#169; see protonfs.indexcheck).
+#   0 -- anything before 2.4.0, including entries verified by name only before 1.11.3
+#        (#147/#148), appended files left at their first upload before 1.12.3 (#144/#155),
+#        and git-LFS pointer stubs indexed as content before the #32 fix.
+#   1 -- 2.4.0: plaintext size always, sha1 where Drive has one; a changed file and this
+#        file's own short upload are replaced as revisions (#144, #168).
+CHECK_LEVEL = 1
+
 
 class IndexSchemaError(RuntimeError):
     """The on-disk index uses a schema this build of protonfs does not understand.
@@ -146,6 +157,10 @@ class IndexStore:
        an optional top-level ``underdelivered`` key, so the next push can replace them
        (#168). Not a schema change either: an older protonfs drops the key, and that
        push then reports the file as a conflict, as it did before.
+
+       Records the :data:`CHECK_LEVEL` its entries were verified under
+       (:attr:`check_level`), as an optional top-level ``check_level`` key: an index an
+       earlier release wrote has none, and reads as level 0 (#169).
     """
 
     def __init__(self, repo_root: Path) -> None:
@@ -158,6 +173,8 @@ class IndexStore:
         self._entries: dict[str, IndexEntry] = {}
         self._manifest: dict | None = None
         self._underdelivered: dict[str, dict] = {}
+        # A new index holds only what this release records; an existing one is read below.
+        self._check_level = CHECK_LEVEL
         self._load()
 
     def _load(self) -> None:
@@ -175,6 +192,8 @@ class IndexStore:
                 f"v{INDEX_SCHEMA_VERSION}. Upgrade protonfs to read this index."
             )
         entries = _migrate(version, entries)
+        level = raw.get("check_level") if version else None
+        self._check_level = level if isinstance(level, int) else 0
         self._entries = {rel_path: IndexEntry.from_dict(data) for rel_path, data in entries.items()}
         manifest = raw.get("manifest") if version else None
         if isinstance(manifest, dict) and isinstance(manifest.get("generation"), int):
@@ -209,6 +228,7 @@ class IndexStore:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         document = {
             "schema_version": INDEX_SCHEMA_VERSION,
+            "check_level": self._check_level,
             "entries": {rel_path: entry.to_dict() for rel_path, entry in self._entries.items()},
         }
         if self._manifest is not None:
@@ -328,3 +348,21 @@ class IndexStore:
         .. versionadded:: 2.4.0
         """
         self._underdelivered[rel_path] = {"remote_path": remote_path, "revision": revision}
+
+    @property
+    def check_level(self) -> int:
+        """The :data:`CHECK_LEVEL` every entry in this index is known to meet: the current
+        level for an index this release created, ``0`` for one an earlier release wrote,
+        and raised when :func:`protonfs.indexcheck.reverify_index` has re-verified a
+        whole index against Drive (#169).
+
+        .. versionadded:: 2.4.0
+        """
+        return self._check_level
+
+    def set_check_level(self, level: int) -> None:
+        """Record the check level this index's entries meet (in memory until :meth:`save`).
+
+        .. versionadded:: 2.4.0
+        """
+        self._check_level = int(level)

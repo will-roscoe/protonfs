@@ -342,6 +342,32 @@ def _accumulate_transfer(total, part) -> None:
     total.unsettled_items += part.unsettled_items
 
 
+def _verify_index(repair: bool) -> None:
+    """``verify --index [--repair]``: check the index against Drive listings (#169)."""
+    from protonfs.context import load_context
+    from protonfs.index import CHECK_LEVEL
+    from protonfs.indexcheck import Verdict, check_index, report_lines, reverify_index
+    from protonfs.locking import repo_lock
+
+    ctx = load_context()
+    level = ctx.index.check_level
+    if repair:
+        with repo_lock(ctx.root):
+            check, fixes = reverify_index(ctx)
+    else:
+        check, fixes = check_index(ctx), None
+    for line in report_lines(check, fixes):
+        click.echo(line)
+    if fixes is not None and check.complete:
+        click.echo(f"index: verified at check level {CHECK_LEVEL} (was {level})")
+        settled = not fixes.suspect
+    else:
+        click.echo(f"index: check level {level} (current {CHECK_LEVEL})")
+        settled = fixes is None and all(f.verdict is Verdict.OK for f in check.findings)
+    if not settled:
+        raise click.exceptions.Exit(1)
+
+
 def _split_file_paths(
     root: Path, subpaths: list[str | None]
 ) -> tuple[list[str | None], set[str]]:
@@ -1224,10 +1250,16 @@ def _echo_paths(label: str, paths: list[str]) -> None:
     "--repair",
     is_flag=True,
     help="Rewrite the remote manifest to match a full listing of the remote (creating it "
-    "if the root has none).",
+    "if the root has none). With --index, apply to the index what its check proves.",
+)
+@click.option(
+    "--index",
+    is_flag=True,
+    help="Check the local index instead: compare every entry with a listing of its remote "
+    "directory, without reading local files.",
 )
 @_drive_error_boundary
-def verify(repair: bool) -> None:
+def verify(repair: bool, index: bool) -> None:
     """Check the remote manifest against a full listing of the remote.
 
     The manifest (.protonfs/manifest.json under the remote root) records every file
@@ -1236,9 +1268,26 @@ def verify(repair: bool) -> None:
     contradicts (missing, or a different size/sha1) and files the manifest does not list.
     --repair rewrites the manifest from that listing, and is how one is first created.
 
+    With --index, it checks the local index instead. Each entry is compared with a
+    listing of its remote directory (one listing per directory, no local files read),
+    with entries whose only copy is on Drive first. --repair then applies what that
+    proves: an entry whose file is still here and whose Drive copy is missing or differs
+    is dropped, so the next push uploads it; one whose file is gone and whose Drive copy
+    is larger is rewritten to describe that copy. A Drive-only copy that is shorter,
+    different or gone is reported and left as it is. When every entry was checked, the
+    index is recorded at the current check level, so `upgrade` does not check it again.
+
     Exit code: 0 when every manifest entry matches Drive (or there is no manifest, or
     --repair rewrote it); 1 when entries are missing or differ, or on a Drive error.
+    With --index: 0 when every entry matches (with --repair: when every entry was
+    checked and none was left untouched); 1 otherwise, or on a Drive or lock error.
+
+    .. versionchanged:: 2.4.0
+       Added ``--index`` (#169).
     """
+    if index:
+        _verify_index(repair)
+        return
     from protonfs import manifest
     from protonfs.commands.verify import verify as verify_manifest
     from protonfs.context import load_context
