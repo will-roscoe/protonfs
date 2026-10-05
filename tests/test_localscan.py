@@ -179,6 +179,36 @@ def test_scan_file_subpath_returns_just_that_one_file(tmp_path: Path) -> None:
     assert result["run1/dump_0001"].sha256 == hashlib.sha256(b"data").hexdigest()
 
 
+def test_scan_only_scans_exactly_the_named_files(tmp_path: Path) -> None:
+    # #171: N explicit file paths are scanned in one call, not one walk per path. Files
+    # not named are neither returned nor hashed, and a named path that is gone is skipped.
+    for rel in ("a/x", "a/z", "b/y"):
+        (tmp_path / rel).parent.mkdir(exist_ok=True)
+        (tmp_path / rel).write_bytes(rel.encode())
+    index = IndexStore(tmp_path)
+    ignore = IgnoreMatcher([])
+
+    result = scan(
+        tmp_path, Path("."), ignore, index, low_io=False, only={"a/x", "b/y", "a/gone"}
+    )
+
+    assert set(result) == {"a/x", "b/y"}
+    assert result["b/y"].sha256 == hashlib.sha256(b"b/y").hexdigest()
+
+
+def test_scan_only_still_honours_subpath_and_ignore(tmp_path: Path) -> None:
+    for rel in ("a/x", "a/x.tmp", "b/y"):
+        (tmp_path / rel).parent.mkdir(exist_ok=True)
+        (tmp_path / rel).write_bytes(b"1")
+    index = IndexStore(tmp_path)
+
+    result = scan(
+        tmp_path, Path("a"), IgnoreMatcher(["*.tmp"]), index, only={"a/x", "a/x.tmp", "b/y"}
+    )
+
+    assert set(result) == {"a/x"}
+
+
 def test_scan_file_subpath_that_is_ignored_returns_empty(tmp_path: Path) -> None:
     # Naming an ignored file explicitly still honours the ignore contract (it is not on
     # the sync allowlist); the CLI surfaces this as "nothing to push", not an upload.

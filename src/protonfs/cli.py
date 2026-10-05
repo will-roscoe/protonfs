@@ -342,6 +342,22 @@ def _accumulate_transfer(total, part) -> None:
     total.unsettled_items += part.unsettled_items
 
 
+def _split_file_paths(
+    root: Path, subpaths: list[str | None]
+) -> tuple[list[str | None], set[str]]:
+    """Separate the PATHs that name single files from the rest.
+
+    Each directory PATH (or the whole repo) is still one pass. Every file PATH goes
+    into one shared pass, which lists each remote directory once and saves the index
+    once per directory. Before, each file was a full pass of its own: an index scan, a
+    listing of its directory and an index save, so N files cost N of each (#171).
+
+    :returns: ``(per_path, files)`` -- the PATHs to run one pass each, and the files.
+    """
+    files = {s for s in subpaths if s is not None and (root / s).is_file()}
+    return [s for s in subpaths if s not in files], files
+
+
 @click.group(cls=PositionalFlagGroup)
 @click.version_option(__version__, prog_name="protonfs")
 @click.option("-v", "--verbose", count=True, help="Increase console detail (-v..-vvvv).")
@@ -688,6 +704,8 @@ def push(
     .. versionchanged:: 2.4.0
        Added ``--min-age``: a file modified within the window is held back and counted as
        ``unsettled=`` in the summary, then pushed by a later run once it has settled (#168).
+       File PATHs share one pass, so N files no longer cost N listings and index saves
+       (#171).
     """
     from protonfs.commands.push import push as push_files
     from protonfs.context import load_context
@@ -716,12 +734,16 @@ def push(
     manifest_updates: dict = {}
     with repo_lock(ctx.root), _resumable_on_interrupt(ctx, "push"):
         try:
-            for subpath in subpaths:
+            per_path, files = _split_file_paths(ctx.root, subpaths)
+            passes = [(subpath, None) for subpath in per_path]
+            if files:
+                passes.append((None, files))  # #171: every file PATH in one pass
+            for subpath, only in passes:
                 _accumulate_transfer(
                     result,
                     push_files(
                         ctx, subpath, resolve, dry_run, manifest_updates=manifest_updates,
-                        min_age=min_age_s,
+                        min_age=min_age_s, only=only,
                     ),
                 )
         finally:
@@ -972,6 +994,10 @@ def offload(
 
     A file modified within the last --min-age (default one day) is never offloaded:
     with nobody holding it open, it may still be being written.
+
+    .. versionchanged:: 2.4.0
+       File PATHs share one pass, so N files no longer cost N listings and index saves
+       (#171).
     """
     from protonfs.commands.offload import OffloadResult
     from protonfs.commands.offload import offload as offload_files
@@ -991,10 +1017,17 @@ def offload(
         )
 
     result = OffloadResult()
+    per_path, files = _split_file_paths(ctx.root, subpaths)
     with repo_lock(ctx.root):
-        for subpath in subpaths:
+        for subpath in per_path:
             result.merge(
                 offload_files(ctx, subpath, verify=verify, dry_run=dry_run, min_age=min_age_s)
+            )
+        if files:  # #171: every file PATH in one pass
+            result.merge(
+                offload_files(
+                    ctx, None, verify=verify, dry_run=dry_run, min_age=min_age_s, only=files
+                )
             )
     _echo_offload_result(result, dry_run)
 

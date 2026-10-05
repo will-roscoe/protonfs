@@ -11,6 +11,7 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 ### Features
 
 - **push**: `--min-age DURATION`, a settle window: a file modified more recently than this is held back (counted as `unsettled=`, not a failure) and pushed by a later run once it has settled, so a file still being written is never uploaded part-way and left as a permanent conflict (#168). `protonfs schedule --add --command push --min-age 2h` passes it to a scheduled push. Default `0` holds nothing back
+- **push**, **offload**: the file PATHs given on one command line share a single pass. Each remote directory is listed once and the index is saved once per directory, instead of a full pass (an index scan, a listing and an index save) per file. Offloading a retention script's list of 256 files from one directory took about 64 s a file this way, against about 19 s for one pass. Directory and pattern PATHs are unchanged (#171)
 
 ### Bug fixes
 
