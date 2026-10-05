@@ -375,6 +375,16 @@ def test_offload_job_pushes_its_scope_then_offloads_it(repo: Path) -> None:
     assert "--min-age=12h" in offload_line and "--resolve" not in offload_line
 
 
+def test_push_job_passes_its_settle_window_to_push(repo: Path) -> None:
+    job = sched.add_job(
+        repo, every="hourly", command="push", min_age="2h", runner=FakeCrontab()
+    )
+    text = Path(job.wrapper_path).read_text()
+
+    assert "-v push --min-age=2h || rc=$?" in text
+    assert job.min_age == "2h"
+
+
 def test_prune_job_runs_prune_with_its_retention_options(repo: Path) -> None:
     job = sched.add_job(
         repo, every="daily", command="prune", path="sim", min_age="2d", keep=5,
@@ -398,7 +408,8 @@ def test_prune_job_without_options_uses_the_commands_defaults(repo: Path) -> Non
 @pytest.mark.parametrize(
     "command,kwargs,message",
     [
-        ("push", {"min_age": "1d"}, "--min-age applies to offload and prune"),
+        ("pull", {"min_age": "1d"}, "--min-age applies to push, offload and prune"),
+        ("sync", {"min_age": "1d"}, "--min-age applies to push, offload and prune"),
         ("offload", {"keep": 3}, "--keep applies to prune jobs only"),
         ("prune", {"min_age": "12"}, "invalid duration"),
         ("prune", {"keep": -1}, "--keep must be 0 or more"),
