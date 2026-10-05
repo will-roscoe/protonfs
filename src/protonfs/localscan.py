@@ -10,6 +10,7 @@ feeds :func:`~protonfs.diff.classify` as the ``local`` argument.
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Collection
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -87,6 +88,7 @@ def scan(
     low_io: bool = False,
     reporter=None,
     hash_cache=None,
+    only: Collection[str] | None = None,
 ) -> dict[str, ScanEntry]:
     """Walk ``root / subpath`` and build a :class:`ScanEntry` for every synced file.
 
@@ -121,6 +123,12 @@ def scan(
     .. versionchanged:: 1.8.0
        Added the optional ``reporter`` for per-file hashing progress, and the optional
        ``hash_cache`` for persistent, index-independent hash reuse.
+
+    :param only: scan exactly these repo-relative files (those inside ``subpath``)
+        instead of walking ``subpath``; a listed path that is not a file is skipped.
+
+    .. versionchanged:: 2.4.0
+       Added ``only``, so N named files are scanned in one call rather than N (#171).
     """
     entries: dict[str, ScanEntry] = {}
     base = root / subpath if subpath != Path(".") else root
@@ -129,7 +137,14 @@ def scan(
     # to {} -- treat a file `base` as the one candidate. A nonexistent `base` is not a file
     # and rglobs to nothing, so scan() still returns {} for it (pull/status/ls rely on
     # that; push validates existence at the CLI layer).
-    candidates = [base] if base.is_file() else sorted(base.rglob("*"))
+    if only is not None:
+        scope = subpath.as_posix()
+        candidates = [
+            root / rel for rel in sorted(only)
+            if scope == "." or rel == scope or rel.startswith(f"{scope}/")
+        ]
+    else:
+        candidates = [base] if base.is_file() else sorted(base.rglob("*"))
     # Filter to the files we will actually hash first (drop non-files, the .protonfs
     # control dir, and ignored paths), computing each rel_path once. This gives an
     # accurate denominator for hashing progress -- skipped/ignored files are not counted.

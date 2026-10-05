@@ -250,6 +250,7 @@ def push(
     manifest_updates: dict | None = None,
     min_age: float = 0.0,
     now: float | None = None,
+    only: set[str] | None = None,
 ) -> TransferResult:
     """Upload local-only and locally-changed files to Drive.
 
@@ -276,6 +277,8 @@ def push(
         file still being written is never sent part-way (#168). ``0`` (the default) holds
         nothing back.
     :param now: the current time, for tests; defaults to :func:`time.time`.
+    :param only: push just these repo-relative files (those inside ``subpath``), in one
+        pass, instead of scanning all of ``subpath``.
     :returns: a :class:`~protonfs.drive.TransferResult` of what was uploaded/skipped.
     :raises protonfs.drive.DriveError: on a Drive or lock failure.
 
@@ -298,7 +301,8 @@ def push(
        a push failure (#146).
 
     .. versionchanged:: 2.4.0
-       Added the settle window (``min_age``, off by default) and ``now`` (#168).
+       Added the settle window (``min_age``, off by default) and ``now`` (#168), and
+       ``only``, so the CLI pushes N named files in one pass rather than N (#171).
 
     .. seealso:: :func:`protonfs.commands.pull.pull` for the download direction.
     """
@@ -306,7 +310,10 @@ def push(
     from protonfs.reporting import get_reporter
 
     reporter = reporter or get_reporter()
-    reporter.phase("scanning local", subpath=subpath or ".")
+    if only is None:
+        reporter.phase("scanning local", subpath=subpath or ".")
+    else:
+        reporter.phase("scanning local", files=len(only))
     ignore = IgnoreMatcher.from_file(ctx.root)
     scan_root = Path(subpath) if subpath else Path(".")
     from protonfs.hashcache import HashCache
@@ -314,7 +321,7 @@ def push(
     local = scan(
         ctx.root, scan_root, ignore, ctx.index,
         low_io=ctx.config.defaults.low_io, reporter=reporter,
-        hash_cache=HashCache(ctx.root),
+        hash_cache=HashCache(ctx.root), only=only,
     )
     diff_entries = classify(local, ctx.index)
 

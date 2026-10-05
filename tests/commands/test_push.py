@@ -1094,6 +1094,58 @@ def test_push_cli_several_file_pathspecs_glob_expansion(
     assert not any(u.endswith("dump_0004") for u in uploaded)
 
 
+def test_push_only_pushes_just_the_named_files(tmp_path: Path, make_fake_drive) -> None:
+    # #171: `only` restricts one push pass to these files, wherever they live.
+    for rel in ("run1/a", "run1/b", "run1/c", "run2/d"):
+        (tmp_path / rel).parent.mkdir(exist_ok=True)
+        (tmp_path / rel).write_bytes(rel.encode())
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    fake = make_fake_drive()
+    ctx.drive = fake
+
+    result = push(ctx, None, None, dry_run=False, only={"run1/a", "run1/b", "run2/d"})
+
+    assert result.transferred_items == 3
+    assert set(ctx.index.all()) == {"run1/a", "run1/b", "run2/d"}
+    assert sorted(call[1] for call in fake.upload_calls) == [
+        "/my-files/test/run1", "/my-files/test/run2",
+    ]
+
+
+def test_push_cli_file_paths_share_one_pass(
+    tmp_path: Path, monkeypatch, make_fake_drive
+) -> None:
+    # #171: N file paths in one directory cost one pass -- one upload batch, one listing
+    # of the directory and a bounded number of index saves -- not N of each.
+    from click.testing import CliRunner
+
+    from protonfs.cli import main
+
+    (tmp_path / "run1").mkdir()
+    for n in range(1, 5):
+        (tmp_path / "run1" / f"dump_000{n}").write_bytes(b"d" * n)
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    fake = make_fake_drive()
+    ctx.drive = fake
+    _inject_ctx(monkeypatch, ctx)
+    saves = []
+    real_save = IndexStore.save
+    monkeypatch.setattr(IndexStore, "save", lambda self: saves.append(1) or real_save(self))
+
+    result = CliRunner().invoke(
+        main, ["push", "run1/dump_0001", "run1/dump_0002", "run1/dump_0003"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "transferred=3" in result.output
+    assert len(fake.upload_calls) == 1
+    assert fake.identity_calls == ["/my-files/test/run1"]
+    assert len(saves) <= 2
+    assert set(ctx.index.all()) == {f"run1/dump_000{n}" for n in (1, 2, 3)}
+
+
 def test_push_cli_nonexistent_path_is_usage_error_no_drive_no_lock(
     tmp_path: Path, monkeypatch, make_fake_drive
 ) -> None:
