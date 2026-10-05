@@ -133,6 +133,26 @@ def test_pull_multiple_parent_groups_downloads_all(tmp_path: Path, make_fake_dri
     assert (tmp_path / "run2" / "b").exists()
 
 
+def test_pull_carries_on_when_a_progress_save_fails(
+    tmp_path: Path, make_fake_drive, first_index_save_fails
+) -> None:
+    # #170: a failed save after the first directory must not abort the pull.
+    from protonfs.index import IndexStore
+
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    for rel in ("run1/a", "run2/b"):
+        ctx.index.set(rel, _metadata_only_entry(f"/my-files/test/{rel}"))
+    ctx.drive = make_fake_drive()
+
+    result = pull(ctx, None, resolve=None, dry_run=False)
+
+    assert result.transferred_items == 2
+    assert first_index_save_fails[0] is False
+    on_disk = IndexStore(tmp_path)
+    assert {on_disk.get(r).local_state for r in ("run1/a", "run2/b")} == {"present"}
+
+
 def test_pull_dry_run_does_not_call_download(tmp_path: Path, make_fake_drive) -> None:
     init_config(tmp_path, "/my-files/test")
     ctx = load_context(tmp_path)

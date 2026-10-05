@@ -285,6 +285,29 @@ def make_fake_drive():
     return _make
 
 
+@pytest.fixture
+def first_index_save_fails(monkeypatch):
+    """Fail the test's first index save with an I/O error and let later saves through,
+    the way one rename on a FUSE mount failed mid-command (#170). Returns the list of
+    attempted saves (``False`` = failed)."""
+    import errno
+
+    from protonfs.index import IndexStore
+
+    real_write = IndexStore._write_atomically
+    attempts: list[bool] = []
+
+    def flaky(self, data):
+        if not attempts:
+            attempts.append(False)
+            raise OSError(errno.EIO, "simulated failed index save")
+        attempts.append(True)
+        return real_write(self, data)
+
+    monkeypatch.setattr(IndexStore, "_write_atomically", flaky)
+    return attempts
+
+
 class RecordingReporter:
     """A fake :class:`~protonfs.reporting.Reporter` that records every call it
     receives instead of rendering, so command-core tests can assert on narration

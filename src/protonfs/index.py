@@ -10,14 +10,28 @@ leaves a torn manifest.
 """
 from __future__ import annotations
 
+import errno
 import json
+import logging
 import os
 import tempfile
+import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+logger = logging.getLogger(__name__)
+
 INDEX_FILE_NAME = "index.json"
+
+# #170: on a glusterfs FUSE mount the temp file save() has just written and fsynced is
+# sometimes missing at the rename (ENOENT; ESTALE is the NFS-style form of the same
+# thing). The content is still in memory, so save() writes a fresh temp file and tries
+# again, this many times in all, sleeping _SAVE_BACKOFF_S * 2**n between attempts.
+# Any other error is not about a lost temp file, and fails at once.
+_SAVE_ATTEMPTS = 5
+_SAVE_BACKOFF_S = 0.1
+_VANISHED_ERRNOS = frozenset({errno.ENOENT, errno.ESTALE})
 
 # On-disk schema version. Bump this whenever the persisted shape changes, and register a
 # forward migration below so existing repos upgrade transparently on their next save.
@@ -168,6 +182,13 @@ class IndexStore:
         Writes to a temp file on the same filesystem and ``os.replace``\\ s it onto the
         real path, so a reader (or a crash mid-write) sees either the old file or the
         new one, never a torn one.
+
+        :raises OSError: when the write or rename fails; a temp file that vanished
+            before its rename is first rewritten and retried a few times.
+
+        .. versionchanged:: 2.4.0
+           Retries, with a fresh temp file, when the temp file is gone by the time of the
+           rename, as happens on some network/FUSE mounts (#170).
         """
         self._path.parent.mkdir(parents=True, exist_ok=True)
         document = {
@@ -177,6 +198,38 @@ class IndexStore:
         if self._manifest is not None:
             document["manifest"] = dict(self._manifest)
         data = json.dumps(document, indent=2, sort_keys=True) + "\n"
+        for attempt in range(_SAVE_ATTEMPTS):
+            try:
+                self._write_atomically(data)
+                return
+            except OSError as exc:
+                if exc.errno not in _VANISHED_ERRNOS or attempt == _SAVE_ATTEMPTS - 1:
+                    raise
+                logger.warning(
+                    "index save: %s (attempt %d of %d); writing it again",
+                    exc, attempt + 1, _SAVE_ATTEMPTS,
+                )
+                time.sleep(_SAVE_BACKOFF_S * 2**attempt)
+
+    def checkpoint(self) -> bool:
+        """Save progress part-way through a command, without letting a failure abort it.
+
+        A failed save leaves the in-memory index intact, so the command carries on and
+        its final :meth:`save` persists everything; that one raises if it fails too.
+
+        :returns: whether the index was saved.
+
+        .. versionadded:: 2.4.0
+        """
+        try:
+            self.save()
+        except OSError as exc:
+            logger.warning("index progress save failed, will retry at the end: %s", exc)
+            return False
+        return True
+
+    def _write_atomically(self, data: str) -> None:
+        """Write ``data`` to a fresh temp file beside the index and rename it into place."""
         # Write to a temp file in the SAME directory (same filesystem, so os.replace is a
         # true atomic rename) and swap it onto the real path. A reader — or a crash — never
         # sees a torn or truncated index: it sees either the old file or the new one.

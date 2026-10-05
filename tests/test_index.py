@@ -98,6 +98,92 @@ def test_save_is_atomic_original_survives_failed_replace(
     assert contents == {"index.json"}
 
 
+def _vanishing_replace(monkeypatch: pytest.MonkeyPatch, failures: int, exc=None) -> list[str]:
+    """Make the first `failures` os.replace calls fail the way a FUSE mount did (#170):
+    the temp file is gone by the time of the rename. Returns the temp names tried."""
+    real_replace = index_mod.os.replace
+    tried: list[str] = []
+
+    def flaky(src, dst):
+        tried.append(str(src))
+        if len(tried) <= failures:
+            Path(src).unlink()
+            raise exc or FileNotFoundError(2, "No such file or directory", str(src))
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(index_mod.os, "replace", flaky)
+    monkeypatch.setattr(index_mod.time, "sleep", lambda s: None)
+    return tried
+
+
+def test_save_retries_when_the_temp_file_vanishes_before_the_rename(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # #170: on a glusterfs FUSE mount the just-written, fsynced temp file was sometimes
+    # missing at os.replace. The data is still in memory, so save() writes it again.
+    store = IndexStore(tmp_path)
+    store.set("a/b", _entry(size=1))
+    store.save()
+    store.set("a/b", _entry(size=2))
+    tried = _vanishing_replace(monkeypatch, failures=1)
+
+    store.save()
+
+    assert len(tried) == 2 and tried[0] != tried[1]  # a fresh temp file, not the lost one
+    on_disk = json.loads((tmp_path / ".protonfs" / "index.json").read_text())
+    assert on_disk["entries"]["a/b"]["size"] == 2
+    assert {p.name for p in (tmp_path / ".protonfs").iterdir()} == {"index.json"}
+
+
+def test_save_raises_once_its_retries_are_spent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = IndexStore(tmp_path)
+    store.set("a/b", _entry(size=1))
+    store.save()
+    store.set("a/b", _entry(size=2))
+    tried = _vanishing_replace(monkeypatch, failures=100)
+
+    with pytest.raises(FileNotFoundError):
+        store.save()
+
+    assert len(tried) == index_mod._SAVE_ATTEMPTS
+    on_disk = json.loads((tmp_path / ".protonfs" / "index.json").read_text())
+    assert on_disk["entries"]["a/b"]["size"] == 1
+    assert {p.name for p in (tmp_path / ".protonfs").iterdir()} == {"index.json"}
+
+
+def test_save_does_not_retry_an_error_that_is_not_a_vanished_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A permission error will not clear by rewriting the temp file; fail at once.
+    store = IndexStore(tmp_path)
+    store.set("a/b", _entry())
+    tried = _vanishing_replace(monkeypatch, failures=100, exc=PermissionError(13, "denied"))
+
+    with pytest.raises(PermissionError):
+        store.save()
+
+    assert len(tried) == 1
+
+
+def test_checkpoint_reports_a_failed_save_instead_of_raising(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # #170: a progress save part-way through a command must not abort it; the in-memory
+    # index is intact, and the command's final save() persists it.
+    store = IndexStore(tmp_path)
+    store.set("a/b", _entry())
+    _vanishing_replace(monkeypatch, failures=100)
+
+    assert store.checkpoint() is False
+    assert store.get("a/b") == _entry()
+
+    monkeypatch.undo()
+    assert store.checkpoint() is True
+    assert IndexStore(tmp_path).get("a/b") == _entry()
+
+
 def test_save_stamps_current_schema_version(tmp_path: Path) -> None:
     from protonfs.index import INDEX_SCHEMA_VERSION
 

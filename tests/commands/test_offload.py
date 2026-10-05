@@ -7,7 +7,7 @@ from protonfs.commands.offload import offload as _offload
 from protonfs.config import init_config
 from protonfs.context import load_context
 from protonfs.diff import SyncState, classify
-from protonfs.index import IndexEntry
+from protonfs.index import IndexEntry, IndexStore
 from protonfs.localscan import hash_file_digests, scan
 
 
@@ -69,6 +69,29 @@ def test_offload_deletes_verified_file_and_marks_metadata_only(
     entry = ctx.index.get("dump_0001")
     assert entry is not None
     assert entry.local_state == "metadata-only"
+
+
+def test_offload_carries_on_when_a_progress_save_fails(
+    tmp_path: Path, make_fake_drive, first_index_save_fails
+) -> None:
+    # #170: a failed save after the first directory must not abort offload. Both local
+    # copies are gone either way, so the final save has to record both as metadata-only.
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    fake = make_fake_drive()
+    ctx.drive = fake
+    for rel in ("run1/a", "run2/b"):
+        (tmp_path / rel).parent.mkdir()
+        (tmp_path / rel).write_bytes(b"data")
+        ctx.index.set(rel, _synced_entry(tmp_path / rel, f"/my-files/test/{rel}"))
+        fake.upload([tmp_path / rel], f"/my-files/test/{Path(rel).parent}")
+
+    result = offload(ctx, None)
+
+    assert result.offloaded == 2
+    assert first_index_save_fails[0] is False
+    on_disk = IndexStore(tmp_path)
+    assert {on_disk.get(r).local_state for r in ("run1/a", "run2/b")} == {"metadata-only"}
 
 
 def test_offload_leaves_untracked_file_alone(tmp_path: Path, make_fake_drive) -> None:
