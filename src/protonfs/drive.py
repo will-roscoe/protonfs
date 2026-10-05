@@ -114,8 +114,14 @@ class TransferResult:
         that push verified match the local copy and recorded in the index without
         re-uploading (#self-heal). Not part of the CLI's JSON; populated by push.
 
+    :ivar unsettled_items: files push held back because they were modified within its
+        settle window (``min_age``); not part of the CLI's JSON; populated by push.
+
     .. versionchanged:: 1.7.0
        Added ``adopted_items`` for the push self-heal-adopt path.
+
+    .. versionchanged:: 2.4.0
+       Added ``unsettled_items`` for push's settle window (#168).
     """
 
     transferred_items: int
@@ -123,6 +129,7 @@ class TransferResult:
     failed_items: int
     failures: list[dict]
     adopted_items: int = 0
+    unsettled_items: int = 0
 
     @classmethod
     def from_json(cls, data: dict) -> TransferResult:

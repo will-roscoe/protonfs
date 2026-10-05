@@ -5,7 +5,9 @@
 from __future__ import annotations
 
 import datetime
+import hashlib
 import logging
+import time
 from enum import Enum
 from pathlib import Path
 
@@ -133,6 +135,56 @@ def _verify_remote(ident, entry, *, strict_sha1: bool) -> _Verdict:
     return _Verdict.VERIFIED
 
 
+def _is_older_copy(path: Path, ident) -> bool:
+    """Whether the remote copy ``ident`` is a byte-prefix of the local file at ``path``.
+
+    A file pushed while it was still being written leaves its first bytes on Drive, and
+    the post-upload check rightly refuses to index that (#148). The file is then not in
+    the index, so the next push meets "already exists" and the adoption check refutes
+    the shorter copy, as a conflict on every push from then on (#168). A remote copy
+    whose content equals the start of the local file is an older copy of this same
+    file, and the local file can replace it as a new revision. A revision destroys
+    nothing, since Drive's version history keeps the copy it replaces.
+
+    Needs the remote's plaintext size and sha1. Without either it proves nothing, and the
+    file stays a conflict.
+    """
+    if ident is None or ident.claimed_size is None or not ident.sha1:
+        return False
+    digest = hashlib.sha1()
+    remaining = ident.claimed_size
+    try:
+        if remaining > path.stat().st_size:
+            return False
+        with path.open("rb") as handle:
+            while remaining:
+                chunk = handle.read(min(remaining, 1024 * 1024))
+                if not chunk:
+                    return False
+                digest.update(chunk)
+                remaining -= len(chunk)
+    except OSError:
+        return False
+    return digest.hexdigest() == ident.sha1
+
+
+def _is_own_upload(record: dict | None, remote_path: str, ident) -> bool:
+    """Whether the remote copy ``ident`` at ``remote_path`` is the unverified upload an
+    earlier push recorded (:meth:`~protonfs.index.IndexStore.underdelivered`).
+
+    It is, while the node's active revision is still the one recorded: nobody has
+    uploaded over it since. This covers what :func:`_is_older_copy` cannot prove, such
+    as a listing with no sha1, or a file rewritten rather than appended to (#168).
+    """
+    return (
+        record is not None
+        and ident is not None
+        and bool(ident.revision)
+        and record["remote_path"] == remote_path
+        and record["revision"] == ident.revision
+    )
+
+
 def _revision_rels(ctx: RepoContext, rels: list[str], remote_parent: str) -> set[str]:
     """The files in ``rels`` to upload as a new revision of their existing remote node.
 
@@ -247,6 +299,9 @@ def push(
     dry_run: bool,
     reporter=None,
     manifest_updates: dict | None = None,
+    min_age: float = 0.0,
+    now: float | None = None,
+    only: set[str] | None = None,
 ) -> TransferResult:
     """Upload local-only and locally-changed files to Drive.
 
@@ -268,6 +323,13 @@ def push(
         this push verified, for the caller to write once (#146; the CLI pushes several
         paths per run). ``None`` writes them at the end of this call instead, when the
         repo maintains a manifest.
+    :param min_age: settle window in seconds: a file modified more recently than this is
+        held back, reported, and counted in ``unsettled_items`` instead of uploaded, so a
+        file still being written is never sent part-way (#168). ``0`` (the default) holds
+        nothing back.
+    :param now: the current time, for tests; defaults to :func:`time.time`.
+    :param only: push just these repo-relative files (those inside ``subpath``), in one
+        pass, instead of scanning all of ``subpath``.
     :returns: a :class:`~protonfs.drive.TransferResult` of what was uploaded/skipped.
     :raises protonfs.drive.DriveError: on a Drive or lock failure.
 
@@ -289,13 +351,23 @@ def push(
        maintains one (``defaults.manifest``); a failure to update it is a warning, never
        a push failure (#146).
 
+    .. versionchanged:: 2.4.0
+       Added the settle window (``min_age``, off by default) and ``now`` (#168), and
+       ``only``, so the CLI pushes N named files in one pass rather than N (#171). A name
+       conflict with this file's own older copy on Drive (a byte-prefix of the local
+       file, or an unverified upload recorded by an earlier push) is resolved by uploading
+       a new revision of it, not reported as a conflict on every push (#168).
+
     .. seealso:: :func:`protonfs.commands.pull.pull` for the download direction.
     """
     from protonfs import manifest
     from protonfs.reporting import get_reporter
 
     reporter = reporter or get_reporter()
-    reporter.phase("scanning local", subpath=subpath or ".")
+    if only is None:
+        reporter.phase("scanning local", subpath=subpath or ".")
+    else:
+        reporter.phase("scanning local", files=len(only))
     ignore = IgnoreMatcher.from_file(ctx.root)
     scan_root = Path(subpath) if subpath else Path(".")
     from protonfs.hashcache import HashCache
@@ -303,7 +375,7 @@ def push(
     local = scan(
         ctx.root, scan_root, ignore, ctx.index,
         low_io=ctx.config.defaults.low_io, reporter=reporter,
-        hash_cache=HashCache(ctx.root),
+        hash_cache=HashCache(ctx.root), only=only,
     )
     diff_entries = classify(local, ctx.index)
 
@@ -322,8 +394,21 @@ def push(
             SyncState.BOTH_MODIFIED,
         )
     ]
+    held: list[str] = []
+    if min_age > 0:
+        from protonfs.retention import format_age, is_settled
+
+        clock = time.time() if now is None else now
+        held = [rel for rel in to_push if not is_settled(local[rel].mtime, min_age, clock)]
+        for rel in held:
+            reporter.warn(
+                f"hold {rel}: modified within the settle window "
+                f"(min-age {format_age(min_age)}), not pushed yet"
+            )
+        held_set = set(held)
+        to_push = [rel for rel in to_push if rel not in held_set]
     if dry_run or not to_push:
-        return TransferResult(len(to_push), 0, 0, [])
+        return TransferResult(len(to_push), 0, 0, [], unsettled_items=len(held))
 
     reporter.phase("uploading", files=len(to_push))
 
@@ -338,9 +423,9 @@ def push(
     strategy = _RESOLVE_TO_STRATEGY.get(resolve, resolve)
     batch_size = ctx.config.defaults.batch_size
     groups = group_by_parent(to_push)
-    total = TransferResult(0, 0, 0, [])
+    total = TransferResult(0, 0, 0, [], unsettled_items=len(held))
     done = 0  # files handed to proton-drive so far, for reporter.progress (#93)
-    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    synced_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
     verified: dict = {} if manifest_updates is None else manifest_updates
 
     for parent, rels in groups.items():
@@ -368,17 +453,6 @@ def push(
         if not rels:
             continue
 
-        # Files proton-drive did not report as a (real) failure or skip -- candidates to
-        # VERIFY against the remote before we trust them as delivered (#22). A file that
-        # failed upload with an "already exists" name-conflict is ALSO a candidate, but to
-        # ADOPT: verify the remote copy matches and record it without re-uploading.
-        candidates: list[str] = []
-        adopt_rels: set[str] = set()
-        # Files in a batch proton-drive reported skips for: possibly uploaded, possibly
-        # skipped as already-present. Verified strictly, and reported as an
-        # under-delivery rather than a conflict when they fail -- "we could not confirm
-        # this" is what actually happened, and it must not read as "the remote differs".
-        unattributed_rels: set[str] = set()
         # #144: a changed file this device uploaded before is a new revision of that node,
         # not a new file -- see _revision_rels. Only when the user chose no strategy.
         revision_rels = (
@@ -391,131 +465,186 @@ def push(
             (batch, REVISION_STRATEGY)
             for batch in batches([r for r in rels if r in revision_rels], batch_size)
         ]
-        for batch, batch_strategy in jobs:
-            local_paths = [ctx.root / rel for rel in batch]
-            result = ctx.drive.upload(local_paths, remote_parent, file_strategy=batch_strategy)
-            total.skipped_items += result.skipped_items
-            done += len(batch)
-            reporter.progress(done, len(to_push))
+        # #168: a remote copy that proves to be an older copy of the same file is replaced
+        # with a revision in one more round; see _is_older_copy.
+        retry_round = False
+        while jobs:
+            # Files proton-drive did not report as a (real) failure or skip -- candidates to
+            # VERIFY against the remote before we trust them as delivered (#22). A file that
+            # failed upload with an "already exists" name-conflict is ALSO a candidate, but to
+            # ADOPT: verify the remote copy matches and record it without re-uploading.
+            candidates: list[str] = []
+            adopt_rels: set[str] = set()
+            # Files in a batch proton-drive reported skips for: possibly uploaded, possibly
+            # skipped as already-present. Verified strictly, and reported as an
+            # under-delivery rather than a conflict when they fail -- "we could not confirm
+            # this" is what actually happened, and it must not read as "the remote differs".
+            unattributed_rels: set[str] = set()
+            # Files sent with a strategy that writes to the node at their own name (none,
+            # merge, replace); skip and keep-both leave whatever holds that name alone.
+            # Only these may be recorded as push's own short upload (#168).
+            written_rels: set[str] = set()
+            for batch, batch_strategy in jobs:
+                local_paths = [ctx.root / rel for rel in batch]
+                result = ctx.drive.upload(local_paths, remote_parent, file_strategy=batch_strategy)
+                total.skipped_items += result.skipped_items
+                if not retry_round:  # a retried file was already counted once (#93)
+                    done += len(batch)
+                    reporter.progress(done, len(to_push))
 
-            # Partition the batch's failures: an "already exists" conflict is an adoption
-            # candidate (verified below); everything else is a real failure now.
-            conflict_names = {f["name"] for f in result.failures if _is_already_exists(f)}
-            real_failures = [f for f in result.failures if not _is_already_exists(f)]
-            total.failed_items += len(real_failures)
-            total.failures += real_failures
-            failed_names = {f["name"] for f in real_failures}
-            for rel in batch:
-                name = Path(rel).name
-                # A conflict was not transferred (it already existed) -- no "^" upload line.
-                if name not in failed_names and name not in conflict_names:
-                    reporter.item("^", rel)
+                # Partition the batch's failures: an "already exists" conflict is an adoption
+                # candidate (verified below); everything else is a real failure now.
+                conflict_names = {f["name"] for f in result.failures if _is_already_exists(f)}
+                real_failures = [f for f in result.failures if not _is_already_exists(f)]
+                total.failed_items += len(real_failures)
+                total.failures += real_failures
+                failed_names = {f["name"] for f in real_failures}
+                for rel in batch:
+                    name = Path(rel).name
+                    # A conflict was not transferred (it already existed) -- no "^" upload line.
+                    if name not in failed_names and name not in conflict_names:
+                        reporter.item("^", rel)
 
-            # D2.1: a skip is reported only as an aggregate count, so we cannot tell
-            # WHICH files in the batch were skipped. Indexing an unconfirmed hash would
-            # be wrong, but so was the original response of indexing none of them and
-            # "leaving them for the next push": the next push takes this same branch, so
-            # a file proton-drive keeps skipping never converges (#145). Not knowing
-            # which file was skipped is a reason to verify all of them against the
-            # remote, not to verify none -- the per-file check below settles each one.
-            unattributed = result.skipped_items > 0
-            for rel in batch:
+                # D2.1: a skip is reported only as an aggregate count, so we cannot tell
+                # WHICH files in the batch were skipped. Indexing an unconfirmed hash would
+                # be wrong, but so was the original response of indexing none of them and
+                # "leaving them for the next push": the next push takes this same branch, so
+                # a file proton-drive keeps skipping never converges (#145). Not knowing
+                # which file was skipped is a reason to verify all of them against the
+                # remote, not to verify none -- the per-file check below settles each one.
+                unattributed = result.skipped_items > 0
+                for rel in batch:
+                    name = Path(rel).name
+                    if name in failed_names:
+                        continue
+                    candidates.append(rel)
+                    if batch_strategy not in ("skip", "keep-both"):
+                        written_rels.add(rel)
+                    if name in conflict_names:
+                        adopt_rels.add(rel)
+                    elif unattributed:
+                        unattributed_rels.add(rel)
+
+            if not candidates:
+                break
+
+            # #22: do NOT trust proton-drive's transferred count -- re-list the remote parent
+            # and confirm each candidate actually landed (present, and plaintext claimedSize
+            # matches). A file that was claimed-transferred but is absent/short is a silent
+            # under-delivery: report it as failed and leave it unindexed so the next push
+            # retries it, instead of recording false success and risking data loss on offload.
+            # Adoption candidates (#self-heal) run the same verify, stricter (sha1 too): a
+            # remote copy that matches is recorded without re-upload; one that differs is a
+            # real name-conflict, reported as such rather than silently overwritten.
+            # #144: an identity with no plaintext size can confirm neither, so it is neither
+            # indexed nor adopted -- see UNVERIFIED_KIND.
+            identities = ctx.drive.remote_identities(remote_parent)
+            older_copies: list[str] = []
+            for rel in candidates:
+                entry = local[rel]
                 name = Path(rel).name
-                if name in failed_names:
+                ident = identities.get(name)
+                is_adopt = rel in adopt_rels
+                strict = is_adopt or rel in unattributed_rels
+                verdict = _verify_remote(ident, entry, strict_sha1=strict)
+                if verdict is _Verdict.UNVERIFIABLE:
+                    total.failed_items += 1
+                    logger.warning(
+                        "push unverified: %s is on the remote but the listing reports no "
+                        "plaintext size for it, so delivery cannot be verified; it was NOT "
+                        "indexed and will be retried on the next push", rel
+                    )
+                    total.failures.append(
+                        {"name": name, "error": UNVERIFIED_ERROR, "kind": UNVERIFIED_KIND}
+                    )
                     continue
-                candidates.append(rel)
-                if name in conflict_names:
-                    adopt_rels.add(rel)
-                elif unattributed:
-                    unattributed_rels.add(rel)
-
-        if not candidates:
-            continue
-
-        # #22: do NOT trust proton-drive's transferred count -- re-list the remote parent
-        # and confirm each candidate actually landed (present, and plaintext claimedSize
-        # matches). A file that was claimed-transferred but is absent/short is a silent
-        # under-delivery: report it as failed and leave it unindexed so the next push
-        # retries it, instead of recording false success and risking data loss on offload.
-        # Adoption candidates (#self-heal) run the same verify, stricter (sha1 too): a
-        # remote copy that matches is recorded without re-upload; one that differs is a
-        # real name-conflict, reported as such rather than silently overwritten.
-        # #144: an identity with no plaintext size can confirm neither, so it is neither
-        # indexed nor adopted -- see UNVERIFIED_KIND.
-        identities = ctx.drive.remote_identities(remote_parent)
-        for rel in candidates:
-            entry = local[rel]
-            name = Path(rel).name
-            ident = identities.get(name)
-            is_adopt = rel in adopt_rels
-            strict = is_adopt or rel in unattributed_rels
-            verdict = _verify_remote(ident, entry, strict_sha1=strict)
-            if verdict is _Verdict.UNVERIFIABLE:
-                total.failed_items += 1
-                logger.warning(
-                    "push unverified: %s is on the remote but the listing reports no "
-                    "plaintext size for it, so delivery cannot be verified; it was NOT "
-                    "indexed and will be retried on the next push", rel
-                )
-                total.failures.append(
-                    {"name": name, "error": UNVERIFIED_ERROR, "kind": UNVERIFIED_KIND}
-                )
-                continue
-            if verdict is not _Verdict.VERIFIED:
-                total.failed_items += 1
-                if is_adopt and ident is None:
-                    # #138: the name is taken but nothing of that name is listable -- a
-                    # phantom node, not a different file. Reported separately so the CLI
-                    # never offers --resolve=remote here (that would keep the phantom).
-                    logger.warning(
-                        "push phantom: %s was rejected as a name conflict but is absent "
-                        "from the remote listing", rel
-                    )
-                    total.failures.append(
-                        {"name": name, "error": PHANTOM_ERROR, "kind": PHANTOM_KIND}
-                    )
-                elif is_adopt:
-                    logger.warning(
-                        "push conflict: %s already on remote but remote differs from local", rel
-                    )
-                    total.failures.append(
-                        {"name": name, "error": CONFLICT_ERROR, "kind": CONFLICT_KIND}
-                    )
-                else:
-                    if ident is None:
-                        reason = "absent"
-                    elif ident.claimed_size != entry.size:
-                        reason = f"size {ident.claimed_size} != {entry.size}"
+                if verdict is not _Verdict.VERIFIED:
+                    remote_path = f"{remote_parent}/{name}"
+                    if is_adopt and not retry_round:
+                        if _is_older_copy(ctx.root / rel, ident):
+                            why = "is a byte-prefix of the local file"
+                        elif _is_own_upload(ctx.index.underdelivered(rel), remote_path, ident):
+                            why = "is the unverified upload an earlier push recorded"
+                        else:
+                            why = None
+                        if why is not None:
+                            logger.info(
+                                "push: %s on the remote %s; uploading the local file as a "
+                                "new revision of it", rel, why
+                            )
+                            older_copies.append(rel)
+                            continue
+                    total.failed_items += 1
+                    if is_adopt and ident is None:
+                        # #138: the name is taken but nothing of that name is listable -- a
+                        # phantom node, not a different file. Reported separately so the CLI
+                        # never offers --resolve=remote here (that would keep the phantom).
+                        logger.warning(
+                            "push phantom: %s was rejected as a name conflict but is absent "
+                            "from the remote listing", rel
+                        )
+                        total.failures.append(
+                            {"name": name, "error": PHANTOM_ERROR, "kind": PHANTOM_KIND}
+                        )
+                    elif is_adopt:
+                        logger.warning(
+                            "push conflict: %s already on remote but remote differs from local", rel
+                        )
+                        total.failures.append(
+                            {"name": name, "error": CONFLICT_ERROR, "kind": CONFLICT_KIND}
+                        )
                     else:
-                        reason = "sha1 differs"
-                    logger.warning("push under-delivery: %s not verified (%s)", rel, reason)
-                    total.failures.append(
-                        {"name": name, "error": UNDERDELIVERED_ERROR, "kind": UNDERDELIVERED_KIND}
-                    )
-                continue
-            indexed = IndexEntry(
-                size=entry.size,
-                mtime=entry.mtime,
-                sha256=entry.sha256,
-                sha1=entry.sha1,
-                remote_path=f"{remote_parent}/{name}",
-                origin_device=ctx.config.device_id,
-                local_state="present",
-                last_synced=now,
-            )
-            ctx.index.set(rel, indexed)
-            # #146: only now -- verified against a live listing -- may the manifest
-            # promise this file; it records the Drive revision that was verified.
-            verified[rel] = manifest.entry_for_index(indexed, ident.revision, now)
-            if is_adopt:
-                total.adopted_items += 1
-            else:
-                total.transferred_items += 1
+                        if ident is None:
+                            reason = "absent"
+                        elif ident.claimed_size != entry.size:
+                            reason = f"size {ident.claimed_size} != {entry.size}"
+                        else:
+                            reason = "sha1 differs"
+                        logger.warning("push under-delivery: %s not verified (%s)", rel, reason)
+                        if (
+                            rel in written_rels
+                            and rel not in unattributed_rels
+                            and ident is not None
+                            and ident.revision
+                        ):
+                            # #168: the node now holds this push's own short upload. Say
+                            # so, or the next push can only call it a foreign conflict.
+                            ctx.index.mark_underdelivered(rel, remote_path, ident.revision)
+                        total.failures.append(
+                            {
+                                "name": name,
+                                "error": UNDERDELIVERED_ERROR,
+                                "kind": UNDERDELIVERED_KIND,
+                            }
+                        )
+                    continue
+                indexed = IndexEntry(
+                    size=entry.size,
+                    mtime=entry.mtime,
+                    sha256=entry.sha256,
+                    sha1=entry.sha1,
+                    remote_path=f"{remote_parent}/{name}",
+                    origin_device=ctx.config.device_id,
+                    local_state="present",
+                    last_synced=synced_at,
+                )
+                ctx.index.set(rel, indexed)
+                # #146: only now -- verified against a live listing -- may the manifest
+                # promise this file; it records the Drive revision that was verified.
+                verified[rel] = manifest.entry_for_index(indexed, ident.revision, synced_at)
+                if is_adopt:
+                    total.adopted_items += 1
+                else:
+                    total.transferred_items += 1
+
+            jobs = [(batch, REVISION_STRATEGY) for batch in batches(older_copies, batch_size)]
+            retry_round = True
 
         # #3: persist after each parent group so an interruption (Ctrl-C, dropped
         # connection) resumes from here on the next run instead of re-doing everything.
-        # Composed with #1's atomic writes, each of these saves is crash-safe.
-        ctx.index.save()
+        # Composed with #1's atomic writes, each of these saves is crash-safe. #170: a
+        # failed one is not fatal; the final save below persists everything.
+        ctx.index.checkpoint()
     if manifest_updates is None and verified:
         manifest.update(ctx, record=verified, reporter=reporter)
     ctx.index.save()

@@ -14,3 +14,7 @@ htmlcov/
 docs/_build/
 .worktrees/
 .claude/
+.remember/
+.superpowers/
+CLAUDE.md
+CLAUDE.local.md

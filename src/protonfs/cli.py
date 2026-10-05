@@ -339,6 +339,49 @@ def _accumulate_transfer(total, part) -> None:
     total.skipped_items += part.skipped_items
     total.failed_items += part.failed_items
     total.failures += part.failures
+    total.unsettled_items += part.unsettled_items
+
+
+def _verify_index(repair: bool) -> None:
+    """``verify --index [--repair]``: check the index against Drive listings (#169)."""
+    from protonfs.context import load_context
+    from protonfs.index import CHECK_LEVEL
+    from protonfs.indexcheck import Verdict, check_index, report_lines, reverify_index
+    from protonfs.locking import repo_lock
+
+    ctx = load_context()
+    level = ctx.index.check_level
+    if repair:
+        with repo_lock(ctx.root):
+            check, fixes = reverify_index(ctx)
+    else:
+        check, fixes = check_index(ctx), None
+    for line in report_lines(check, fixes):
+        click.echo(line)
+    if fixes is not None and check.complete:
+        click.echo(f"index: verified at check level {CHECK_LEVEL} (was {level})")
+        settled = not fixes.suspect
+    else:
+        click.echo(f"index: check level {level} (current {CHECK_LEVEL})")
+        settled = fixes is None and all(f.verdict is Verdict.OK for f in check.findings)
+    if not settled:
+        raise click.exceptions.Exit(1)
+
+
+def _split_file_paths(
+    root: Path, subpaths: list[str | None]
+) -> tuple[list[str | None], set[str]]:
+    """Separate the PATHs that name single files from the rest.
+
+    Each directory PATH (or the whole repo) is still one pass. Every file PATH goes
+    into one shared pass, which lists each remote directory once and saves the index
+    once per directory. Before, each file was a full pass of its own: an index scan, a
+    listing of its directory and an index save, so N files cost N of each (#171).
+
+    :returns: ``(per_path, files)`` -- the PATHs to run one pass each, and the files.
+    """
+    files = {s for s in subpaths if s is not None and (root / s).is_file()}
+    return [s for s in subpaths if s not in files], files
 
 
 @click.group(cls=PositionalFlagGroup)
@@ -649,8 +692,18 @@ def ls(
     is_flag=True,
     help="Fail (exit 1) if a PATH pattern matches nothing, instead of skipping it.",
 )
+@click.option(
+    "--min-age",
+    default="0",
+    show_default=True,
+    metavar="DURATION",
+    help="Settle window (e.g. 30m, 2h): hold back files modified more recently than this, "
+    "so a file still being written is never uploaded part-way. 0 holds nothing back.",
+)
 @_drive_error_boundary
-def push(path: tuple[str, ...], resolve: str | None, dry_run: bool, strict: bool) -> None:
+def push(
+    path: tuple[str, ...], resolve: str | None, dry_run: bool, strict: bool, min_age: str
+) -> None:
     """Upload local-only/changed files to Drive (any number of PATHs).
 
     Each PATH may be a directory, a single file, or a glob pattern. A quoted pattern
@@ -673,12 +726,19 @@ def push(path: tuple[str, ...], resolve: str | None, dry_run: bool, strict: bool
        rather than depending on the shell to expand it first (#131) -- so a scheduled job
        can carry a pattern that keeps matching as new directories appear. Added
        ``--strict``.
+
+    .. versionchanged:: 2.4.0
+       Added ``--min-age``: a file modified within the window is held back and counted as
+       ``unsettled=`` in the summary, then pushed by a later run once it has settled (#168).
+       File PATHs share one pass, so N files no longer cost N listings and index saves
+       (#171).
     """
     from protonfs.commands.push import push as push_files
     from protonfs.context import load_context
     from protonfs.drive import TransferResult
     from protonfs.locking import repo_lock
 
+    min_age_s = _parse_min_age(min_age)
     ctx = load_context()
     # #131: expand protonfs-side glob patterns against the local tree first -- push only
     # ever acts on files physically present, so the filesystem IS the right namespace here
@@ -700,11 +760,16 @@ def push(path: tuple[str, ...], resolve: str | None, dry_run: bool, strict: bool
     manifest_updates: dict = {}
     with repo_lock(ctx.root), _resumable_on_interrupt(ctx, "push"):
         try:
-            for subpath in subpaths:
+            per_path, files = _split_file_paths(ctx.root, subpaths)
+            passes = [(subpath, None) for subpath in per_path]
+            if files:
+                passes.append((None, files))  # #171: every file PATH in one pass
+            for subpath, only in passes:
                 _accumulate_transfer(
                     result,
                     push_files(
-                        ctx, subpath, resolve, dry_run, manifest_updates=manifest_updates
+                        ctx, subpath, resolve, dry_run, manifest_updates=manifest_updates,
+                        min_age=min_age_s, only=only,
                     ),
                 )
         finally:
@@ -715,16 +780,20 @@ def push(path: tuple[str, ...], resolve: str | None, dry_run: bool, strict: bool
 
                 if manifest.update(ctx, record=manifest_updates) is not None:
                     ctx.index.save()
-    if result.transferred_items + result.skipped_items + result.failed_items == 0:
+    if (
+        result.transferred_items + result.skipped_items + result.failed_items
+        + result.unsettled_items == 0
+    ):
         # An existing path that yields no candidates (nothing changed, or everything under
         # it is excluded by the ignore rules) would otherwise print only the bare zero
         # summary. Say so in plain language -- and at DEFAULT verbosity, which the Reporter
         # cannot do (reporter.done() renders only at -v and above).
         click.echo("nothing to push")
     adopted = f" adopted={result.adopted_items}" if result.adopted_items else ""
+    unsettled = f" unsettled={result.unsettled_items}" if result.unsettled_items else ""
     click.echo(
         f"transferred={result.transferred_items}{adopted} "
-        f"skipped={result.skipped_items} failed={result.failed_items}"
+        f"skipped={result.skipped_items} failed={result.failed_items}{unsettled}"
     )
     for failure in result.failures:
         click.echo(f"  FAILED {failure['name']}: {failure['error']}")
@@ -951,6 +1020,10 @@ def offload(
 
     A file modified within the last --min-age (default one day) is never offloaded:
     with nobody holding it open, it may still be being written.
+
+    .. versionchanged:: 2.4.0
+       File PATHs share one pass, so N files no longer cost N listings and index saves
+       (#171).
     """
     from protonfs.commands.offload import OffloadResult
     from protonfs.commands.offload import offload as offload_files
@@ -970,10 +1043,17 @@ def offload(
         )
 
     result = OffloadResult()
+    per_path, files = _split_file_paths(ctx.root, subpaths)
     with repo_lock(ctx.root):
-        for subpath in subpaths:
+        for subpath in per_path:
             result.merge(
                 offload_files(ctx, subpath, verify=verify, dry_run=dry_run, min_age=min_age_s)
+            )
+        if files:  # #171: every file PATH in one pass
+            result.merge(
+                offload_files(
+                    ctx, None, verify=verify, dry_run=dry_run, min_age=min_age_s, only=files
+                )
             )
     _echo_offload_result(result, dry_run)
 
@@ -1170,10 +1250,16 @@ def _echo_paths(label: str, paths: list[str]) -> None:
     "--repair",
     is_flag=True,
     help="Rewrite the remote manifest to match a full listing of the remote (creating it "
-    "if the root has none).",
+    "if the root has none). With --index, apply to the index what its check proves.",
+)
+@click.option(
+    "--index",
+    is_flag=True,
+    help="Check the local index instead: compare every entry with a listing of its remote "
+    "directory, without reading local files.",
 )
 @_drive_error_boundary
-def verify(repair: bool) -> None:
+def verify(repair: bool, index: bool) -> None:
     """Check the remote manifest against a full listing of the remote.
 
     The manifest (.protonfs/manifest.json under the remote root) records every file
@@ -1182,9 +1268,26 @@ def verify(repair: bool) -> None:
     contradicts (missing, or a different size/sha1) and files the manifest does not list.
     --repair rewrites the manifest from that listing, and is how one is first created.
 
+    With --index, it checks the local index instead. Each entry is compared with a
+    listing of its remote directory (one listing per directory, no local files read),
+    with entries whose only copy is on Drive first. --repair then applies what that
+    proves: an entry whose file is still here and whose Drive copy is missing or differs
+    is dropped, so the next push uploads it; one whose file is gone and whose Drive copy
+    is larger is rewritten to describe that copy. A Drive-only copy that is shorter,
+    different or gone is reported and left as it is. When every entry was checked, the
+    index is recorded at the current check level, so `upgrade` does not check it again.
+
     Exit code: 0 when every manifest entry matches Drive (or there is no manifest, or
     --repair rewrote it); 1 when entries are missing or differ, or on a Drive error.
+    With --index: 0 when every entry matches (with --repair: when every entry was
+    checked and none was left untouched); 1 otherwise, or on a Drive or lock error.
+
+    .. versionchanged:: 2.4.0
+       Added ``--index`` (#169).
     """
+    if index:
+        _verify_index(repair)
+        return
     from protonfs import manifest
     from protonfs.commands.verify import verify as verify_manifest
     from protonfs.context import load_context
@@ -1403,7 +1506,8 @@ def completions(shell: str, install: bool, uninstall: bool) -> None:
 )
 @click.option(
     "--min-age", "sched_min_age", metavar="DURATION",
-    help="Settle window passed to offload/prune jobs (e.g. 12h, 1d); default: theirs (1d).",
+    help="Settle window passed to push, offload and prune jobs (e.g. 30m, 1d); default: "
+    "push holds nothing back, offload/prune use 1d.",
 )
 @click.option(
     "--keep", "sched_keep", type=click.IntRange(min=0),

@@ -27,6 +27,11 @@ swapped onto the real path with ``os.replace``. A reader — or a crash at any
 point during the write — only ever sees the complete old file or the complete
 new one; a torn or truncated index is not a failure mode this design permits.
 
+On some network and FUSE mounts (glusterfs, observed) the temp file is
+occasionally gone by the time of the rename. The content is still in memory, so
+``IndexStore.save`` writes a fresh temp file and retries, a few times with a
+short backoff, before it raises (#170).
+
 Config files (``.protonfs/config.json``, ``config.local.json``, and the global
 ``~/.config/protonfs/config.json``) are written the same way by
 ``src/protonfs/config.py``.
@@ -57,6 +62,11 @@ Combined with the atomic-write guarantee above, this makes an interrupted run
 of the same command sees the index as it stood after the last completed group and
 only acts on what remains, rather than re-doing work already recorded or losing
 track of what happened before the interruption.
+
+These per-group saves are checkpoints (``IndexStore.checkpoint``): if one fails,
+the failure is logged and the run carries on, because the in-memory index still
+holds everything. The save at the end of the command persists it, and is the one
+that fails the command if it cannot (#170). ``offload`` saves the same way.
 
 Re-running ``push``/``pull`` on files that are already synced is a no-op — they
 classify as ``locally-indexed`` and are excluded from the transfer set — so
@@ -101,6 +111,23 @@ unindexed and reported as a distinct ``under-delivered`` failure (not a
 conflict) — the fix is a plain retry on the next push, not a ``--resolve``
 strategy.
 
+That retry has to get past the short copy the failed upload left on Drive:
+without a strategy ``proton-drive`` rejects the name as taken, and the file is
+not indexed, so the copy looks like any other file's. Two checks recognise it
+as this file's own older copy, and then the local file is uploaded as a **new
+revision** of it (#168):
+
+- the remote copy is a byte-prefix of the local file: its plaintext size is
+  no larger, and its sha1 equals the sha1 of that many leading local bytes. This
+  is what a file pushed while still being appended to leaves behind;
+- or the failed push recorded the remote revision it uploaded (the
+  ``underdelivered`` key in ``index.json``, beside the entries), and the node's
+  active revision is still that one, so nothing has been uploaded over it since.
+  Push only records a node it wrote to, never one a ``skip``/``keep-both``
+  strategy left alone.
+
+A remote copy that passes neither check is still a conflict.
+
 A file this machine pushed before and has since changed locally is uploaded as a
 **new revision** of its existing Drive node (``proton-drive``'s ``merge``
 strategy), so Drive's version history keeps the copy it supersedes. Without a
@@ -127,6 +154,24 @@ file by file rather than trusted or discarded: a skip is only reported as an
 aggregate count with no per-file attribution, so each file in that batch must
 match the remote strictly (size, and sha1 where both sides have one) before it
 is indexed.
+
+Stricter checks reach entries already recorded
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Each index entry was judged by the checks of the protonfs that wrote it, and later
+releases made those checks stricter (real size verification in 1.11.3, revisions for
+appended files in 1.12.3). Without more, an entry recorded under a weaker check would
+stay trusted indefinitely, including one ``offload`` has since deleted locally, where
+Drive holds the only copy (#169).
+
+So the index records the **check level** its entries meet (``check_level`` in
+``index.json``; an index an earlier release wrote reads as ``0``). ``upgrade``
+re-verifies an index below the current level against Drive, one listing per remote
+directory, and only then records the new level. The repairs it makes never discard a
+copy: a local file whose Drive copy does not match is dropped from the index so the
+next ``push`` uploads it, and a Drive-only copy that is shorter, different or gone is
+reported and left untouched rather than rewritten to look consistent. A release that
+makes a check stricter raises the level in the same change (see ``CONTRIBUTING.md``).
+``verify --index`` runs the same comparison on demand, read-only unless ``--repair``.
 
 Remote manifest: a cache, never an authority
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

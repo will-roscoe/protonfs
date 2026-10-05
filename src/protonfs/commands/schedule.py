@@ -205,6 +205,9 @@ def _run_lines(job: ScheduledJob, protonfs_bin: str) -> str:
         )
     if job.command == "prune":
         return f"  {exe} prune --yes{_args(job, transfer=True, retention=True)}\n"
+    if job.command == "push" and job.min_age:
+        # #168: the push's own settle window; an offload job's push step takes none
+        return f"  {exe} push{_args(job)} --min-age={job.min_age}\n"
     return f"  {exe} {job.command}{_args(job)}\n"
 
 
@@ -474,8 +477,8 @@ def add_job(
         and keeps matching as new ones appear (#131).
     :param strict: pass ``--strict`` to push/pull, so a run whose pattern matches nothing
         fails (exit 1) instead of being reported and skipped.
-    :param min_age: settle window for ``offload``/``prune`` jobs (e.g. ``"1d"``);
-        ``None`` uses the command's default.
+    :param min_age: settle window for ``push``/``offload``/``prune`` jobs (e.g. ``"1d"``);
+        ``None`` uses the command's default (none for push).
     :param keep: newest files per directory a ``prune`` job keeps; ``None`` uses the
         command's default.
     :param warn: called with each warning-level conflict (the job is still added).
@@ -489,6 +492,9 @@ def add_job(
     .. versionchanged:: 2.2.0
        Added the ``offload``/``prune`` commands, ``min_age``, ``keep`` and ``warn``;
        conflicting jobs are refused (#158).
+
+    .. versionchanged:: 2.4.0
+       ``min_age`` also applies to ``push`` jobs, as ``push --min-age`` (#168).
     """
     if not is_protonfs_repo(repo_root):
         raise ScheduleError(f"{repo_root} is not a protonfs repo (run `protonfs setup`).")
@@ -554,8 +560,8 @@ def _check_options(
     if (resolve or strict) and command == "prune":
         raise ScheduleError("--resolve/--strict apply to push/pull; a prune job does not take them")
     if min_age is not None:
-        if command not in _REMOVES_LOCAL:
-            raise ScheduleError("--min-age applies to offload and prune jobs only")
+        if command not in _REMOVES_LOCAL and command != "push":
+            raise ScheduleError("--min-age applies to push, offload and prune jobs only")
         try:
             parse_duration(min_age)
         except RetentionError as exc:

@@ -186,7 +186,8 @@ def _download_and_index(
                 total.transferred_items += 1
         # #3: persist after each parent group so an interrupted pull resumes from here
         # rather than restarting. Crash-safe once composed with #1's atomic writes.
-        ctx.index.save()
+        # #170: a failed one is not fatal; pull's final save persists everything.
+        ctx.index.checkpoint()
     return total
 
 

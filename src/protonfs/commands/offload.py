@@ -251,9 +251,10 @@ def offload(
             )
 
         # #3: persist after each parent group so an interruption resumes from here
-        # rather than re-deleting/re-verifying everything (mirrors push/pull).
+        # rather than re-deleting/re-verifying everything (mirrors push/pull). #170: a
+        # failed one is not fatal; the final save below persists everything.
         if not dry_run:
-            ctx.index.save()
+            ctx.index.checkpoint()
     if not dry_run:
         ctx.index.save()
     reporter.done("offloaded", files=result.offloaded, reclaimed=result.bytes_reclaimed)

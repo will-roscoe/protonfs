@@ -60,7 +60,7 @@ EXPECTED_OPTIONS: dict[str, frozenset[str]] = {
     "deinit": frozenset({"--dry-run", "--yes"}),
     "status": frozenset({"--format", "--remote"}),
     "ls": frozenset({"--remote", "--trash", "--dirs", "--state", "--format", "--visual"}),
-    "push": frozenset({"--resolve", "--dry-run", "--strict"}),
+    "push": frozenset({"--resolve", "--dry-run", "--strict", "--min-age"}),
     "pull": frozenset({"--resolve", "--dry-run", "--refresh", "--strict"}),
     "offload": frozenset({"--no-verify", "--min-age", "--dry-run", "--yes"}),
     "prune": frozenset({"--keep", "--min-age", "--no-push", "--dry-run", "--yes"}),
@@ -84,7 +84,7 @@ EXPECTED_OPTIONS: dict[str, frozenset[str]] = {
     "config.set": frozenset({"--global", "--local"}),
     "trash.list": frozenset(),
     "trash.empty": frozenset({"--yes"}),
-    "verify": frozenset({"--repair"}),
+    "verify": frozenset({"--repair", "--index"}),
 }
 
 EXPECTED_ARGUMENTS: dict[str, tuple[str, ...]] = {

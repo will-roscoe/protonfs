@@ -61,6 +61,19 @@ Notes:
   environment variable) must update `docs/stability.rst` and the surface-freeze
   test (`tests/test_cli_surface.py`) in the same change — that surface is a frozen
   1.0 contract.
+- **Tightening a check means re-applying it to existing state.** A change that makes
+  a verification stricter (what push accepts as delivered, what offload accepts
+  before deleting, what an index entry must match) applies only to entries written
+  after it. Entries an older release recorded under the weaker check stay trusted,
+  including files offload has since deleted locally, where Drive holds the only copy
+  (#169). So the same change must:
+  - bump `CHECK_LEVEL` in `src/protonfs/index.py` (and teach
+    `src/protonfs/indexcheck.py` the new check if it compares something new), so every
+    index recorded under an older level is re-verified against Drive the next time the
+    repo is upgraded; or, if the check cannot be applied from a remote listing, ship a
+    migration in `src/protonfs/migrations.py` that applies it to existing state;
+  - add a test that loads an index as the previous release wrote it and asserts the
+    stronger check is applied to it.
 - **Local-only test tiers** never run in CI (they need a real binary/account and are
   env-gated with `skipif`):
   - `PROTONFS_TEST_MATRIX=1 pytest tests/test_binary_matrix.py` downloads and runs

@@ -80,7 +80,8 @@ Verifying an upload
 re-lists every directory it uploads into and only records a file once the remote
 copy's plaintext size matches the local one. A file that fails that check is
 reported (``under-delivered``, or ``unverified`` when the listing carries no size
-at all), left unrecorded, and retried by the next ``push``. The exit code is ``1``
+at all), left unrecorded, and retried by the next ``push``, which replaces the
+short copy on Drive with a new revision. The exit code is ``1``
 whenever any file was not verified; with ``-v``, compare the planned count on the
 ``uploading files=N`` line with ``transferred=`` on the summary line.
 

@@ -98,6 +98,92 @@ def test_save_is_atomic_original_survives_failed_replace(
     assert contents == {"index.json"}
 
 
+def _vanishing_replace(monkeypatch: pytest.MonkeyPatch, failures: int, exc=None) -> list[str]:
+    """Make the first `failures` os.replace calls fail the way a FUSE mount did (#170):
+    the temp file is gone by the time of the rename. Returns the temp names tried."""
+    real_replace = index_mod.os.replace
+    tried: list[str] = []
+
+    def flaky(src, dst):
+        tried.append(str(src))
+        if len(tried) <= failures:
+            Path(src).unlink()
+            raise exc or FileNotFoundError(2, "No such file or directory", str(src))
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(index_mod.os, "replace", flaky)
+    monkeypatch.setattr(index_mod.time, "sleep", lambda s: None)
+    return tried
+
+
+def test_save_retries_when_the_temp_file_vanishes_before_the_rename(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # #170: on a glusterfs FUSE mount the just-written, fsynced temp file was sometimes
+    # missing at os.replace. The data is still in memory, so save() writes it again.
+    store = IndexStore(tmp_path)
+    store.set("a/b", _entry(size=1))
+    store.save()
+    store.set("a/b", _entry(size=2))
+    tried = _vanishing_replace(monkeypatch, failures=1)
+
+    store.save()
+
+    assert len(tried) == 2 and tried[0] != tried[1]  # a fresh temp file, not the lost one
+    on_disk = json.loads((tmp_path / ".protonfs" / "index.json").read_text())
+    assert on_disk["entries"]["a/b"]["size"] == 2
+    assert {p.name for p in (tmp_path / ".protonfs").iterdir()} == {"index.json"}
+
+
+def test_save_raises_once_its_retries_are_spent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = IndexStore(tmp_path)
+    store.set("a/b", _entry(size=1))
+    store.save()
+    store.set("a/b", _entry(size=2))
+    tried = _vanishing_replace(monkeypatch, failures=100)
+
+    with pytest.raises(FileNotFoundError):
+        store.save()
+
+    assert len(tried) == index_mod._SAVE_ATTEMPTS
+    on_disk = json.loads((tmp_path / ".protonfs" / "index.json").read_text())
+    assert on_disk["entries"]["a/b"]["size"] == 1
+    assert {p.name for p in (tmp_path / ".protonfs").iterdir()} == {"index.json"}
+
+
+def test_save_does_not_retry_an_error_that_is_not_a_vanished_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A permission error will not clear by rewriting the temp file; fail at once.
+    store = IndexStore(tmp_path)
+    store.set("a/b", _entry())
+    tried = _vanishing_replace(monkeypatch, failures=100, exc=PermissionError(13, "denied"))
+
+    with pytest.raises(PermissionError):
+        store.save()
+
+    assert len(tried) == 1
+
+
+def test_checkpoint_reports_a_failed_save_instead_of_raising(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # #170: a progress save part-way through a command must not abort it; the in-memory
+    # index is intact, and the command's final save() persists it.
+    store = IndexStore(tmp_path)
+    store.set("a/b", _entry())
+    _vanishing_replace(monkeypatch, failures=100)
+
+    assert store.checkpoint() is False
+    assert store.get("a/b") == _entry()
+
+    monkeypatch.undo()
+    assert store.checkpoint() is True
+    assert IndexStore(tmp_path).get("a/b") == _entry()
+
+
 def test_save_stamps_current_schema_version(tmp_path: Path) -> None:
     from protonfs.index import INDEX_SCHEMA_VERSION
 
@@ -152,6 +238,39 @@ def test_v1_index_without_sha1_migrates_and_gains_empty_sha1(tmp_path: Path) -> 
     assert on_disk["entries"]["a/b"]["sha1"] == ""
 
 
+def test_an_underdelivered_upload_is_recorded_and_persisted(tmp_path: Path) -> None:
+    # #168: push records which remote revision is its own short upload of a file that is
+    # not indexed, so the next push may replace it. It lives beside the entries, not in
+    # them: the file is still unindexed, and only push reads the record.
+    store = IndexStore(tmp_path)
+    store.mark_underdelivered("a/b", "/my-files/x/a/b", "rev-7")
+    store.save()
+
+    reloaded = IndexStore(tmp_path)
+    assert reloaded.underdelivered("a/b") == {"remote_path": "/my-files/x/a/b", "revision": "rev-7"}
+    assert reloaded.get("a/b") is None
+    on_disk = json.loads((tmp_path / ".protonfs" / "index.json").read_text())
+    assert on_disk["schema_version"] == index_mod.INDEX_SCHEMA_VERSION  # not a schema change
+    assert set(on_disk["underdelivered"]) == {"a/b"}
+
+
+@pytest.mark.parametrize("settle", ["set", "remove"])
+def test_indexing_or_dropping_a_file_clears_its_underdelivered_record(
+    tmp_path: Path, settle: str
+) -> None:
+    store = IndexStore(tmp_path)
+    store.mark_underdelivered("a/b", "/my-files/x/a/b", "rev-7")
+    if settle == "set":
+        store.set("a/b", _entry())
+    else:
+        store.remove("a/b")
+    store.save()
+
+    assert store.underdelivered("a/b") is None
+    on_disk = json.loads((tmp_path / ".protonfs" / "index.json").read_text())
+    assert "underdelivered" not in on_disk
+
+
 def test_load_rejects_a_newer_schema_than_understood(tmp_path: Path) -> None:
     from protonfs.index import INDEX_SCHEMA_VERSION, IndexSchemaError
 
@@ -182,3 +301,31 @@ def test_save_swaps_via_os_replace(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     src, dst = calls[0]
     assert dst.endswith("index.json")
     assert src != dst  # replaced from a distinct temp file
+
+
+def test_a_new_index_is_recorded_at_the_current_check_level(tmp_path: Path) -> None:
+    # #169: everything in an index this protonfs creates was judged by its own checks.
+    store = IndexStore(tmp_path)
+    assert store.check_level == index_mod.CHECK_LEVEL
+    store.set("a/b", _entry())
+    store.save()
+
+    on_disk = json.loads((tmp_path / ".protonfs" / "index.json").read_text())
+    assert on_disk["check_level"] == index_mod.CHECK_LEVEL
+    assert on_disk["schema_version"] == index_mod.INDEX_SCHEMA_VERSION  # not a schema change
+
+
+def test_an_index_written_by_an_earlier_release_is_at_check_level_0(tmp_path: Path) -> None:
+    # 2.3.0 wrote no check level: its entries were judged by whatever checks the release
+    # that wrote each one had, so none of them can be assumed to meet the current ones.
+    (tmp_path / ".protonfs").mkdir()
+    (tmp_path / ".protonfs" / "index.json").write_text(json.dumps({
+        "schema_version": index_mod.INDEX_SCHEMA_VERSION,
+        "entries": {"a/b": _entry().to_dict()},
+    }))
+
+    store = IndexStore(tmp_path)
+    assert store.check_level == 0
+    store.set_check_level(index_mod.CHECK_LEVEL)
+    store.save()
+    assert IndexStore(tmp_path).check_level == index_mod.CHECK_LEVEL

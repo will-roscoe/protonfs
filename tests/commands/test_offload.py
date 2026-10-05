@@ -7,7 +7,7 @@ from protonfs.commands.offload import offload as _offload
 from protonfs.config import init_config
 from protonfs.context import load_context
 from protonfs.diff import SyncState, classify
-from protonfs.index import IndexEntry
+from protonfs.index import IndexEntry, IndexStore
 from protonfs.localscan import hash_file_digests, scan
 
 
@@ -69,6 +69,69 @@ def test_offload_deletes_verified_file_and_marks_metadata_only(
     entry = ctx.index.get("dump_0001")
     assert entry is not None
     assert entry.local_state == "metadata-only"
+
+
+def test_offload_cli_file_paths_share_one_pass(
+    tmp_path: Path, monkeypatch, make_fake_drive
+) -> None:
+    # #171: `offload --yes f1 f2 f3` (a retention script's file list) was one full pass
+    # per PATH: an index scan, a listing of the same directory and two index saves each.
+    # Files are now offloaded in one pass, with the same results as three separate calls.
+    from click.testing import CliRunner
+
+    from protonfs.cli import main
+
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    fake = make_fake_drive()
+    ctx.drive = fake
+    (tmp_path / "run1").mkdir()
+    for n in range(1, 5):
+        rel = f"run1/dump_000{n}"
+        (tmp_path / rel).write_bytes(b"data")
+        ctx.index.set(rel, _synced_entry(tmp_path / rel, f"/my-files/test/{rel}"))
+        fake.upload([tmp_path / rel], "/my-files/test/run1")
+    fake.identity_calls.clear()
+    monkeypatch.setattr("protonfs.context.load_context", lambda *a, **k: ctx)
+    saves = []
+    real_save = IndexStore.save
+    monkeypatch.setattr(IndexStore, "save", lambda self: saves.append(1) or real_save(self))
+
+    result = CliRunner().invoke(
+        main,
+        ["offload", "--yes", "--min-age", "0", "run1/dump_0001", "run1/dump_0002",
+         "run1/dump_0003"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "offloaded=3" in result.output
+    assert fake.identity_calls == ["/my-files/test/run1"]
+    assert len(saves) <= 2
+    assert [n for n in range(1, 5) if (tmp_path / f"run1/dump_000{n}").exists()] == [4]
+    assert ctx.index.get("run1/dump_0004").local_state == "present"
+
+
+def test_offload_carries_on_when_a_progress_save_fails(
+    tmp_path: Path, make_fake_drive, first_index_save_fails
+) -> None:
+    # #170: a failed save after the first directory must not abort offload. Both local
+    # copies are gone either way, so the final save has to record both as metadata-only.
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    fake = make_fake_drive()
+    ctx.drive = fake
+    for rel in ("run1/a", "run2/b"):
+        (tmp_path / rel).parent.mkdir()
+        (tmp_path / rel).write_bytes(b"data")
+        ctx.index.set(rel, _synced_entry(tmp_path / rel, f"/my-files/test/{rel}"))
+        fake.upload([tmp_path / rel], f"/my-files/test/{Path(rel).parent}")
+
+    result = offload(ctx, None)
+
+    assert result.offloaded == 2
+    assert first_index_save_fails[0] is False
+    on_disk = IndexStore(tmp_path)
+    assert {on_disk.get(r).local_state for r in ("run1/a", "run2/b")} == {"metadata-only"}
 
 
 def test_offload_leaves_untracked_file_alone(tmp_path: Path, make_fake_drive) -> None:

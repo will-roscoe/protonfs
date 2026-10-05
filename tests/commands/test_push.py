@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import time
 from pathlib import Path
 
 import pytest
@@ -16,6 +18,7 @@ from protonfs.config import init_config
 from protonfs.context import load_context
 from protonfs.diff import DiffEntry, SyncState
 from protonfs.drive import DriveError, RemoteIdentity, TransferResult
+from protonfs.index import IndexStore
 from protonfs.lfs import POINTER_SIGNATURE
 
 
@@ -140,6 +143,27 @@ def test_push_multiple_parent_groups_all_uploaded_and_indexed(
     ]
     assert ctx.index.get("run1/a") is not None
     assert ctx.index.get("run2/b") is not None
+
+
+def test_push_carries_on_when_a_progress_save_fails(
+    tmp_path: Path, make_fake_drive, first_index_save_fails
+) -> None:
+    # #170: the save after the first directory failed (a rename on a FUSE mount). push must
+    # not abort there: the second directory is still pushed, and the final save persists
+    # both, since the in-memory index never lost anything.
+    for rel in ("run1/a", "run2/b"):
+        (tmp_path / rel).parent.mkdir()
+        (tmp_path / rel).write_bytes(b"x")
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.drive = make_fake_drive()
+
+    result = push(ctx, None, resolve=None, dry_run=False)
+
+    assert result.transferred_items == 2
+    assert first_index_save_fails[0] is False
+    on_disk = IndexStore(tmp_path)
+    assert on_disk.get("run1/a") is not None and on_disk.get("run2/b") is not None
 
 
 def test_push_default_passes_no_conflict_strategy(tmp_path: Path, make_fake_drive) -> None:
@@ -435,6 +459,27 @@ def test_push_reports_a_skipped_file_whose_remote_digest_differs_as_under_delive
 
     assert result.failures[0]["kind"] == UNDERDELIVERED_KIND
     assert ctx.index.get("f.txt") is None
+
+
+@pytest.mark.parametrize("resolve", ["skip", "both"])
+def test_push_never_records_a_remote_copy_it_did_not_write_as_its_own(
+    tmp_path: Path, make_fake_drive, resolve: str
+) -> None:
+    # #168: skip and keep-both leave the node at that name alone, so a copy there that
+    # fails the check is not this push's upload. Recording it would let the next push
+    # overwrite another device's file with a revision.
+    (tmp_path / "f.txt").write_bytes(b"data")
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    fake = make_fake_drive()
+    fake._remote_files["/my-files/test"] = {"f.txt": 9}
+    fake._remote_sha1["/my-files/test"] = {"f.txt": "0" * 40}
+    fake.revision_uids["/my-files/test/f.txt"] = "rev-theirs"
+    ctx.drive = fake
+
+    push(ctx, None, resolve=resolve, dry_run=False)
+
+    assert ctx.index.underdelivered("f.txt") is None
 
 
 def test_push_does_not_send_a_revision_for_a_path_this_device_never_held(
@@ -917,6 +962,116 @@ def test_push_cli_reports_adopted_count(tmp_path: Path, monkeypatch, make_fake_d
     assert "failed=0" in result.output
 
 
+def _remote_holds_prefix(tmp_path: Path, fake, rel: str, prefix: bytes, full: bytes) -> None:
+    """Put `prefix` on the fake remote as `rel`'s copy, then grow the local file to `full`:
+    what a push of a file still being written leaves behind (#168)."""
+    local = tmp_path / rel
+    local.write_bytes(prefix)
+    fake.upload([local], "/my-files/test")
+    local.write_bytes(full)
+
+
+def test_push_replaces_its_own_older_copy_with_a_revision(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    # #168: a time series was pushed while still being written, so Drive holds its first
+    # bytes and the file is not indexed. The next push meets "already exists", and the
+    # remote copy fails the adoption check because it is shorter. It is a byte-prefix of
+    # the local file, though: an older copy of this same file, not a foreign one. So it is
+    # replaced with a revision instead of being reported as a conflict on every push.
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    fake = make_fake_drive()
+    ctx.drive = fake
+    _remote_holds_prefix(tmp_path, fake, "run.ev", b"line1\n", b"line1\nline2\nline3\n")
+
+    result = push(ctx, None, None, dry_run=False)
+
+    assert result.failed_items == 0, result.failures
+    assert result.transferred_items == 1
+    assert fake.upload_calls[-1][2] == "merge"
+    assert fake.revisions["/my-files/test/run.ev"] == 2
+    assert fake.remote_identities("/my-files/test")["run.ev"].claimed_size == 18
+    assert ctx.index.get("run.ev").size == 18
+
+
+@pytest.mark.parametrize(
+    ("remote", "local"),
+    [
+        (b"other\n", b"line1\nline2\n"),  # shorter, but not a prefix: a different file
+        (b"line1\nline2\nline3\n", b"line1\n"),  # longer than the local file
+    ],
+)
+def test_push_still_reports_a_remote_copy_that_is_not_an_older_prefix_as_a_conflict(
+    tmp_path: Path, make_fake_drive, remote: bytes, local: bytes
+) -> None:
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    fake = make_fake_drive()
+    ctx.drive = fake
+    _remote_holds_prefix(tmp_path, fake, "run.ev", remote, local)
+
+    result = push(ctx, None, None, dry_run=False)
+
+    assert [f["kind"] for f in result.failures] == [CONFLICT_KIND]
+    assert fake.revisions["/my-files/test/run.ev"] == 1
+    assert ctx.index.get("run.ev") is None
+
+
+def _underdeliver_first_push(tmp_path: Path, make_fake_drive):
+    """First push of `grow.bin`: the listing then claims 3 bytes, with no sha1, as when
+    a file grew mid-upload or the transfer was cut short (#168). Returns (ctx, fake)."""
+    (tmp_path / "grow.bin").write_bytes(b"0123456789")
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    fake = make_fake_drive(remote_size_overrides={"grow.bin": 3})
+    ctx.drive = fake
+    first = push(ctx, None, None, dry_run=False)
+    assert [f["kind"] for f in first.failures] == ["under-delivered"]
+    fake._remote_size_overrides.clear()  # the next upload lands in full
+    return ctx, fake
+
+
+def test_push_replaces_its_own_underdelivered_upload_with_a_revision(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    # #168, the issue's regression test: the first push under-delivers, so the file is
+    # left unindexed and Drive keeps the short copy. The listing gives no sha1, so the
+    # byte-prefix check cannot claim that copy. But the first push recorded the remote
+    # revision it uploaded, and the node still holds it, so the copy is provably this
+    # push's own. The second push replaces it with a revision and indexes the file.
+    ctx, fake = _underdeliver_first_push(tmp_path, make_fake_drive)
+    assert ctx.index.underdelivered("grow.bin") is not None
+    assert IndexStore(tmp_path).underdelivered("grow.bin") is not None  # persisted
+
+    second = push(ctx, None, None, dry_run=False)
+
+    assert second.failed_items == 0, second.failures
+    assert second.transferred_items == 1
+    assert fake.upload_calls[-1][2] == "merge"
+    assert fake.revisions["/my-files/test/grow.bin"] == 2
+    assert ctx.index.get("grow.bin").size == 10
+    assert ctx.index.underdelivered("grow.bin") is None
+
+
+def test_push_does_not_replace_an_underdelivered_upload_someone_else_has_revised(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    # The record proves ownership only while the node still holds that revision. Once
+    # another device has uploaded over it, the remote copy is theirs: a real conflict.
+    ctx, fake = _underdeliver_first_push(tmp_path, make_fake_drive)
+    other = tmp_path / "elsewhere"
+    other.mkdir()
+    (other / "grow.bin").write_bytes(b"theirs")
+    fake.upload([other / "grow.bin"], "/my-files/test", file_strategy="merge")
+
+    second = push(ctx, None, None, dry_run=False)
+
+    assert [f["kind"] for f in second.failures] == [CONFLICT_KIND]
+    assert fake.revisions["/my-files/test/grow.bin"] == 2
+    assert ctx.index.get("grow.bin") is None
+
+
 def test_push_does_not_adopt_conflict_absent_from_remote(
     tmp_path: Path, make_fake_drive
 ) -> None:
@@ -1070,6 +1225,58 @@ def test_push_cli_several_file_pathspecs_glob_expansion(
     assert not any(u.endswith("dump_0004") for u in uploaded)
 
 
+def test_push_only_pushes_just_the_named_files(tmp_path: Path, make_fake_drive) -> None:
+    # #171: `only` restricts one push pass to these files, wherever they live.
+    for rel in ("run1/a", "run1/b", "run1/c", "run2/d"):
+        (tmp_path / rel).parent.mkdir(exist_ok=True)
+        (tmp_path / rel).write_bytes(rel.encode())
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    fake = make_fake_drive()
+    ctx.drive = fake
+
+    result = push(ctx, None, None, dry_run=False, only={"run1/a", "run1/b", "run2/d"})
+
+    assert result.transferred_items == 3
+    assert set(ctx.index.all()) == {"run1/a", "run1/b", "run2/d"}
+    assert sorted(call[1] for call in fake.upload_calls) == [
+        "/my-files/test/run1", "/my-files/test/run2",
+    ]
+
+
+def test_push_cli_file_paths_share_one_pass(
+    tmp_path: Path, monkeypatch, make_fake_drive
+) -> None:
+    # #171: N file paths in one directory cost one pass -- one upload batch, one listing
+    # of the directory and a bounded number of index saves -- not N of each.
+    from click.testing import CliRunner
+
+    from protonfs.cli import main
+
+    (tmp_path / "run1").mkdir()
+    for n in range(1, 5):
+        (tmp_path / "run1" / f"dump_000{n}").write_bytes(b"d" * n)
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    fake = make_fake_drive()
+    ctx.drive = fake
+    _inject_ctx(monkeypatch, ctx)
+    saves = []
+    real_save = IndexStore.save
+    monkeypatch.setattr(IndexStore, "save", lambda self: saves.append(1) or real_save(self))
+
+    result = CliRunner().invoke(
+        main, ["push", "run1/dump_0001", "run1/dump_0002", "run1/dump_0003"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "transferred=3" in result.output
+    assert len(fake.upload_calls) == 1
+    assert fake.identity_calls == ["/my-files/test/run1"]
+    assert len(saves) <= 2
+    assert set(ctx.index.all()) == {f"run1/dump_000{n}" for n in (1, 2, 3)}
+
+
 def test_push_cli_nonexistent_path_is_usage_error_no_drive_no_lock(
     tmp_path: Path, monkeypatch, make_fake_drive
 ) -> None:
@@ -1172,3 +1379,80 @@ def test_push_cli_empty_directory_reports_nothing_to_push(
     assert result.exit_code == 0
     assert "nothing to push" in result.output
     assert fake.upload_calls == []
+
+
+# --- settle window (#168) --------------------------------------------------------------
+
+
+def _aged(path: Path, seconds_ago: float, now: float) -> None:
+    os.utime(path, (now - seconds_ago, now - seconds_ago))
+
+
+def test_push_min_age_holds_back_a_file_modified_within_the_window(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    now = time.time()
+    (tmp_path / "run1").mkdir()
+    (tmp_path / "run1" / "run101.ev").write_bytes(b"still growing")
+    (tmp_path / "run1" / "run1_00001").write_bytes(b"finished dump")
+    _aged(tmp_path / "run1" / "run1_00001", 7200, now)
+    _aged(tmp_path / "run1" / "run101.ev", 60, now)
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    fake = make_fake_drive()
+    ctx.drive = fake
+
+    result = push(ctx, None, resolve=None, dry_run=False, min_age=3600, now=now)
+
+    assert (result.transferred_items, result.unsettled_items) == (1, 1)
+    assert [Path(p).name for call in fake.upload_calls for p in call[0]] == ["run1_00001"]
+    assert ctx.index.get("run1/run1_00001") is not None
+    assert ctx.index.get("run1/run101.ev") is None
+
+
+def test_push_uploads_a_held_file_once_it_has_settled(tmp_path: Path, make_fake_drive) -> None:
+    now = time.time()
+    (tmp_path / "run101.ev").write_bytes(b"final")
+    _aged(tmp_path / "run101.ev", 60, now)
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.drive = make_fake_drive()
+
+    first = push(ctx, None, resolve=None, dry_run=False, min_age=3600, now=now)
+    second = push(ctx, None, resolve=None, dry_run=False, min_age=3600, now=now + 3600)
+
+    assert (first.transferred_items, first.unsettled_items) == (0, 1)
+    assert (second.transferred_items, second.unsettled_items) == (1, 0)
+    assert ctx.index.get("run101.ev") is not None
+
+
+def test_push_dry_run_counts_held_files_apart_from_the_upload_count(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    now = time.time()
+    (tmp_path / "old_00001").write_bytes(b"a")
+    (tmp_path / "new.ev").write_bytes(b"b")
+    _aged(tmp_path / "old_00001", 7200, now)
+    _aged(tmp_path / "new.ev", 10, now)
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    fake = make_fake_drive()
+    ctx.drive = fake
+
+    result = push(ctx, None, resolve=None, dry_run=True, min_age=3600, now=now)
+
+    assert (result.transferred_items, result.unsettled_items) == (1, 1)
+    assert fake.upload_calls == []
+
+
+def test_push_without_min_age_uploads_a_file_modified_just_now(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    (tmp_path / "run101.ev").write_bytes(b"just written")
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.drive = make_fake_drive()
+
+    result = push(ctx, None, resolve=None, dry_run=False)
+
+    assert (result.transferred_items, result.unsettled_items) == (1, 0)
