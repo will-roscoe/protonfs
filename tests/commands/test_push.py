@@ -461,6 +461,27 @@ def test_push_reports_a_skipped_file_whose_remote_digest_differs_as_under_delive
     assert ctx.index.get("f.txt") is None
 
 
+@pytest.mark.parametrize("resolve", ["skip", "both"])
+def test_push_never_records_a_remote_copy_it_did_not_write_as_its_own(
+    tmp_path: Path, make_fake_drive, resolve: str
+) -> None:
+    # #168: skip and keep-both leave the node at that name alone, so a copy there that
+    # fails the check is not this push's upload. Recording it would let the next push
+    # overwrite another device's file with a revision.
+    (tmp_path / "f.txt").write_bytes(b"data")
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    fake = make_fake_drive()
+    fake._remote_files["/my-files/test"] = {"f.txt": 9}
+    fake._remote_sha1["/my-files/test"] = {"f.txt": "0" * 40}
+    fake.revision_uids["/my-files/test/f.txt"] = "rev-theirs"
+    ctx.drive = fake
+
+    push(ctx, None, resolve=resolve, dry_run=False)
+
+    assert ctx.index.underdelivered("f.txt") is None
+
+
 def test_push_does_not_send_a_revision_for_a_path_this_device_never_held(
     tmp_path: Path, make_fake_drive
 ) -> None:
@@ -939,6 +960,116 @@ def test_push_cli_reports_adopted_count(tmp_path: Path, monkeypatch, make_fake_d
     assert result.exit_code == 0
     assert "adopted=1" in result.output
     assert "failed=0" in result.output
+
+
+def _remote_holds_prefix(tmp_path: Path, fake, rel: str, prefix: bytes, full: bytes) -> None:
+    """Put `prefix` on the fake remote as `rel`'s copy, then grow the local file to `full`:
+    what a push of a file still being written leaves behind (#168)."""
+    local = tmp_path / rel
+    local.write_bytes(prefix)
+    fake.upload([local], "/my-files/test")
+    local.write_bytes(full)
+
+
+def test_push_replaces_its_own_older_copy_with_a_revision(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    # #168: a time series was pushed while still being written, so Drive holds its first
+    # bytes and the file is not indexed. The next push meets "already exists", and the
+    # remote copy fails the adoption check because it is shorter. It is a byte-prefix of
+    # the local file, though: an older copy of this same file, not a foreign one. So it is
+    # replaced with a revision instead of being reported as a conflict on every push.
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    fake = make_fake_drive()
+    ctx.drive = fake
+    _remote_holds_prefix(tmp_path, fake, "run.ev", b"line1\n", b"line1\nline2\nline3\n")
+
+    result = push(ctx, None, None, dry_run=False)
+
+    assert result.failed_items == 0, result.failures
+    assert result.transferred_items == 1
+    assert fake.upload_calls[-1][2] == "merge"
+    assert fake.revisions["/my-files/test/run.ev"] == 2
+    assert fake.remote_identities("/my-files/test")["run.ev"].claimed_size == 18
+    assert ctx.index.get("run.ev").size == 18
+
+
+@pytest.mark.parametrize(
+    ("remote", "local"),
+    [
+        (b"other\n", b"line1\nline2\n"),  # shorter, but not a prefix: a different file
+        (b"line1\nline2\nline3\n", b"line1\n"),  # longer than the local file
+    ],
+)
+def test_push_still_reports_a_remote_copy_that_is_not_an_older_prefix_as_a_conflict(
+    tmp_path: Path, make_fake_drive, remote: bytes, local: bytes
+) -> None:
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    fake = make_fake_drive()
+    ctx.drive = fake
+    _remote_holds_prefix(tmp_path, fake, "run.ev", remote, local)
+
+    result = push(ctx, None, None, dry_run=False)
+
+    assert [f["kind"] for f in result.failures] == [CONFLICT_KIND]
+    assert fake.revisions["/my-files/test/run.ev"] == 1
+    assert ctx.index.get("run.ev") is None
+
+
+def _underdeliver_first_push(tmp_path: Path, make_fake_drive):
+    """First push of `grow.bin`: the listing then claims 3 bytes, with no sha1, as when
+    a file grew mid-upload or the transfer was cut short (#168). Returns (ctx, fake)."""
+    (tmp_path / "grow.bin").write_bytes(b"0123456789")
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    fake = make_fake_drive(remote_size_overrides={"grow.bin": 3})
+    ctx.drive = fake
+    first = push(ctx, None, None, dry_run=False)
+    assert [f["kind"] for f in first.failures] == ["under-delivered"]
+    fake._remote_size_overrides.clear()  # the next upload lands in full
+    return ctx, fake
+
+
+def test_push_replaces_its_own_underdelivered_upload_with_a_revision(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    # #168, the issue's regression test: the first push under-delivers, so the file is
+    # left unindexed and Drive keeps the short copy. The listing gives no sha1, so the
+    # byte-prefix check cannot claim that copy. But the first push recorded the remote
+    # revision it uploaded, and the node still holds it, so the copy is provably this
+    # push's own. The second push replaces it with a revision and indexes the file.
+    ctx, fake = _underdeliver_first_push(tmp_path, make_fake_drive)
+    assert ctx.index.underdelivered("grow.bin") is not None
+    assert IndexStore(tmp_path).underdelivered("grow.bin") is not None  # persisted
+
+    second = push(ctx, None, None, dry_run=False)
+
+    assert second.failed_items == 0, second.failures
+    assert second.transferred_items == 1
+    assert fake.upload_calls[-1][2] == "merge"
+    assert fake.revisions["/my-files/test/grow.bin"] == 2
+    assert ctx.index.get("grow.bin").size == 10
+    assert ctx.index.underdelivered("grow.bin") is None
+
+
+def test_push_does_not_replace_an_underdelivered_upload_someone_else_has_revised(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    # The record proves ownership only while the node still holds that revision. Once
+    # another device has uploaded over it, the remote copy is theirs: a real conflict.
+    ctx, fake = _underdeliver_first_push(tmp_path, make_fake_drive)
+    other = tmp_path / "elsewhere"
+    other.mkdir()
+    (other / "grow.bin").write_bytes(b"theirs")
+    fake.upload([other / "grow.bin"], "/my-files/test", file_strategy="merge")
+
+    second = push(ctx, None, None, dry_run=False)
+
+    assert [f["kind"] for f in second.failures] == [CONFLICT_KIND]
+    assert fake.revisions["/my-files/test/grow.bin"] == 2
+    assert ctx.index.get("grow.bin") is None
 
 
 def test_push_does_not_adopt_conflict_absent_from_remote(

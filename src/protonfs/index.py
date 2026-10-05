@@ -140,6 +140,12 @@ class IndexStore:
        (:attr:`manifest_state`), as an optional top-level ``manifest`` key. It is not a
        schema change: an older protonfs ignores the key, and dropping it on save only
        makes the index look stale, never current (#146).
+
+    .. versionchanged:: 2.4.0
+       Records push's own uploads that failed verification (:meth:`underdelivered`), as
+       an optional top-level ``underdelivered`` key, so the next push can replace them
+       (#168). Not a schema change either: an older protonfs drops the key, and that
+       push then reports the file as a conflict, as it did before.
     """
 
     def __init__(self, repo_root: Path) -> None:
@@ -151,6 +157,7 @@ class IndexStore:
         self._path = repo_root / ".protonfs" / INDEX_FILE_NAME
         self._entries: dict[str, IndexEntry] = {}
         self._manifest: dict | None = None
+        self._underdelivered: dict[str, dict] = {}
         self._load()
 
     def _load(self) -> None:
@@ -175,6 +182,15 @@ class IndexStore:
                 "generation": manifest["generation"],
                 "revision": str(manifest.get("revision") or ""),
             }
+        underdelivered = raw.get("underdelivered") if version else None
+        if isinstance(underdelivered, dict):
+            self._underdelivered = {
+                rel_path: {"remote_path": record["remote_path"], "revision": record["revision"]}
+                for rel_path, record in underdelivered.items()
+                if isinstance(record, dict)
+                and isinstance(record.get("remote_path"), str)
+                and isinstance(record.get("revision"), str)
+            }
 
     def save(self) -> None:
         """Persist the index atomically at the current schema version.
@@ -197,6 +213,10 @@ class IndexStore:
         }
         if self._manifest is not None:
             document["manifest"] = dict(self._manifest)
+        if self._underdelivered:
+            document["underdelivered"] = {
+                rel_path: dict(record) for rel_path, record in self._underdelivered.items()
+            }
         data = json.dumps(document, indent=2, sort_keys=True) + "\n"
         for attempt in range(_SAVE_ATTEMPTS):
             try:
@@ -252,12 +272,19 @@ class IndexStore:
         return self._entries.get(rel_path)
 
     def set(self, rel_path: str, entry: IndexEntry) -> None:
-        """Add or replace the entry for ``rel_path`` (in memory until :meth:`save`)."""
+        """Add or replace the entry for ``rel_path`` (in memory until :meth:`save`).
+
+        An indexed file has nothing left to replace, so this clears its
+        :meth:`underdelivered` record.
+        """
         self._entries[rel_path] = entry
+        self._underdelivered.pop(rel_path, None)
 
     def remove(self, rel_path: str) -> None:
-        """Drop ``rel_path`` from the index if present (in memory until :meth:`save`)."""
+        """Drop ``rel_path`` from the index if present (in memory until :meth:`save`),
+        with its :meth:`underdelivered` record."""
         self._entries.pop(rel_path, None)
+        self._underdelivered.pop(rel_path, None)
 
     def all(self) -> dict[str, IndexEntry]:
         """Return a shallow copy of the full ``{rel_path: entry}`` map."""
@@ -279,3 +306,25 @@ class IndexStore:
         .. versionadded:: 2.1.0
         """
         self._manifest = {"generation": int(generation), "revision": revision or ""}
+
+    def underdelivered(self, rel_path: str) -> dict | None:
+        """``{"remote_path": str, "revision": str}`` for an upload of ``rel_path`` that
+        push could not verify, or ``None``.
+
+        The record says the node at ``remote_path`` holds push's own short upload of the
+        file, while its active revision is still ``revision``. The file stays out of the
+        index: nothing about it is synced. The next push may then replace that copy with
+        a revision, instead of reporting it as a conflict (#168).
+
+        .. versionadded:: 2.4.0
+        """
+        record = self._underdelivered.get(rel_path)
+        return dict(record) if record is not None else None
+
+    def mark_underdelivered(self, rel_path: str, remote_path: str, revision: str) -> None:
+        """Record that ``remote_path`` holds push's own unverified upload of ``rel_path``,
+        as ``revision`` (in memory until :meth:`save`). See :meth:`underdelivered`.
+
+        .. versionadded:: 2.4.0
+        """
+        self._underdelivered[rel_path] = {"remote_path": remote_path, "revision": revision}
