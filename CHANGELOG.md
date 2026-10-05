@@ -8,17 +8,33 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 
 ## [Unreleased]
 
+## [2.4.0] - 2026-10-05
+
 ### Features
 
 - **push**: `--min-age DURATION`, a settle window: a file modified more recently than this is held back (counted as `unsettled=`, not a failure) and pushed by a later run once it has settled, so a file still being written is never uploaded part-way and left as a permanent conflict (#168). `protonfs schedule --add --command push --min-age 2h` passes it to a scheduled push. Default `0` holds nothing back
 - **verify**: `--index` checks this machine's index against Drive without reading local files, with one listing per remote directory and offloaded entries first. `--repair` applies what the check proves: an entry whose local copy is still here but whose Drive copy is missing or different is dropped, so the next push uploads it again. An entry whose file is gone but whose Drive copy is larger, such as a git-LFS stub indexed as content, is rewritten to describe Drive's copy. A Drive-only copy that is shorter, different or gone is reported and never rewritten (#169)
 - **upgrade**: re-verifies an index recorded under an older check level against Drive, the same way `verify --index --repair` does. An index written by an earlier release is checked once. A release that makes a check stricter raises the level, so existing entries meet the stricter check too. A throttled Drive is reported, the rest of the upgrade stands, and the next upgrade tries again (#169)
 - **push**, **offload**: the file PATHs given on one command line share a single pass. Each remote directory is listed once and the index is saved once per directory, instead of a full pass (an index scan, a listing and an index save) per file. Offloading a retention script's list of 256 files from one directory took about 64 s a file this way, against about 19 s for one pass. Directory and pattern PATHs are unchanged (#171)
+- **push**: --min-age settle window holds back files still being written (#168)
+- **cli**: push and offload handle all file PATHs in one pass (#171) (#174)
+- **index**: re-verify entries recorded under weaker checks; verify --index (#169) (#176)
 
 ### Bug fixes
 
 - **push**: a file whose first push under-delivered, because it grew during the upload or the transfer was cut short, no longer turns into a permanent conflict. The next push recognises the short copy on Drive as this file's own, either because it is a byte-prefix of the local file or because the failed push recorded the remote revision it uploaded, and uploads the local file as a new revision of it. Files already stuck this way are recovered by the prefix check, with no `--resolve` (#168)
 - **index**: a save whose temp file is gone by the time of the rename, as happens on a glusterfs FUSE mount, is written again and retried instead of aborting the command. A save that still fails part-way through `push`, `pull` or `offload` is logged and the run carries on; the save at the end persists everything, and is the one that fails the command if it cannot (#170)
+- **index**: retry a save whose temp file vanished, and make progress saves non-fatal (#170) (#173)
+- **push**: replace this file's own short copy on Drive with a revision, not a permanent conflict (#168) (#175)
+
+### Documentation
+
+- point the docs badges at the ghtools status branch and put the logo on the card
+
+### CI
+
+- **ghtools**: adopt ghtools
+- **codecov**: allow a 2-point project coverage drop, via ghtools's rendered policy
 
 ## [2.3.0] - 2026-09-24
 
@@ -701,7 +717,8 @@ the preceding development history and its first tagged release:
   line-matching, git-mutation error wrapping, `pathspec` deprecation, subpath
   prune data-loss fix.
 
-[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v2.3.0...HEAD
+[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v2.4.0...HEAD
+[2.4.0]: https://github.com/will-roscoe/protonfs/compare/v2.3.0...v2.4.0
 [2.3.0]: https://github.com/will-roscoe/protonfs/compare/v2.2.1...v2.3.0
 [2.2.1]: https://github.com/will-roscoe/protonfs/compare/v2.2.0...v2.2.1
 [2.2.0]: https://github.com/will-roscoe/protonfs/compare/v2.1.0...v2.2.0
