@@ -187,6 +187,24 @@ def test_repair_turns_a_present_entry_whose_file_is_gone_into_the_drive_copy(
     assert outcome.adopted_remote == ["run/dump"]
 
 
+def test_repair_treats_a_git_lfs_pointer_stub_as_no_local_copy(ctx, tmp_path: Path) -> None:
+    # The stub is a placeholder, not the file: dropping the entry would lose track of
+    # the real copy on Drive, and push refuses to upload a stub anyway (#32). So the
+    # entry is rewritten to describe Drive's copy, as for a file that is gone.
+    from protonfs.lfs import POINTER_SIGNATURE
+
+    stub = f"{POINTER_SIGNATURE}\noid sha256:{'0' * 64}\nsize 5000\n".encode()
+    (tmp_path / "run").mkdir()
+    (tmp_path / "run" / "dump").write_bytes(stub)
+    ctx.index.set("run/dump", _entry("run/dump", size=len(stub)))
+    _remote(ctx.drive, "run/dump", b"r" * 5000)
+
+    outcome = repair_index(ctx, check_index(ctx))
+
+    assert outcome.adopted_remote == ["run/dump"] and outcome.unindexed == []
+    assert ctx.index.get("run/dump").local_state == "metadata-only"
+
+
 def test_repair_takes_a_larger_drive_copy_for_a_metadata_only_entry(ctx) -> None:
     real = b"r" * 5000
     ctx.index.set("run/dump", _entry("run/dump", size=131, state="metadata-only"))

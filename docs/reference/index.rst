@@ -827,9 +827,9 @@ failed). Without ``--repair`` nothing changes.
 - a present entry whose file is still here, and whose Drive copy is missing or
   differs, is dropped from the index. The file is then local-only: never counted as
   synced or offloaded, and uploaded by the next ``push``;
-- an entry whose file is gone, and whose Drive copy is larger than recorded (a
-  git-LFS pointer stub indexed as content, #32), is rewritten to describe Drive's
-  copy, metadata-only, so ``pull`` restores it;
+- an entry whose file is gone (or is only a git-LFS pointer stub), and whose Drive
+  copy is larger than recorded (a stub indexed as content, #32), is rewritten to
+  describe Drive's copy, metadata-only, so ``pull`` restores it;
 - a metadata-only entry that matches and has no sha1 yet gains Drive's;
 - a copy only Drive holds that is shorter, different or gone is reported and left
   exactly as it was: rewriting the entry would hide the loss.

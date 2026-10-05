@@ -15,9 +15,10 @@ file, so it is practical on a host whose filesystem is too slow for ``status --r
   different: the entry is dropped. The file becomes local-only, so it is never counted
   as synced or offloaded, and the next push uploads it (as a revision when the Drive
   copy is provably its own, #168);
-- **a present entry whose file is gone**, with a larger Drive copy: the entry is
-  rewritten to describe Drive's copy, metadata-only. These are the git-LFS
-  pointer stubs that were hashed as content while Drive held the real files (#32);
+- **a present entry whose file is gone** (or is only a git-LFS pointer stub), with a
+  larger Drive copy: the entry is rewritten to describe Drive's copy, metadata-only.
+  These are the git-LFS pointer stubs that were hashed as content while Drive held the
+  real files (#32);
 - **a metadata-only entry** with a larger Drive copy: rewritten to describe it. One that
   matches, and has no sha1 yet, gains Drive's sha1 (the v1 -> v2 index migration seeded
   ``""``);
@@ -39,6 +40,7 @@ from protonfs.context import RepoContext
 from protonfs.diff import within_subpath
 from protonfs.drive import DriveAuthError, DriveError, DriveThrottleError, RemoteIdentity
 from protonfs.index import CHECK_LEVEL, IndexEntry
+from protonfs.lfs import is_pointer_stub
 
 
 class Verdict(str, Enum):
@@ -226,7 +228,10 @@ def repair_index(ctx: RepoContext, check: IndexCheck) -> IndexRepair:
             continue
         if verdict not in MISMATCHES:
             continue  # unsized or unlisted: no evidence either way
-        if entry.local_state == "present" and (ctx.root / rel).is_file():
+        local = ctx.root / rel
+        # A git-LFS pointer stub is a placeholder, not a local copy (#32): dropping the
+        # entry would lose track of the real file on Drive, and push refuses to upload it.
+        if entry.local_state == "present" and local.is_file() and not is_pointer_stub(local):
             ctx.index.remove(rel)
             repair.unindexed.append(rel)
         elif verdict is Verdict.REMOTE_LARGER:
