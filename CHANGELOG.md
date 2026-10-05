@@ -15,6 +15,7 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 
 ### Bug fixes
 
+- **push**: a file whose first push under-delivered, because it grew during the upload or the transfer was cut short, no longer turns into a permanent conflict. The next push recognises the short copy on Drive as this file's own, either because it is a byte-prefix of the local file or because the failed push recorded the remote revision it uploaded, and uploads the local file as a new revision of it. Files already stuck this way are recovered by the prefix check, with no `--resolve` (#168)
 - **index**: a save whose temp file is gone by the time of the rename, as happens on a glusterfs FUSE mount, is written again and retried instead of aborting the command. A save that still fails part-way through `push`, `pull` or `offload` is logged and the run carries on; the save at the end persists everything, and is the one that fails the command if it cannot (#170)
 
 ## [2.3.0] - 2026-09-24

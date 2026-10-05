@@ -111,6 +111,23 @@ unindexed and reported as a distinct ``under-delivered`` failure (not a
 conflict) — the fix is a plain retry on the next push, not a ``--resolve``
 strategy.
 
+That retry has to get past the short copy the failed upload left on Drive:
+without a strategy ``proton-drive`` rejects the name as taken, and the file is
+not indexed, so the copy looks like any other file's. Two checks recognise it
+as this file's own older copy, and then the local file is uploaded as a **new
+revision** of it (#168):
+
+- the remote copy is a byte-prefix of the local file: its plaintext size is
+  no larger, and its sha1 equals the sha1 of that many leading local bytes. This
+  is what a file pushed while still being appended to leaves behind;
+- or the failed push recorded the remote revision it uploaded (the
+  ``underdelivered`` key in ``index.json``, beside the entries), and the node's
+  active revision is still that one, so nothing has been uploaded over it since.
+  Push only records a node it wrote to, never one a ``skip``/``keep-both``
+  strategy left alone.
+
+A remote copy that passes neither check is still a conflict.
+
 A file this machine pushed before and has since changed locally is uploaded as a
 **new revision** of its existing Drive node (``proton-drive``'s ``merge``
 strategy), so Drive's version history keeps the copy it supersedes. Without a

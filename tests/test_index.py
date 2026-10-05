@@ -238,6 +238,39 @@ def test_v1_index_without_sha1_migrates_and_gains_empty_sha1(tmp_path: Path) -> 
     assert on_disk["entries"]["a/b"]["sha1"] == ""
 
 
+def test_an_underdelivered_upload_is_recorded_and_persisted(tmp_path: Path) -> None:
+    # #168: push records which remote revision is its own short upload of a file that is
+    # not indexed, so the next push may replace it. It lives beside the entries, not in
+    # them: the file is still unindexed, and only push reads the record.
+    store = IndexStore(tmp_path)
+    store.mark_underdelivered("a/b", "/my-files/x/a/b", "rev-7")
+    store.save()
+
+    reloaded = IndexStore(tmp_path)
+    assert reloaded.underdelivered("a/b") == {"remote_path": "/my-files/x/a/b", "revision": "rev-7"}
+    assert reloaded.get("a/b") is None
+    on_disk = json.loads((tmp_path / ".protonfs" / "index.json").read_text())
+    assert on_disk["schema_version"] == index_mod.INDEX_SCHEMA_VERSION  # not a schema change
+    assert set(on_disk["underdelivered"]) == {"a/b"}
+
+
+@pytest.mark.parametrize("settle", ["set", "remove"])
+def test_indexing_or_dropping_a_file_clears_its_underdelivered_record(
+    tmp_path: Path, settle: str
+) -> None:
+    store = IndexStore(tmp_path)
+    store.mark_underdelivered("a/b", "/my-files/x/a/b", "rev-7")
+    if settle == "set":
+        store.set("a/b", _entry())
+    else:
+        store.remove("a/b")
+    store.save()
+
+    assert store.underdelivered("a/b") is None
+    on_disk = json.loads((tmp_path / ".protonfs" / "index.json").read_text())
+    assert "underdelivered" not in on_disk
+
+
 def test_load_rejects_a_newer_schema_than_understood(tmp_path: Path) -> None:
     from protonfs.index import INDEX_SCHEMA_VERSION, IndexSchemaError
 
