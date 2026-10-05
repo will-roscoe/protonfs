@@ -71,6 +71,61 @@ def upstream_ahead_message(upstream: str, highest: str) -> str:
     )
 
 
+def _reverify_step(root: Path, client, check: bool, reporter) -> bool:
+    """Re-verify an index recorded under an older check level against Drive (#169).
+
+    A release that makes a check stricter bumps :data:`~protonfs.index.CHECK_LEVEL`, and
+    an index recorded under a lower level is checked again here, one listing per remote
+    directory, with :func:`~protonfs.indexcheck.reverify_index`. An index with no entries
+    has nothing to check. A Drive or lock failure is reported, not raised: the binary and
+    the migrations are done by then, and the index keeps its old level, so the next
+    upgrade tries again.
+
+    :returns: whether the index needed re-verifying (an action, for ``--check``).
+    """
+    from protonfs.context import load_context
+    from protonfs.drive import DriveError
+    from protonfs.index import CHECK_LEVEL
+    from protonfs.indexcheck import report_lines, reverify_index
+    from protonfs.locking import repo_lock
+
+    try:
+        ctx = load_context(root)
+    except click.ClickException:
+        return False  # e.g. a clone with no device id here yet (#151): no index of its own
+    entries = len(ctx.index.all())
+    level = ctx.index.check_level
+    if not entries or level >= CHECK_LEVEL:
+        return False
+    counted = f"{entries} index {'entry' if entries == 1 else 'entries'}"
+    why = f"(recorded under check level {level}; current {CHECK_LEVEL})"
+    if check:
+        click.echo(f"index: would re-verify {counted} against Drive {why}.")
+        return True
+    click.echo(f"index: re-verifying {counted} against Drive {why}...")
+    ctx.drive = client
+    try:
+        with repo_lock(ctx.root):
+            result, repair = reverify_index(ctx, reporter=reporter)
+    except DriveError as exc:
+        click.echo(
+            f"index: re-verification did not run: {exc}. The next upgrade tries again; "
+            "`protonfs verify --index --repair` runs it now.",
+            err=True,
+        )
+        return True
+    for line in report_lines(result, repair):
+        click.echo(f"  {line}")
+    if result.complete:
+        click.echo(f"index: verified at check level {CHECK_LEVEL}.")
+    else:
+        click.echo(
+            "index: some entries could not be checked; it stays at check level "
+            f"{level}, and the next upgrade tries again.",
+        )
+    return True
+
+
 def run_upgrade(
     root: Path,
     *,
@@ -88,6 +143,10 @@ def run_upgrade(
 
     :param reporter: Reporter to narrate progress through; defaults to the process
         reporter.
+
+    .. versionchanged:: 2.4.0
+       Re-verifies an index recorded under an older check level against Drive, after the
+       repo migrations (#169).
     """
     from protonfs.reporting import get_reporter
 
@@ -157,6 +216,8 @@ def run_upgrade(
                 if not check:
                     run_migrations(root)
                     click.echo("repo state: migrations applied.")
+            if _reverify_step(root, client, check, reporter):
+                actions_available = True
         elif repo_only:
             raise click.ClickException(
                 f"not inside a protonfs root ({root} has no .protonfs/config.json); "

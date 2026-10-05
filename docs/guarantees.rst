@@ -155,6 +155,24 @@ aggregate count with no per-file attribution, so each file in that batch must
 match the remote strictly (size, and sha1 where both sides have one) before it
 is indexed.
 
+Stricter checks reach entries already recorded
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Each index entry was judged by the checks of the protonfs that wrote it, and later
+releases made those checks stricter (real size verification in 1.11.3, revisions for
+appended files in 1.12.3). Without more, an entry recorded under a weaker check would
+stay trusted indefinitely, including one ``offload`` has since deleted locally, where
+Drive holds the only copy (#169).
+
+So the index records the **check level** its entries meet (``check_level`` in
+``index.json``; an index an earlier release wrote reads as ``0``). ``upgrade``
+re-verifies an index below the current level against Drive, one listing per remote
+directory, and only then records the new level. The repairs it makes never discard a
+copy: a local file whose Drive copy does not match is dropped from the index so the
+next ``push`` uploads it, and a Drive-only copy that is shorter, different or gone is
+reported and left untouched rather than rewritten to look consistent. A release that
+makes a check stricter raises the level in the same change (see ``CONTRIBUTING.md``).
+``verify --index`` runs the same comparison on demand, read-only unless ``--repair``.
+
 Remote manifest: a cache, never an authority
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 A repo can keep a manifest of what protonfs verified on Drive at

@@ -26,6 +26,10 @@ Thanks for contributing to protonfs! A few notes before you open this PR:
 - [ ] If the CLI surface changed (command/option/exit code/config key/env var):
       updated `docs/stability.rst` **and** `tests/test_cli_surface.py`.
 - [ ] Docs build cleanly (`sphinx-build -b html docs docs/_build/html`).
+- [ ] If this makes a check stricter (push delivery, offload's pre-delete check, what an
+      index entry must match): existing state is re-verified under it (bumped
+      `CHECK_LEVEL` in `index.py`, or a migration), with a test that loads an
+      index written by the previous release.
 
 ## Notes for reviewers
 

@@ -330,3 +330,136 @@ def test_upgrade_refreshes_installed_completions_output(tmp_path, capsys, monkey
     )
     assert code == 0
     assert "shell completion: refreshed bash" in out
+
+
+# --- #169: re-verifying an index an earlier release wrote ------------------------------
+
+
+def _index_as_2_3_0_wrote_it(root: Path) -> None:
+    """A repo whose index 2.3.0 wrote: schema v2, no check level. `run/dump` is a git-LFS
+    pointer stub that was hashed as content (131 B, present) while the file is gone
+    locally and Drive holds the real one; `run/ok` is fine."""
+    init_config(root, "/my-files/test")
+
+    def entry(size: int) -> dict:
+        return {
+            "size": size, "mtime": 1.0, "sha256": "s" * 64, "sha1": "",
+            "remote_path": "", "origin_device": "d1", "local_state": "present",
+            "last_synced": "2026-07-01T00:00:00+00:00",
+        }
+
+    entries = {"run/dump": entry(131), "run/ok": entry(4)}
+    for rel, data in entries.items():
+        data["remote_path"] = f"/my-files/test/{rel}"
+    (root / ".protonfs" / "index.json").write_text(
+        json.dumps({"schema_version": 2, "entries": entries})
+    )
+
+
+def _drive_with(make_fake_drive):
+    fake = make_fake_drive()
+    fake.drive_version = lambda: HIGHEST
+    fake._remote_files["/my-files/test/run"] = {"dump": 5000, "ok": 4}
+    return fake
+
+
+def test_upgrade_reverifies_an_index_the_previous_release_wrote(
+    tmp_path: Path, capsys, make_fake_drive
+) -> None:
+    # The CONTRIBUTING rule's test: an index as the previous release wrote it gets the
+    # stronger check applied by `upgrade`, and is then recorded at the current level.
+    from protonfs.index import CHECK_LEVEL, IndexStore
+
+    _index_as_2_3_0_wrote_it(tmp_path)
+    fake = _drive_with(make_fake_drive)
+
+    code, out = _run(
+        tmp_path, capsys, client=fake, installer=FakeInstaller(), upstream_fetch=lambda: None
+    )
+
+    assert code == 0, out
+    assert "re-verifying 2 index entries against Drive" in out
+    assert fake.identity_calls == ["/my-files/test/run"]
+    index = IndexStore(tmp_path)
+    assert index.check_level == CHECK_LEVEL
+    assert (index.get("run/dump").local_state, index.get("run/dump").size) == (
+        "metadata-only", 5000,
+    )
+    assert index.get("run/ok").local_state == "present"
+
+
+def test_upgrade_check_reports_the_reverify_without_running_it(
+    tmp_path: Path, capsys, make_fake_drive
+) -> None:
+    from protonfs.index import IndexStore
+
+    _index_as_2_3_0_wrote_it(tmp_path)
+    fake = _drive_with(make_fake_drive)
+
+    code, out = _run(
+        tmp_path, capsys, check=True, client=fake, installer=FakeInstaller(),
+        upstream_fetch=lambda: None,
+    )
+
+    assert code == 1
+    assert "would re-verify 2 index entries against Drive" in out
+    assert fake.identity_calls == []
+    assert IndexStore(tmp_path).check_level == 0
+
+
+def test_upgrade_does_not_reverify_an_index_already_at_the_current_level(
+    tmp_path: Path, capsys, make_fake_drive
+) -> None:
+    from protonfs.index import IndexEntry, IndexStore
+
+    init_config(tmp_path, "/my-files/test")
+    index = IndexStore(tmp_path)
+    index.set("a", IndexEntry(4, 1.0, "s", "", "/my-files/test/a", "d", "present", "t"))
+    index.save()
+    fake = _drive_with(make_fake_drive)
+
+    code, out = _run(
+        tmp_path, capsys, client=fake, installer=FakeInstaller(), upstream_fetch=lambda: None
+    )
+
+    assert code == 0
+    assert "re-verif" not in out
+    assert fake.identity_calls == []
+
+
+def test_upgrade_reports_a_reverify_that_could_not_run_and_carries_on(
+    tmp_path: Path, capsys, make_fake_drive
+) -> None:
+    # The binary and the migrations are done by then; a throttled Drive must not undo
+    # them. The index keeps its old level, so the next upgrade tries again.
+    from protonfs.drive import DriveThrottleError
+    from protonfs.index import IndexStore
+
+    _index_as_2_3_0_wrote_it(tmp_path)
+    fake = _drive_with(make_fake_drive)
+
+    def throttled(parent):
+        raise DriveThrottleError("throttled")
+
+    fake.remote_identities = throttled
+
+    code = run_upgrade(
+        tmp_path, client=fake, installer=FakeInstaller(), upstream_fetch=lambda: None
+    )
+
+    captured = capsys.readouterr()
+    assert code == 0
+    assert "protonfs verify --index --repair" in captured.err
+    assert IndexStore(tmp_path).check_level == 0
+
+
+def test_upgrade_drive_only_does_not_reverify(tmp_path: Path, capsys, make_fake_drive) -> None:
+    _index_as_2_3_0_wrote_it(tmp_path)
+    fake = _drive_with(make_fake_drive)
+
+    _run(
+        tmp_path, capsys, drive_only=True, client=fake, installer=FakeInstaller(),
+        upstream_fetch=lambda: None,
+    )
+
+    assert fake.identity_calls == []

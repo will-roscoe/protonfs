@@ -206,10 +206,14 @@ flag/argument name; these names, not just their presence, are frozen.
    * - ``verify``
      - Check the remote manifest (``<remote_root>/.protonfs/manifest.json``) against a
        full listing of the remote; ``--repair`` rewrites it to match (and is the only
-       way one is created). Option: ``--repair``. Added in 2.1.0.
+       way one is created). Options: ``--repair``, ``--index`` (check the local index
+       against per-directory listings instead, reading no local file; with ``--repair``,
+       apply what that proves). Added in 2.1.0; ``--index`` added in 2.4.0.
      - ``0`` every manifest entry matches Drive, there is no manifest, or ``--repair``
        rewrote it; ``1`` entries are missing from Drive or differ in size/sha1, the
        manifest cannot be read or written, or a Drive/lock error; ``2`` usage error.
+       With ``--index``: ``0`` every index entry matches (with ``--repair``: every entry
+       was checked and none was left untouched); ``1`` otherwise, or a Drive/lock error.
    * - ``install-drive``
      - Download and verify the official proton-drive CLI binary. Options:
        ``--version``, ``--skip-keyring``.
@@ -218,10 +222,12 @@ flag/argument name; these names, not just their presence, are frozen.
    * - ``upgrade``
      - Upgrade proton-drive to this release's highest supported version (verify-first,
        atomic swap; never past ``highest_supported()`` -- a newer upstream is reported,
-       not installed) and, inside a protonfs root, run pending repo-state migrations.
+       not installed) and, inside a protonfs root, run pending repo-state migrations
+       and re-verify an index recorded under an older check level against Drive (since
+       2.4.0; a Drive failure there is reported, not fatal).
        Options: ``--check`` (preview, change nothing), ``--drive-only``, ``--repo-only``.
      - ``0`` success, or with ``--check``: fully current; ``1`` failure, or with
-       ``--check``: an upgrade/migration is available; ``2`` usage error (including
+       ``--check``: an upgrade, migration or re-verification is due; ``2`` usage error (including
        ``--drive-only`` with ``--repo-only``).
    * - ``doctor``
      - Check this host can run proton-drive (binary, session bus, OS keyring) and
