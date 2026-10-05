@@ -18,6 +18,7 @@ from protonfs.config import init_config
 from protonfs.context import load_context
 from protonfs.diff import DiffEntry, SyncState
 from protonfs.drive import DriveError, RemoteIdentity, TransferResult
+from protonfs.index import IndexStore
 from protonfs.lfs import POINTER_SIGNATURE
 
 
@@ -142,6 +143,27 @@ def test_push_multiple_parent_groups_all_uploaded_and_indexed(
     ]
     assert ctx.index.get("run1/a") is not None
     assert ctx.index.get("run2/b") is not None
+
+
+def test_push_carries_on_when_a_progress_save_fails(
+    tmp_path: Path, make_fake_drive, first_index_save_fails
+) -> None:
+    # #170: the save after the first directory failed (a rename on a FUSE mount). push must
+    # not abort there: the second directory is still pushed, and the final save persists
+    # both, since the in-memory index never lost anything.
+    for rel in ("run1/a", "run2/b"):
+        (tmp_path / rel).parent.mkdir()
+        (tmp_path / rel).write_bytes(b"x")
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.drive = make_fake_drive()
+
+    result = push(ctx, None, resolve=None, dry_run=False)
+
+    assert result.transferred_items == 2
+    assert first_index_save_fails[0] is False
+    on_disk = IndexStore(tmp_path)
+    assert on_disk.get("run1/a") is not None and on_disk.get("run2/b") is not None
 
 
 def test_push_default_passes_no_conflict_strategy(tmp_path: Path, make_fake_drive) -> None:

@@ -27,6 +27,11 @@ swapped onto the real path with ``os.replace``. A reader — or a crash at any
 point during the write — only ever sees the complete old file or the complete
 new one; a torn or truncated index is not a failure mode this design permits.
 
+On some network and FUSE mounts (glusterfs, observed) the temp file is
+occasionally gone by the time of the rename. The content is still in memory, so
+``IndexStore.save`` writes a fresh temp file and retries, a few times with a
+short backoff, before it raises (#170).
+
 Config files (``.protonfs/config.json``, ``config.local.json``, and the global
 ``~/.config/protonfs/config.json``) are written the same way by
 ``src/protonfs/config.py``.
@@ -57,6 +62,11 @@ Combined with the atomic-write guarantee above, this makes an interrupted run
 of the same command sees the index as it stood after the last completed group and
 only acts on what remains, rather than re-doing work already recorded or losing
 track of what happened before the interruption.
+
+These per-group saves are checkpoints (``IndexStore.checkpoint``): if one fails,
+the failure is logged and the run carries on, because the in-memory index still
+holds everything. The save at the end of the command persists it, and is the one
+that fails the command if it cannot (#170). ``offload`` saves the same way.
 
 Re-running ``push``/``pull`` on files that are already synced is a no-op — they
 classify as ``locally-indexed`` and are excluded from the transfer set — so

@@ -538,8 +538,9 @@ def push(
 
         # #3: persist after each parent group so an interruption (Ctrl-C, dropped
         # connection) resumes from here on the next run instead of re-doing everything.
-        # Composed with #1's atomic writes, each of these saves is crash-safe.
-        ctx.index.save()
+        # Composed with #1's atomic writes, each of these saves is crash-safe. #170: a
+        # failed one is not fatal; the final save below persists everything.
+        ctx.index.checkpoint()
     if manifest_updates is None and verified:
         manifest.update(ctx, record=verified, reporter=reporter)
     ctx.index.save()

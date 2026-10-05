@@ -8,11 +8,18 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 
 ## [Unreleased]
 
+### Features
+
+- **push**: `--min-age DURATION`, a settle window: a file modified more recently than this is held back (counted as `unsettled=`, not a failure) and pushed by a later run once it has settled, so a file still being written is never uploaded part-way and left as a permanent conflict (#168). `protonfs schedule --add --command push --min-age 2h` passes it to a scheduled push. Default `0` holds nothing back
+
+### Bug fixes
+
+- **index**: a save whose temp file is gone by the time of the rename, as happens on a glusterfs FUSE mount, is written again and retried instead of aborting the command. A save that still fails part-way through `push`, `pull` or `offload` is logged and the run carries on; the save at the end persists everything, and is the one that fails the command if it cannot (#170)
+
 ## [2.3.0] - 2026-09-24
 
 ### Features
 
-- **push**: `--min-age DURATION`, a settle window: a file modified more recently than this is held back (counted as `unsettled=`, not a failure) and pushed by a later run once it has settled, so a file still being written is never uploaded part-way and left as a permanent conflict (#168). `protonfs schedule --add --command push --min-age 2h` passes it to a scheduled push. Default `0` holds nothing back
 - **manifest**: `defaults.manifest` is on by default. A repo without a manifest yet is warned by `push`/`rm` until `protonfs verify --repair` builds one; set it to `false` to opt out
 
 ### Bug fixes
