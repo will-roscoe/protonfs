@@ -139,10 +139,17 @@ def test_claimed_identity_reads_both_revision_shapes_and_flags_unreadable() -> N
     # which every verify treats as a pass.
     from protonfs.drive import active_revision, claimed_identity
 
-    flat = {"type": "file", "activeRevision": {"claimedSize": 100,
-                                               "claimedDigests": {"sha1": "aa"}}}
-    enveloped = {"type": "file", "activeRevision": {"ok": True, "value": {
-        "claimedSize": 200, "claimedDigests": {"sha1": "bb"}}}}
+    flat = {
+        "type": "file",
+        "activeRevision": {"claimedSize": 100, "claimedDigests": {"sha1": "aa"}},
+    }
+    enveloped = {
+        "type": "file",
+        "activeRevision": {
+            "ok": True,
+            "value": {"claimedSize": 200, "claimedDigests": {"sha1": "bb"}},
+        },
+    }
 
     assert claimed_identity(flat) == (100, "aa")
     assert claimed_identity(enveloped) == (200, "bb")
@@ -170,8 +177,11 @@ def test_remote_identities_is_throttle_resilient(monkeypatch: pytest.MonkeyPatch
         if calls["n"] < 3:
             raise subprocess.TimeoutExpired(cmd="proton-drive", timeout=timeout)
         return [
-            {"name": {"ok": True, "value": "f1"}, "type": "file",
-             "activeRevision": {"claimedSize": 100, "claimedDigests": {"sha1": "aa"}}},
+            {
+                "name": {"ok": True, "value": "f1"},
+                "type": "file",
+                "activeRevision": {"claimedSize": 100, "claimedDigests": {"sha1": "aa"}},
+            },
         ]
 
     monkeypatch.setattr(client, "list", flaky)
@@ -686,9 +696,7 @@ def test_restore_errors_when_wrong_node_restored(monkeypatch: pytest.MonkeyPatch
 def test_parent_name_returns_decrypted_name(monkeypatch: pytest.MonkeyPatch) -> None:
     client = DriveClient(binary="proton-drive")
     monkeypatch.setattr("protonfs.drive.shutil.which", lambda _: "/usr/bin/proton-drive")
-    run = _stub_run(
-        '{"uid": "share~p1", "name": {"ok": true, "value": "run1"}}'
-    )
+    run = _stub_run('{"uid": "share~p1", "name": {"ok": true, "value": "run1"}}')
     monkeypatch.setattr(subprocess, "run", run)
 
     assert client.parent_name("share~p1") == "run1"
@@ -838,7 +846,7 @@ def test_sqlite_busy_on_a_transfer_is_classified_too(monkeypatch: pytest.MonkeyP
     client = DriveClient(binary="proton-drive")
     monkeypatch.setattr("protonfs.drive.shutil.which", lambda _: "/usr/bin/proton-drive")
     monkeypatch.setattr(
-        subprocess, "run", _stub_run('SQLiteError: database is locked', returncode=1)
+        subprocess, "run", _stub_run("SQLiteError: database is locked", returncode=1)
     )
 
     with pytest.raises(DriveLockError):
@@ -856,7 +864,7 @@ def test_lock_error_is_not_retried_as_a_throttle(monkeypatch: pytest.MonkeyPatch
     def counting_run(args, capture_output, text, **kwargs):
         calls.append(args)
         return subprocess.CompletedProcess(
-            args, 1, stdout='SQLiteError: database is locked', stderr=""
+            args, 1, stdout="SQLiteError: database is locked", stderr=""
         )
 
     client = DriveClient(binary="proton-drive")
@@ -914,8 +922,10 @@ def test_remote_identities_warns_when_binary_supplies_no_claimed_sizes(
 
     assert len(idents) == 2
     assert all(i.claimed_size is None for i in idents.values())
-    assert any("presence" in r.message.lower() or "claimedsize" in r.message.lower()
-               for r in caplog.records), caplog.text
+    assert any(
+        "presence" in r.message.lower() or "claimedsize" in r.message.lower()
+        for r in caplog.records
+    ), caplog.text
 
 
 def test_remote_identities_does_not_warn_when_claimed_sizes_are_present(
@@ -928,9 +938,7 @@ def test_remote_identities_does_not_warn_when_claimed_sizes_are_present(
     monkeypatch.setattr(drive_mod, "_CLAIMED_METADATA_WARNED", False, raising=False)
     client = DriveClient(binary="proton-drive")
     monkeypatch.setattr("protonfs.drive.shutil.which", lambda _: "/usr/bin/proton-drive")
-    monkeypatch.setattr(
-        subprocess, "run", _stub_run(_listing_json([("a", 10)], claimed=True))
-    )
+    monkeypatch.setattr(subprocess, "run", _stub_run(_listing_json([("a", 10)], claimed=True)))
 
     with caplog.at_level(logging.WARNING, logger="protonfs.drive"):
         idents = client.remote_identities("/my-files/test")
@@ -979,12 +987,114 @@ def test_remote_identities_does_not_shell_out_for_the_version(
 
     monkeypatch.setattr(client, "drive_version", exploding_version)
     # a listing WITH claimed sizes -> no warning -> version must never be consulted
-    monkeypatch.setattr(client, "list_with_backoff", lambda *a, **k: [
-        {"name": {"ok": True, "value": "a"}, "type": "file",
-         "activeRevision": {"claimedSize": 10}}
-    ])
+    monkeypatch.setattr(
+        client,
+        "list_with_backoff",
+        lambda *a, **k: [
+            {
+                "name": {"ok": True, "value": "a"},
+                "type": "file",
+                "activeRevision": {"claimedSize": 10},
+            }
+        ],
+    )
 
     idents = client.remote_identities("/my-files/test")
 
     assert idents["a"].claimed_size == 10
     assert calls == []
+
+
+# --- #179: cli-drive@0.8.0 renamed the conflict strategies -----------------------------
+
+
+def _transfer_args(monkeypatch: pytest.MonkeyPatch, version: str | None, call) -> list[str]:
+    client = DriveClient(binary="/x")
+    monkeypatch.setattr(client, "drive_version", lambda: version)
+    seen: list[list[str]] = []
+    monkeypatch.setattr(client, "_run_transfer_with_backoff", lambda args, **kw: seen.append(args))
+    call(client)
+    return seen[0]
+
+
+def _opt(args: list[str], flag: str) -> str:
+    return args[args.index(flag) + 1]
+
+
+@pytest.mark.parametrize(
+    ("strategy", "expected"),
+    [
+        ("merge", "create-new-revision"),
+        ("keep-both", "rename"),
+        ("replace", "replace"),
+        ("skip", "skip"),
+    ],
+)
+def test_upload_file_strategy_uses_0_8_names(monkeypatch, strategy, expected) -> None:
+    args = _transfer_args(
+        monkeypatch, "0.8.0", lambda c: c.upload([Path("a")], "/p", file_strategy=strategy)
+    )
+    assert _opt(args, "-f") == expected
+
+
+@pytest.mark.parametrize(
+    ("strategy", "expected"),
+    [("keep-both", "rename"), ("replace", "remove"), ("skip", "skip")],
+)
+def test_download_file_strategy_uses_0_8_names(monkeypatch, strategy, expected) -> None:
+    args = _transfer_args(
+        monkeypatch, "0.8.0", lambda c: c.download(["/p/a"], Path("d"), file_strategy=strategy)
+    )
+    assert _opt(args, "-f") == expected
+
+
+def test_folder_strategies_use_0_8_names(monkeypatch) -> None:
+    up = _transfer_args(
+        monkeypatch, "0.8.0", lambda c: c.upload([Path("a")], "/p", folder_strategy="keep-both")
+    )
+    down = _transfer_args(
+        monkeypatch, "0.8.0", lambda c: c.download(["/p/a"], Path("d"), folder_strategy="replace")
+    )
+    merged = _transfer_args(
+        monkeypatch, "0.8.0", lambda c: c.upload([Path("a")], "/p", folder_strategy="merge")
+    )
+    assert (_opt(up, "-d"), _opt(down, "-d"), _opt(merged, "-d")) == ("rename", "remove", "merge")
+
+
+def test_later_versions_also_use_0_8_names(monkeypatch) -> None:
+    args = _transfer_args(
+        monkeypatch, "0.9.0", lambda c: c.upload([Path("a")], "/p", file_strategy="merge")
+    )
+    assert _opt(args, "-f") == "create-new-revision"
+
+
+@pytest.mark.parametrize("version", ["0.7.0", "0.5.0", "0.4.6", None])
+def test_older_or_unknown_versions_keep_the_original_names(monkeypatch, version) -> None:
+    up = _transfer_args(
+        monkeypatch, version, lambda c: c.upload([Path("a")], "/p", file_strategy="merge")
+    )
+    down = _transfer_args(
+        monkeypatch, version, lambda c: c.download(["/p/a"], Path("d"), file_strategy="replace")
+    )
+    assert (_opt(up, "-f"), _opt(down, "-f")) == ("merge", "replace")
+
+
+def test_drive_version_is_read_once_per_client(monkeypatch) -> None:
+    client = DriveClient(binary="/x")
+    calls: list[int] = []
+    monkeypatch.setattr(client, "drive_version", lambda: calls.append(1) or "0.8.0")
+    monkeypatch.setattr(client, "_run_transfer_with_backoff", lambda args, **kw: None)
+    client.upload([Path("a")], "/p", file_strategy="merge")
+    client.download(["/p/a"], Path("d"), file_strategy="replace")
+    assert len(calls) == 1
+
+
+def test_unknown_version_is_not_cached(monkeypatch) -> None:
+    client = DriveClient(binary="/x")
+    versions = iter([None, "0.8.0"])
+    monkeypatch.setattr(client, "drive_version", lambda: next(versions))
+    seen: list[list[str]] = []
+    monkeypatch.setattr(client, "_run_transfer_with_backoff", lambda args, **kw: seen.append(args))
+    client.upload([Path("a")], "/p", file_strategy="merge")
+    client.upload([Path("a")], "/p", file_strategy="merge")
+    assert (_opt(seen[0], "-f"), _opt(seen[1], "-f")) == ("merge", "create-new-revision")
