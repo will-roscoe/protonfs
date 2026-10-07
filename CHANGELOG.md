@@ -8,6 +8,10 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 
 ## [Unreleased]
 
+### Bug fixes
+
+- **drive**: transfers work with proton-drive 0.8.0, which renamed its conflict strategies. protonfs passed the 0.4.6-0.7.0 names, so every push that re-uploaded a changed file as a revision (`-f merge`, now `create-new-revision`) or updated the remote manifest aborted part-way, and every pull failed (`download -f replace`, now `remove`; `keep-both` is now `rename` in both directions). The names are now translated for 0.8.0 and later when the command is built; older binaries are unchanged (#179)
+
 ## [2.4.0] - 2026-10-05
 
 ### Features
