@@ -8,9 +8,16 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 
 ## [Unreleased]
 
+## [2.4.1] - 2026-10-09
+
 ### Bug fixes
 
 - **drive**: transfers work with proton-drive 0.8.0, which renamed its conflict strategies. protonfs passed the 0.4.6-0.7.0 names, so every push that re-uploaded a changed file as a revision (`-f merge`, now `create-new-revision`) or updated the remote manifest aborted part-way, and every pull failed (`download -f replace`, now `remove`; `keep-both` is now `rename` in both directions). The names are now translated for 0.8.0 and later when the command is built; older binaries are unchanged (#179)
+- **drive**: translate conflict-strategy names for proton-drive 0.8.0
+
+### Documentation
+
+- **changelog**: proton-drive 0.8.0 conflict-strategy names (#179)
 
 ## [2.4.0] - 2026-10-05
 
@@ -721,7 +728,8 @@ the preceding development history and its first tagged release:
   line-matching, git-mutation error wrapping, `pathspec` deprecation, subpath
   prune data-loss fix.
 
-[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v2.4.0...HEAD
+[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v2.4.1...HEAD
+[2.4.1]: https://github.com/will-roscoe/protonfs/compare/v2.4.0...v2.4.1
 [2.4.0]: https://github.com/will-roscoe/protonfs/compare/v2.3.0...v2.4.0
 [2.3.0]: https://github.com/will-roscoe/protonfs/compare/v2.2.1...v2.3.0
 [2.2.1]: https://github.com/will-roscoe/protonfs/compare/v2.2.0...v2.2.1
