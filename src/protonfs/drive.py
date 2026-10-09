@@ -10,6 +10,7 @@ local-vs-remote comparisons never trip over Proton's encryption-size overhead.
 
 .. versionadded:: 1.0.0
 """
+
 from __future__ import annotations
 
 import json
@@ -36,6 +37,16 @@ DEFAULT_BINARY = "proton-drive"
 # `+` (if any) is deliberately not captured (issue #65: the support matrix compares
 # on the semver only).
 _VERSION_RE = re.compile(r"cli-drive@(\d+\.\d+\.\d+)")
+
+# #179: cli-drive@0.8.0 renamed the conflict strategies. protonfs speaks the 0.4.6-0.7.0
+# names everywhere; these are translated, per command and option, only for 0.8.0 onwards.
+_STRATEGY_RENAMES_FROM = (0, 8, 0)
+_STRATEGY_RENAMES = {
+    ("upload", "-f"): {"merge": "create-new-revision", "keep-both": "rename"},
+    ("upload", "-d"): {"keep-both": "rename"},
+    ("download", "-f"): {"keep-both": "rename", "replace": "remove"},
+    ("download", "-d"): {"keep-both": "rename", "replace": "remove"},
+}
 
 # #33: the Proton API throttles hard from rate-limited hosts (HPC login nodes), where a
 # `filesystem list` degrades from <1s to 15-30s and then hangs for minutes. Cap each list
@@ -542,6 +553,7 @@ class DriveClient:
         """
         self._binary = binary or binary_path()
         self._env: dict[str, str] | None = None
+        self._renamed_strategies: bool | None = None
 
     @property
     def binary(self) -> str:
@@ -698,6 +710,25 @@ class DriveClient:
         match = _VERSION_RE.search(raw)
         return match.group(1) if match else None
 
+    def _strategy(self, command: str, option: str, name: str) -> str:
+        """Translate a conflict-strategy name into the installed binary's vocabulary (#179).
+
+        :param command: ``"upload"`` or ``"download"``.
+        :param option: ``"-f"`` (files) or ``"-d"`` (folders).
+        :param name: the strategy in protonfs's (cli-drive 0.4.6-0.7.0) vocabulary.
+        :returns: the name the binary accepts. An unreadable version passes the name
+            through and is asked again next time, so a transient fault is not cached.
+        """
+        if self._renamed_strategies is None:
+            version = self.drive_version()
+            if version is None:
+                return name
+            parts = tuple(int(p) for p in version.split("."))
+            self._renamed_strategies = parts >= _STRATEGY_RENAMES_FROM
+        if not self._renamed_strategies:
+            return name
+        return _STRATEGY_RENAMES[(command, option)].get(name, name)
+
     def is_authenticated(self) -> bool:
         """Whether a usable session exists. A *keyring* fault deliberately propagates:
         collapsing it to False would report "not authenticated" and send the user to
@@ -782,8 +813,12 @@ class DriveClient:
         """
         identities: dict[str, RemoteIdentity] = {}
         entries = self.list_with_backoff(
-            remote_parent, timeout=timeout, retries=retries, base_delay=base_delay,
-            cap=cap, sleep=sleep,
+            remote_parent,
+            timeout=timeout,
+            retries=retries,
+            base_delay=base_delay,
+            cap=cap,
+            sleep=sleep,
         )
         for entry in entries:
             if entry.get("type") == "folder":
@@ -894,9 +929,9 @@ class DriveClient:
         """
         args = ["filesystem", "upload"]
         if file_strategy:
-            args += ["-f", file_strategy]
+            args += ["-f", self._strategy("upload", "-f", file_strategy)]
         if folder_strategy:
-            args += ["-d", folder_strategy]
+            args += ["-d", self._strategy("upload", "-d", folder_strategy)]
         args += [str(p) for p in local_paths] + [remote_parent]
         return self._run_transfer_with_backoff(
             args, timeout=timeout, retries=retries, base_delay=base_delay, cap=cap, sleep=sleep
@@ -934,9 +969,9 @@ class DriveClient:
         """
         args = ["filesystem", "download"]
         if file_strategy:
-            args += ["-f", file_strategy]
+            args += ["-f", self._strategy("download", "-f", file_strategy)]
         if folder_strategy:
-            args += ["-d", folder_strategy]
+            args += ["-d", self._strategy("download", "-d", folder_strategy)]
         args += remote_paths + [str(local_folder)]
         return self._run_transfer_with_backoff(
             args, timeout=timeout, retries=retries, base_delay=base_delay, cap=cap, sleep=sleep
