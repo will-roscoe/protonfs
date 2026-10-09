@@ -1,0 +1,21 @@
+{
+  "items": [
+    {
+      "label": "Pinned",
+      "value": "0.8.0"
+    },
+    {
+      "label": "Latest",
+      "value": "0.9.0"
+    }
+  ],
+  "label": "PROTON DRIVE",
+  "run": {
+    "commit": "90958529379b31a2c6522bde4206c5dfb2004aeb",
+    "id": "37327840230",
+    "url": "https://github.com/will-roscoe/protonfs/actions/runs/37327840230"
+  },
+  "source": "proton-drive",
+  "state": "warn",
+  "updated": "2026-10-05T14:49:46Z"
+}
