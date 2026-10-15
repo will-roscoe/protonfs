@@ -547,48 +547,64 @@ def test_pass_store_compat_unknown_version_warns() -> None:
 
 # --- #178: proton-drive cache on a network filesystem -----------------------------------
 
-_GLUSTER_HOME = "/dev/sda1 / ext4 rw 0 0\ngluster:/home /home fuse.glusterfs rw 0 0\n"
+
+@pytest.fixture
+def gluster_home(tmp_path):
+    """A real home directory under tmp_path, described as a GlusterFS mount (with a
+    local /var/tmp-like directory beside it), so paths resolve on any OS."""
+    home = tmp_path / "home" / "u"
+    home.mkdir(parents=True)
+    local = tmp_path / "local"
+    local.mkdir()
+    root = str(tmp_path.resolve())
+    mounts = f"/dev/sda1 / ext4 rw 0 0\ngluster:/home {root}/home fuse.glusterfs rw 0 0\n"
+    return home, local, mounts
 
 
-def test_drive_cache_check_ok_on_local_disk() -> None:
+def test_drive_cache_check_ok_on_local_disk(gluster_home) -> None:
     from protonfs.commands.doctor import drive_cache_check
 
-    check = drive_cache_check({"HOME": "/no-such-home"}, _GLUSTER_HOME, "Linux")
+    _, local, mounts = gluster_home
+    check = drive_cache_check({"HOME": str(local)}, mounts, "Linux")
     assert check.ok and not check.warn
-    assert check.detail == "/no-such-home/.cache/proton-drive-cli (ext4)"
+    assert check.detail == f"{local}/.cache/proton-drive-cli (ext4)"
 
 
-def test_drive_cache_check_warns_on_a_network_home() -> None:
+def test_drive_cache_check_warns_on_a_network_home(gluster_home) -> None:
     from protonfs.commands.doctor import drive_cache_check
 
-    check = drive_cache_check({"HOME": "/home/u"}, _GLUSTER_HOME, "Linux")
+    home, _, mounts = gluster_home
+    check = drive_cache_check({"HOME": str(home)}, mounts, "Linux")
     assert check.ok and check.warn  # advisory: never fails the exit code
     assert "fuse.glusterfs" in check.detail
     assert "PROTONFS_DRIVE_CACHE_HOME" in check.hint
     assert "schedule" in check.hint
 
 
-def test_drive_cache_check_judges_the_directory_protonfs_passes() -> None:
+def test_drive_cache_check_judges_the_directory_protonfs_passes(gluster_home) -> None:
     from protonfs.commands.doctor import drive_cache_check
 
-    env = {"HOME": "/home/u", "PROTONFS_DRIVE_CACHE_HOME": "/var/tmp/u"}
-    check = drive_cache_check(env, _GLUSTER_HOME, "Linux")
+    home, local, mounts = gluster_home
+    env = {"HOME": str(home), "PROTONFS_DRIVE_CACHE_HOME": str(local)}
+    check = drive_cache_check(env, mounts, "Linux")
     assert not check.warn
-    assert check.detail == "/var/tmp/u/proton-drive-cli (ext4)"
+    assert check.detail == f"{local}/proton-drive-cli (ext4)"
 
 
-def test_drive_cache_check_says_when_the_override_is_on_a_network_fs_too() -> None:
+def test_drive_cache_check_says_when_the_override_is_on_a_network_fs_too(gluster_home) -> None:
     from protonfs.commands.doctor import drive_cache_check
 
-    env = {"HOME": "/home/u", "PROTONFS_DRIVE_CACHE_HOME": "/home/u/cache"}
-    check = drive_cache_check(env, _GLUSTER_HOME, "Linux")
+    home, _, mounts = gluster_home
+    env = {"HOME": str(home), "PROTONFS_DRIVE_CACHE_HOME": str(home / "cache")}
+    check = drive_cache_check(env, mounts, "Linux")
     assert check.warn
     assert "is set, but that is on a network filesystem too" in check.hint
 
 
-def test_drive_cache_check_unknown_filesystem_is_ok() -> None:
+def test_drive_cache_check_unknown_filesystem_is_ok(gluster_home) -> None:
     from protonfs.commands.doctor import drive_cache_check
 
-    check = drive_cache_check({"HOME": "/home/u"}, "", "Linux")
+    home, _, _ = gluster_home
+    check = drive_cache_check({"HOME": str(home)}, "", "Linux")
     assert check.ok and not check.warn
     assert "unknown" in check.detail
