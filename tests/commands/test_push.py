@@ -1456,3 +1456,75 @@ def test_push_without_min_age_uploads_a_file_modified_just_now(
     result = push(ctx, None, resolve=None, dry_run=False)
 
     assert (result.transferred_items, result.unsettled_items) == (1, 0)
+
+
+# --- #183: images this host cannot thumbnail ------------------------------------------
+
+
+def test_push_retries_an_unthumbnailable_file_without_a_thumbnail(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    (tmp_path / "scans").mkdir()
+    (tmp_path / "scans" / "IMG_1.tif").write_bytes(b"tiff bytes")
+    (tmp_path / "scans" / "IMG_2.jpg").write_bytes(b"jpeg bytes")
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    fake = make_fake_drive(no_thumbnail_codec=(".tif",))
+    ctx.drive = fake
+
+    result = push(ctx, None, resolve=None, dry_run=False)
+
+    assert result.failed_items == 0 and result.failures == []
+    assert result.transferred_items == 2
+    assert fake.thumbnail_skips == [False, True]
+    assert fake.upload_calls[1][0] == (str(tmp_path / "scans" / "IMG_1.tif"),)
+    assert ctx.index.get("scans/IMG_1.tif") is not None
+
+
+def test_push_skips_thumbnails_everywhere_when_configured(
+    tmp_path: Path, make_fake_drive, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PROTONFS_SKIP_THUMBNAILS", "1")
+    (tmp_path / "IMG_1.tif").write_bytes(b"tiff bytes")
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    fake = make_fake_drive(no_thumbnail_codec=(".tif",))
+    ctx.drive = fake
+
+    result = push(ctx, None, resolve=None, dry_run=False)
+
+    assert result.transferred_items == 1
+    assert fake.thumbnail_skips == [True]  # one call, no retry needed
+
+
+def test_push_reports_a_thumbnail_failure_that_persists_without_thumbnails(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    # A failure from an upload already sent with -t is a real failure, never retried again.
+    (tmp_path / "IMG_1.tif").write_bytes(b"tiff bytes")
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    fake = make_fake_drive(
+        upload_result=TransferResult(
+            0, 0, 1, [{"name": "IMG_1.tif", "error": "Failed to generate thumbnails"}]
+        )
+    )
+    ctx.drive = fake
+
+    result = push(ctx, None, resolve=None, dry_run=False)
+
+    assert fake.thumbnail_skips == [False, True]
+    assert result.failed_items == 1 and result.transferred_items == 0
+    assert ctx.index.get("IMG_1.tif") is None
+
+
+def test_skip_thumbnails_config_key_and_env_override(tmp_path: Path, monkeypatch) -> None:
+    from protonfs.commands.config import config_get, config_set
+
+    init_config(tmp_path, "/my-files/test")
+    assert load_context(tmp_path).config.defaults.skip_thumbnails is False
+    config_set(tmp_path, "defaults.skip_thumbnails", "true")
+    assert load_context(tmp_path).config.defaults.skip_thumbnails is True
+    assert config_get(tmp_path, "defaults.skip_thumbnails") == "True"
+    monkeypatch.setenv("PROTONFS_SKIP_THUMBNAILS", "0")
+    assert load_context(tmp_path).config.defaults.skip_thumbnails is False

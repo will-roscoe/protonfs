@@ -14,7 +14,7 @@ from pathlib import Path
 from protonfs.batching import batches, group_by_parent
 from protonfs.context import RepoContext
 from protonfs.diff import SyncState, classify
-from protonfs.drive import DriveError, TransferResult
+from protonfs.drive import DriveError, TransferResult, is_thumbnail_failure
 from protonfs.ignore import IgnoreMatcher
 from protonfs.index import IndexEntry
 from protonfs.lfs import is_pointer_stub
@@ -422,6 +422,7 @@ def push(
     # map to proton-drive `-f` strategies (#124); legacy strategy names pass through.
     strategy = _RESOLVE_TO_STRATEGY.get(resolve, resolve)
     batch_size = ctx.config.defaults.batch_size
+    skip_thumbnails = ctx.config.defaults.skip_thumbnails
     groups = group_by_parent(to_push)
     total = TransferResult(0, 0, 0, [], unsettled_items=len(held))
     done = 0  # files handed to proton-drive so far, for reporter.progress (#93)
@@ -459,14 +460,16 @@ def push(
             _revision_rels(ctx, rels, remote_parent) if strategy is None else set()
         )
         jobs = [
-            (batch, strategy)
+            (batch, strategy, skip_thumbnails)
             for batch in batches([r for r in rels if r not in revision_rels], batch_size)
         ] + [
-            (batch, REVISION_STRATEGY)
+            (batch, REVISION_STRATEGY, skip_thumbnails)
             for batch in batches([r for r in rels if r in revision_rels], batch_size)
         ]
         # #168: a remote copy that proves to be an older copy of the same file is replaced
-        # with a revision in one more round; see _is_older_copy.
+        # with a revision in one more round; see _is_older_copy. #183: so is a file
+        # proton-drive refused because this host cannot build its thumbnail, sent again
+        # without one.
         retry_round = False
         while jobs:
             # Files proton-drive did not report as a (real) failure or skip -- candidates to
@@ -484,21 +487,42 @@ def push(
             # merge, replace); skip and keep-both leave whatever holds that name alone.
             # Only these may be recorded as push's own short upload (#168).
             written_rels: set[str] = set()
-            for batch, batch_strategy in jobs:
+            no_thumbnail: list[tuple[str, str | None]] = []
+            for batch, batch_strategy, batch_skips_thumbnails in jobs:
                 local_paths = [ctx.root / rel for rel in batch]
-                result = ctx.drive.upload(local_paths, remote_parent, file_strategy=batch_strategy)
+                result = ctx.drive.upload(
+                    local_paths, remote_parent, file_strategy=batch_strategy,
+                    skip_thumbnails=batch_skips_thumbnails,
+                )
                 total.skipped_items += result.skipped_items
                 if not retry_round:  # a retried file was already counted once (#93)
                     done += len(batch)
                     reporter.progress(done, len(to_push))
 
+                # #183: a file this host cannot thumbnail goes again without a thumbnail,
+                # rather than failing on every push. Sent with -t already, it is a failure.
+                thumbnail_names = set()
+                if not batch_skips_thumbnails:
+                    thumbnail_names = {
+                        f["name"] for f in result.failures if is_thumbnail_failure(f)
+                    }
+                    for rel in batch:
+                        if Path(rel).name in thumbnail_names:
+                            logger.warning(
+                                "push: no thumbnail codec on this host for %s; "
+                                "uploading it without a thumbnail", rel
+                            )
+                            no_thumbnail.append((rel, batch_strategy))
                 # Partition the batch's failures: an "already exists" conflict is an adoption
                 # candidate (verified below); everything else is a real failure now.
                 conflict_names = {f["name"] for f in result.failures if _is_already_exists(f)}
-                real_failures = [f for f in result.failures if not _is_already_exists(f)]
+                real_failures = [
+                    f for f in result.failures
+                    if not _is_already_exists(f) and f["name"] not in thumbnail_names
+                ]
                 total.failed_items += len(real_failures)
                 total.failures += real_failures
-                failed_names = {f["name"] for f in real_failures}
+                failed_names = {f["name"] for f in real_failures} | thumbnail_names
                 for rel in batch:
                     name = Path(rel).name
                     # A conflict was not transferred (it already existed) -- no "^" upload line.
@@ -525,8 +549,17 @@ def push(
                     elif unattributed:
                         unattributed_rels.add(rel)
 
+            retry_jobs = [
+                (batch, batch_strategy, True)
+                for batch_strategy in dict.fromkeys(s for _, s in no_thumbnail)
+                for batch in batches(
+                    [rel for rel, s in no_thumbnail if s == batch_strategy], batch_size
+                )
+            ]
             if not candidates:
-                break
+                jobs = retry_jobs
+                retry_round = True
+                continue
 
             # #22: do NOT trust proton-drive's transferred count -- re-list the remote parent
             # and confirm each candidate actually landed (present, and plaintext claimedSize
@@ -637,7 +670,10 @@ def push(
                 else:
                     total.transferred_items += 1
 
-            jobs = [(batch, REVISION_STRATEGY) for batch in batches(older_copies, batch_size)]
+            jobs = retry_jobs + [
+                (batch, REVISION_STRATEGY, skip_thumbnails)
+                for batch in batches(older_copies, batch_size)
+            ]
             retry_round = True
 
         # #3: persist after each parent group so an interruption (Ctrl-C, dropped

@@ -22,6 +22,13 @@ import pytest
 
 from protonfs.drive import RemoteEntry, RemoteIdentity, TransferResult
 
+# proton-drive 0.8.0's failure for an image this host has no codec to thumbnail (#183).
+THUMBNAIL_ERROR = (
+    "ValidationError: Failed to generate thumbnails (use --skip-thumbnails to upload "
+    "without thumbnails): Image: format not supported on this machine (HEIC/AVIF/TIFF "
+    "require the OS codec; AVIF encode needs an AV1 encoder)"
+)
+
 
 class FakeDrive:
     def __init__(
@@ -39,6 +46,7 @@ class FakeDrive:
         version: str | None = "v0.4.6",
         authed: bool = True,
         parent_names: dict[str, str | None] | None = None,
+        no_thumbnail_codec: tuple[str, ...] = (),
     ) -> None:
         # recorded calls
         self.upload_calls: list[tuple] = []
@@ -53,6 +61,8 @@ class FakeDrive:
         self.walk_roots: list[str] = []
         self.identity_calls: list[str] = []
         self.list_calls: list[str] = []
+        # #183: the skip_thumbnails flag of each upload call, in order.
+        self.thumbnail_skips: list[bool] = []
         # configured responses
         self._walk_entries = walk_entries or []
         self._walk_by_root = walk_by_root
@@ -66,6 +76,9 @@ class FakeDrive:
         # download_result.failures) but that never land locally.
         self._download_dropped_files = download_dropped_files or set()
         self._remote_size_overrides = remote_size_overrides or {}
+        # #183 simulation: file suffixes (e.g. ".tif") this host has no thumbnail codec
+        # for; such a file fails unless uploaded with skip_thumbnails.
+        self._no_thumbnail_codec = no_thumbnail_codec
         # #144 simulation: a listing that carries no plaintext claimedSize (the shape the
         # #147 parse bug produced). Public so a test can flip it between two pushes.
         self.report_claimed_size = report_claimed_size
@@ -91,19 +104,30 @@ class FakeDrive:
     def is_authenticated(self):
         return self._authed
 
-    def upload(self, local_paths, remote_parent, file_strategy=None, folder_strategy=None):
+    def upload(
+        self, local_paths, remote_parent, file_strategy=None, folder_strategy=None,
+        skip_thumbnails=False,
+    ):
         self.upload_calls.append(
             (tuple(str(p) for p in local_paths), remote_parent, file_strategy)
         )
+        self.thumbnail_skips.append(skip_thumbnails)
         bucket = self._remote_files.setdefault(remote_parent, {})
         skipped: set[str] = set()
         renamed: dict[str, str] = {}
         if self._upload_result is not None:
             result = self._upload_result
         else:
+            unthumbnailable = [
+                p for p in local_paths
+                if not skip_thumbnails and Path(p).suffix.lower() in self._no_thumbnail_codec
+            ]
             result, skipped, renamed = self._resolve_conflicts(
-                local_paths, bucket, file_strategy
+                [p for p in local_paths if p not in unthumbnailable], bucket, file_strategy
             )
+            for p in unthumbnailable:
+                result.failed_items += 1
+                result.failures.append({"name": Path(p).name, "error": THUMBNAIL_ERROR})
         # Model what actually lands on the remote: every uploaded file EXCEPT the ones
         # proton-drive reported as failures and the ones configured as silently dropped.
         failed = {f["name"] for f in result.failures}

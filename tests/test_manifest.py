@@ -286,8 +286,10 @@ def test_a_write_overtaken_after_upload_is_replayed(tmp_path, make_fake_drive) -
     real_upload = fake.upload
     state = {"interfered": False}
 
-    def upload_then_interfere(paths, parent, file_strategy=None, folder_strategy=None):
-        result = real_upload(paths, parent, file_strategy, folder_strategy)
+    def upload_then_interfere(
+        paths, parent, file_strategy=None, folder_strategy=None, skip_thumbnails=False
+    ):
+        result = real_upload(paths, parent, file_strategy, folder_strategy, skip_thumbnails)
         if parent == MANIFEST_DIR and not state["interfered"]:
             state["interfered"] = True
             theirs = Manifest.from_bytes(fake._remote_content[MANIFEST_PATH])

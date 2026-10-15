@@ -330,7 +330,8 @@ checked on Drive; the states marked *remote view* are only produced by
 Known keys for ``config get``/``config set``: :confval:`remote_root`,
 :confval:`device_id`, :confval:`defaults.on_conflict`, :confval:`defaults.low_io`,
 :confval:`defaults.event_log`, :confval:`defaults.progress_style`,
-:confval:`defaults.manifest` (added in 2.1.0). Each is defined in the Configuration
+:confval:`defaults.manifest` (added in 2.1.0), :confval:`defaults.skip_thumbnails` (added
+in 2.5.0). Each is defined in the Configuration
 section of :doc:`reference/index`.
 
 Config files and precedence
@@ -344,7 +345,7 @@ Layered configuration, highest precedence first:
    relocates the ``~/.config`` base; ``$PROTONFS_CONFIG`` overrides the full path
    outright.
 #. Built-in defaults (``defaults.on_conflict=skip``, ``defaults.low_io=false``,
-   ``defaults.manifest=true``,
+   ``defaults.manifest=true``, ``defaults.skip_thumbnails=false``,
    ``defaults.event_log=false``, ``defaults.progress_style=inline``).
 
 ``config get`` always reports the fully resolved value across all four layers.
@@ -379,6 +380,9 @@ Environment variables
    * - :envvar:`PROTONFS_MANIFEST`
      - Per-key override for the resolved :confval:`defaults.manifest` config value
        (boolean: ``1``/``true``/``yes``/``on``). Added in 2.1.0.
+   * - :envvar:`PROTONFS_SKIP_THUMBNAILS`
+     - Per-key override for the resolved :confval:`defaults.skip_thumbnails` config value
+       (boolean: ``1``/``true``/``yes``/``on``). Added in 2.5.0.
    * - :envvar:`PROTONFS_NO_MANIFEST`
      - Set (to any truthy value) to switch every remote-manifest read and write off on
        this host, whatever :confval:`defaults.manifest` says. Added in 2.1.0.
