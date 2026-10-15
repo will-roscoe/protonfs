@@ -63,6 +63,8 @@ class FakeDrive:
         self.list_calls: list[str] = []
         # #183: the skip_thumbnails flag of each upload call, in order.
         self.thumbnail_skips: list[bool] = []
+        # #185: the folder_strategy of each upload call ("merge" for a whole directory).
+        self.folder_strategies: list[str | None] = []
         # configured responses
         self._walk_entries = walk_entries or []
         self._walk_by_root = walk_by_root
@@ -112,24 +114,50 @@ class FakeDrive:
             (tuple(str(p) for p in local_paths), remote_parent, file_strategy)
         )
         self.thumbnail_skips.append(skip_thumbnails)
-        bucket = self._remote_files.setdefault(remote_parent, {})
-        skipped: set[str] = set()
-        renamed: dict[str, str] = {}
+        self.folder_strategies.append(folder_strategy)
+        # #185: a directory uploads recursively, each file into the matching subfolder
+        # (proton-drive creates the folders; with -d merge it merges into existing ones).
+        by_parent: dict[str, list[Path]] = {}
+        for p in map(Path, local_paths):
+            if p.is_dir():
+                for f in sorted(p.rglob("*")):
+                    if f.is_file():
+                        sub = f.parent.relative_to(p.parent).as_posix()
+                        by_parent.setdefault(f"{remote_parent}/{sub}", []).append(f)
+            else:
+                by_parent.setdefault(remote_parent, []).append(p)
         if self._upload_result is not None:
-            result = self._upload_result
-        else:
-            unthumbnailable = [
-                p for p in local_paths
-                if not skip_thumbnails and Path(p).suffix.lower() in self._no_thumbnail_codec
-            ]
-            result, skipped, renamed = self._resolve_conflicts(
-                [p for p in local_paths if p not in unthumbnailable], bucket, file_strategy
-            )
-            for p in unthumbnailable:
-                result.failed_items += 1
-                result.failures.append({"name": Path(p).name, "error": THUMBNAIL_ERROR})
+            for parent, paths in by_parent.items():
+                self._land(paths, parent, file_strategy, self._upload_result, set(), {})
+            return self._upload_result
+        total = TransferResult(0, 0, 0, [])
+        for parent, paths in by_parent.items():
+            result = self._upload_into(paths, parent, file_strategy, skip_thumbnails)
+            total.transferred_items += result.transferred_items
+            total.skipped_items += result.skipped_items
+            total.failed_items += result.failed_items
+            total.failures += result.failures
+        return total
+
+    def _upload_into(self, local_paths, remote_parent, file_strategy, skip_thumbnails):
+        bucket = self._remote_files.setdefault(remote_parent, {})
+        unthumbnailable = [
+            p for p in local_paths
+            if not skip_thumbnails and Path(p).suffix.lower() in self._no_thumbnail_codec
+        ]
+        result, skipped, renamed = self._resolve_conflicts(
+            [p for p in local_paths if p not in unthumbnailable], bucket, file_strategy
+        )
+        for p in unthumbnailable:
+            result.failed_items += 1
+            result.failures.append({"name": Path(p).name, "error": THUMBNAIL_ERROR})
+        self._land(local_paths, remote_parent, file_strategy, result, skipped, renamed)
+        return result
+
+    def _land(self, local_paths, remote_parent, file_strategy, result, skipped, renamed):
         # Model what actually lands on the remote: every uploaded file EXCEPT the ones
         # proton-drive reported as failures and the ones configured as silently dropped.
+        bucket = self._remote_files.setdefault(remote_parent, {})
         failed = {f["name"] for f in result.failures}
         sha1s = self._remote_sha1.setdefault(remote_parent, {})
         for p in local_paths:
@@ -156,7 +184,6 @@ class FakeDrive:
                 bucket[name] = len(data)
                 sha1s[name] = hashlib.sha1(data).hexdigest()
                 self._remote_content[key] = data
-        return result
 
     def _resolve_conflicts(self, local_paths, bucket, file_strategy):
         """proton-drive's conflict semantics (cli-drive@0.5.0 under --json, #144): an
