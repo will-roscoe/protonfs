@@ -358,6 +358,11 @@ def push(
        file, or an unverified upload recorded by an earlier push) is resolved by uploading
        a new revision of it, not reported as a conflict on every push (#168).
 
+    .. versionchanged:: 2.5.0
+       A file proton-drive cannot thumbnail on this host is uploaded again without a
+       thumbnail, after a warning, instead of failing; ``defaults.skip_thumbnails`` sends
+       every file without one (#183).
+
     .. seealso:: :func:`protonfs.commands.pull.pull` for the download direction.
     """
     from protonfs import manifest
