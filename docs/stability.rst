@@ -402,6 +402,9 @@ Environment variables
      - Base backoff in seconds between Drive listing retries (default ``2``).
    * - :envvar:`PROTONFS_LIST_BACKOFF_CAP`
      - Cap in seconds on the Drive listing retry backoff (default ``60``).
+   * - :envvar:`PROTONFS_BATCH_SIZE`
+     - Per-key override for the resolved :confval:`defaults.batch_size` config value
+       (integer, at least ``1``).
    * - :envvar:`PROTONFS_TRANSFER_TIMEOUT`
      - Minimum timeout in seconds for a Drive upload/download call (default ``300``).
    * - :envvar:`PROTONFS_TRANSFER_MIN_RATE`
