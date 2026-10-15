@@ -294,9 +294,12 @@ def _ensure_remote_dir(ctx: RepoContext, remote_dir: str, known: set[str]) -> No
         if child not in known:
             try:
                 ctx.drive.create_folder(current, segment)
-            except DriveError:
-                pass  # already exists -- a real failure will surface on the upload call
-            known.add(child)
+                known.add(child)
+            except DriveError as exc:
+                # Already there is fine. Any other failure surfaces on the upload call,
+                # and the folder is tried again for the next one.
+                if "already exist" in str(exc).lower():
+                    known.add(child)
         current = child
 
 
@@ -467,16 +470,27 @@ def push(
     # #185: a directory whose every file is new and being pushed goes up in one call, with
     # proton-drive creating its subfolders, instead of a create-folder per path segment and
     # an upload process per folder. Several such directories under one parent share a call.
-    whole_dirs, rels = _whole_dirs(ctx, rels, run.batch_size)
+    whole_dirs, rels = _whole_dirs(ctx, rels, local, run.batch_size)
+    changed: list[str] = []
     for parent, dirs in group_by_parent(list(whole_dirs)).items():
         remote_parent = _remote_dir(ctx, parent)
         run.ensure_dir(remote_parent)
         for chunk in _pack(dirs, whole_dirs, run.batch_size):
-            members = [rel for d in chunk for rel in whole_dirs[d]]
-            run.execute(
-                [_Job(members, [ctx.root / d for d in chunk], remote_parent, Path(parent),
-                      strategy, run.skip_thumbnails, whole_dirs=True)]
-            )
+            # Checked again just before the call: a file that appeared since the scan
+            # (a dump still being written, a temp file) must not ride along unchosen.
+            ready = []
+            for directory in chunk:
+                if _holds_exactly(ctx.root / directory, ctx.root, set(whole_dirs[directory])):
+                    ready.append(directory)
+                else:
+                    changed += whole_dirs[directory]
+            if ready:
+                run.execute(
+                    [_Job([rel for d in ready for rel in whole_dirs[d]],
+                          [ctx.root / d for d in ready], remote_parent, Path(parent),
+                          strategy, run.skip_thumbnails, whole_dirs=True)]
+                )
+    rels = changed + rels
 
     for parent, group in group_by_parent(rels).items():
         remote_parent = _remote_dir(ctx, parent)
@@ -494,7 +508,7 @@ def push(
     if manifest_updates is None and run.verified:
         manifest.update(ctx, record=run.verified, reporter=reporter)
     ctx.index.save()
-    reporter.progress(len(to_push), len(to_push), force=True)
+    run.finish()
     reporter.done(
         "uploaded",
         transferred=total.transferred_items,
@@ -509,37 +523,54 @@ def _remote_dir(ctx: RepoContext, parent: str) -> str:
     return f"{ctx.config.remote_root}/{parent}" if parent != "." else ctx.config.remote_root
 
 
+def _ancestors(rel: str) -> list[str]:
+    """The directories containing ``rel``, innermost first, excluding the repo root."""
+    return [parent.as_posix() for parent in list(Path(rel).parents)[:-1]]
+
+
 def _whole_dirs(
-    ctx: RepoContext, rels: list[str], limit: int
+    ctx: RepoContext, rels: list[str], local: dict, limit: int
 ) -> tuple[dict[str, list[str]], list[str]]:
     """Split ``rels`` into directories to upload whole and the files left over (#185).
 
-    A directory is uploaded whole when it holds at most ``limit`` files, every entry in
-    it is a regular file or a directory, and every file is in ``rels`` and absent from
-    the index (new on this device). Nothing ignored, held back, unchanged or needing a
-    revision can then ride along. Only the outermost such directory is taken, never the
-    repo root.
+    A directory is uploaded whole when it holds at most ``limit`` files with no two
+    sharing a name, every entry in it is a regular file or a directory, and every file
+    is in ``rels`` and absent from the index (new on this device). Nothing ignored, held
+    back, unchanged or needing a revision can then ride along, and a failure proton-drive
+    reports by file name names exactly one file. Only the outermost such directory is
+    taken, never the repo root. Directories holding a scanned or indexed file not being
+    sent are rejected without touching the disk; the rest are read once to rule out
+    ignored files, symlinks and empty folders.
 
     :param ctx: the loaded repo context.
     :param rels: repo-relative files to push.
+    :param local: the scan, keyed by repo-relative path (every non-ignored file in scope).
     :param limit: the most files one whole directory may hold (``defaults.batch_size``).
     :returns: ``(dirs, rest)``: each repo-relative directory to upload whole, mapped to
         its files in ``rels`` order, and the files of ``rels`` in none of them, in order.
     """
     pending = {rel for rel in rels if ctx.index.get(rel) is None}
-    under: dict[str, int] = {}
+    blocked = {
+        ancestor
+        for rel in [*(r for r in local if r not in pending), *ctx.index.all()]
+        for ancestor in _ancestors(rel)
+    }
+    members: dict[str, list[str]] = {}
     for rel in pending:
-        for ancestor in list(Path(rel).parents)[:-1]:
-            key = ancestor.as_posix()
-            under[key] = under.get(key, 0) + 1
+        for ancestor in _ancestors(rel):
+            members.setdefault(ancestor, []).append(rel)
     chosen: list[str] = []
     # Outermost first: a directory sorts before everything beneath it.
-    for directory in sorted(under, key=lambda d: (d.count("/"), d)):
-        if under[directory] > limit or any(
-            directory.startswith(c + "/") for c in chosen
+    for directory in sorted(members, key=lambda d: (d.count("/"), d)):
+        files = members[directory]
+        if (
+            directory in blocked
+            or len(files) > limit
+            or len({Path(rel).name for rel in files}) < len(files)
+            or any(directory.startswith(c + "/") for c in chosen)
         ):
             continue
-        if _holds_exactly(ctx.root / directory, ctx.root, pending, under[directory]):
+        if _holds_exactly(ctx.root / directory, ctx.root, set(files)):
             chosen.append(directory)
     dirs: dict[str, list[str]] = {d: [] for d in chosen}
     rest = []
@@ -552,8 +583,8 @@ def _whole_dirs(
     return dirs, rest
 
 
-def _holds_exactly(directory: Path, root: Path, pending: set[str], expected: int) -> bool:
-    """Whether ``directory`` holds only directories and the ``expected`` files of ``pending``.
+def _holds_exactly(directory: Path, root: Path, files: set[str]) -> bool:
+    """Whether ``directory`` holds only directories and exactly the repo-relative ``files``.
 
     False on any symlink, special file, empty directory or unreadable entry, so a whole-
     directory upload never carries something push did not choose to send.
@@ -572,7 +603,7 @@ def _holds_exactly(directory: Path, root: Path, pending: set[str], expected: int
                     if entry.is_dir(follow_symlinks=False):
                         stack.append(Path(entry.path))
                     elif entry.is_file(follow_symlinks=False):
-                        if Path(entry.path).relative_to(root).as_posix() not in pending:
+                        if Path(entry.path).relative_to(root).as_posix() not in files:
                             return False
                         seen += 1
                     else:
@@ -581,21 +612,25 @@ def _holds_exactly(directory: Path, root: Path, pending: set[str], expected: int
                     return False
     except OSError:
         return False
-    return seen == expected
+    return seen == len(files)
 
 
 def _pack(dirs: list[str], files: dict[str, list[str]], limit: int) -> list[list[str]]:
-    """Group ``dirs`` into runs holding at most ``limit`` files between them, in order."""
+    """Group ``dirs`` into runs of at most ``limit`` files with no file name repeated.
+
+    A name shared by two files in one call would leave a failure proton-drive reports
+    by name pointing at both, so such directories go in separate calls.
+    """
     chunks: list[list[str]] = []
-    count = 0
+    names: set[str] = set()
     for directory in dirs:
-        size = len(files[directory])
-        if chunks and count + size <= limit:
+        own = {Path(rel).name for rel in files[directory]}
+        if chunks and len(names) + len(own) <= limit and not names & own:
             chunks[-1].append(directory)
-            count += size
+            names |= own
         else:
             chunks.append([directory])
-            count = size
+            names = set(own)
     return chunks
 
 
@@ -619,8 +654,9 @@ class _Job:
         """Files proton-drive may mean by a failure named ``name``.
 
         proton-drive names a failed file by its basename alone, and a failed folder by
-        its own name, so in a call spanning several folders a name can be ambiguous.
-        Every file it could mean is returned, so none is trusted on the strength of it.
+        its own name. A call never holds two files of one name (see :func:`_pack`), but a
+        folder name can still match several files, and every one is returned, so none is
+        trusted on the strength of it.
 
         :returns: ``(files, beneath)``: the files with that basename, and the files
             inside a folder of that name.
@@ -671,6 +707,13 @@ class _PushRun:
             self.done, self.planned,
             size=f"{human_size(self.done_bytes)}/{human_size(self.planned_bytes)}",
         )
+
+    def finish(self) -> None:
+        """Report the final, unthrottled progress line, in the same shape as the others."""
+        from protonfs.commands.ls import human_size
+
+        size = human_size(self.planned_bytes)
+        self.reporter.progress(self.planned, self.planned, force=True, size=f"{size}/{size}")
 
     def ensure_dir(self, remote_dir: str) -> None:
         """Create ``remote_dir`` and its missing ancestors, once per push (#185)."""
@@ -740,12 +783,6 @@ class _PushRun:
             total.skipped_items += result.skipped_items
             if not retry_round:  # a retried file was already counted once (#93)
                 self.advance(job.rels)
-            if job.whole_dirs:  # proton-drive created these folders (#185)
-                for rel in job.rels:
-                    for folder in Path(rel).parents:
-                        if folder == job.base:
-                            break
-                        self.created.add(_remote_dir(ctx, folder.as_posix()))
 
             # Partition the call's failures. An "already exists" conflict is an adoption
             # candidate (verified below). #183: a file this host cannot thumbnail goes
@@ -758,6 +795,8 @@ class _PushRun:
             real_failures = []
             for failure in result.failures:
                 files, beneath = job.named(str(failure.get("name", "")))
+                if _is_already_exists(failure) and not files and not beneath:
+                    continue  # names nothing sent: verification settles every file
                 if files and _is_already_exists(failure):
                     conflict_rels |= files
                 elif files and not job.skip_thumbnails and is_thumbnail_failure(failure):
@@ -774,6 +813,12 @@ class _PushRun:
                 )
                 no_thumbnail.append((rel, job.strategy))
             failed_rels |= thumbnail_rels
+            if job.whole_dirs:  # proton-drive created the folders of what it took (#185)
+                for rel in set(job.rels) - failed_rels:
+                    for folder in Path(rel).parents:
+                        if folder == job.base:
+                            break
+                        self.created.add(_remote_dir(ctx, folder.as_posix()))
             for rel in job.rels:
                 # A conflict was not transferred (it already existed) -- no "^" upload line.
                 if rel not in failed_rels and rel not in conflict_rels:

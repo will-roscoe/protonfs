@@ -1537,7 +1537,7 @@ def _photo_tree(root: Path, days: int = 3, per_day: int = 2) -> list[str]:
     rels = []
     for day in range(1, days + 1):
         for n in range(per_day):
-            rel = f"photos/2019/2019-05-0{day}/IMG_{n}.jpg"
+            rel = f"photos/2019/2019-05-0{day}/IMG_{day}{n}.jpg"
             (root / rel).parent.mkdir(parents=True, exist_ok=True)
             (root / rel).write_bytes(f"{day}-{n}".encode())
             rels.append(rel)
@@ -1620,26 +1620,89 @@ def test_push_never_uploads_a_directory_whole_when_it_holds_something_else(
     assert "/my-files/test/run/scratch.tmp" not in fake.revision_uids
 
 
-def test_push_trusts_no_file_an_ambiguous_failure_could_name(
+def test_push_never_sends_two_files_of_one_name_in_one_call(
     tmp_path: Path, make_fake_drive
 ) -> None:
-    # proton-drive names a failed file by basename only: in a call spanning two folders
-    # "IMG_0.jpg" could be either, so neither is indexed (the next push settles them).
-    _photo_tree(tmp_path, days=2, per_day=2)
+    # proton-drive names a failed file by basename only, so one call must never hold two
+    # files a failure could both name: photos/ (holding both IMG_0.jpg) is not uploaded
+    # whole, and its date folders go in separate calls.
+    for day in (1, 2):
+        for n in (0, 1):
+            rel = tmp_path / f"photos/2019-05-0{day}/IMG_{n}.jpg"
+            rel.parent.mkdir(parents=True, exist_ok=True)
+            rel.write_bytes(f"{day}{n}".encode())
     init_config(tmp_path, "/my-files/test")
     ctx = load_context(tmp_path)
     fake = make_fake_drive(
-        upload_result=TransferResult(3, 0, 1, [{"name": "IMG_0.jpg", "error": "boom"}])
+        upload_result=TransferResult(1, 0, 1, [{"name": "IMG_0.jpg", "error": "boom"}])
     )
     ctx.drive = fake
 
     result = push(ctx, None, resolve=None, dry_run=False)
 
-    assert len(fake.upload_calls) == 1
-    assert result.failed_items == 1 and result.transferred_items == 2
-    assert set(ctx.index.all()) == {
-        "photos/2019/2019-05-01/IMG_1.jpg", "photos/2019/2019-05-02/IMG_1.jpg",
-    }
+    assert [call[0] for call in fake.upload_calls] == [
+        (str(tmp_path / "photos" / "2019-05-01"),), (str(tmp_path / "photos" / "2019-05-02"),),
+    ]
+    assert result.failed_items == 2 and result.transferred_items == 2
+    assert set(ctx.index.all()) == {"photos/2019-05-01/IMG_1.jpg", "photos/2019-05-02/IMG_1.jpg"}
+
+
+def test_push_rechecks_a_directory_just_before_uploading_it_whole(
+    tmp_path: Path, make_fake_drive, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A file written into the directory after the scan must not ride along unchosen.
+    _photo_tree(tmp_path, days=2, per_day=1)
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.config.defaults.batch_size = 1  # one call per date folder
+    fake = make_fake_drive()
+    ctx.drive = fake
+    late = tmp_path / "photos/2019/2019-05-02/late.jpg"
+    real_upload = fake.upload
+
+    def upload_then_write(*args, **kwargs):
+        late.write_bytes(b"still being written")
+        return real_upload(*args, **kwargs)
+
+    fake.upload = upload_then_write
+
+    push(ctx, None, resolve=None, dry_run=False)
+
+    assert "/my-files/test/photos/2019/2019-05-02/late.jpg" not in fake.revision_uids
+    late_call = (str(tmp_path / "photos/2019/2019-05-02/IMG_20.jpg"),)
+    assert fake.upload_calls[1][:2] == (late_call, "/my-files/test/photos/2019/2019-05-02")
+    assert "/my-files/test/photos/2019/2019-05-02/IMG_20.jpg" in fake.revision_uids
+    assert ctx.index.get("photos/2019/2019-05-02/IMG_20.jpg") is not None
+
+
+def test_ensure_remote_dir_retries_a_folder_whose_creation_failed(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    from protonfs.commands.push import _ensure_remote_dir
+
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    attempts: list[str] = []
+
+    def flaky(parent, name):
+        attempts.append(name)
+        if len(attempts) == 1:
+            raise DriveError("503 service unavailable")
+        if len(attempts) == 3:
+            raise DriveError("A file or folder with that name already exists")
+        return {}
+
+    ctx.drive = make_fake_drive()
+    ctx.drive.create_folder = flaky
+    known: set[str] = set()
+
+    _ensure_remote_dir(ctx, "/my-files/test/a", known)  # fails: not remembered
+    _ensure_remote_dir(ctx, "/my-files/test/a", known)  # created
+    _ensure_remote_dir(ctx, "/my-files/test/b", known)  # already there: remembered
+    _ensure_remote_dir(ctx, "/my-files/test/b", known)
+
+    assert attempts == ["a", "a", "b"]
+    assert known == {"/my-files/test/a", "/my-files/test/b"}
 
 
 def test_push_retries_an_unthumbnailable_file_from_a_whole_directory(
