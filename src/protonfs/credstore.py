@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from protonfs import secretservice
+from protonfs.drivecache import apply_cache_home
 from protonfs.secretservice import state_dir
 
 STORE_ENV = "PROTON_DRIVE_CREDENTIALS_STORE"
@@ -236,12 +237,20 @@ def probe_pass_store(runner=_run) -> tuple[bool, str]:
 def drive_env(env: dict[str, str] | None = None) -> dict[str, str]:
     """The environment every proton-drive subprocess inherits (selection only).
 
-    Reads the sticky/override store choice and injects the right env vars. Never
-    generates keys or raises -- establishment (which may keygen) is done by
-    :func:`establish` at auth-login / doctor --fix time.
-    """
-    base = dict(os.environ if env is None else env)
+    Reads the sticky/override store choice and injects the right env vars, then
+    moves proton-drive's cache when :envvar:`PROTONFS_DRIVE_CACHE_HOME` is set (see
+    :func:`protonfs.drivecache.apply_cache_home`). Never generates keys or raises --
+    establishment (which may keygen) is done by :func:`establish` at auth-login /
+    doctor --fix time.
 
+    .. versionchanged:: 2.6.0
+       Applies :envvar:`PROTONFS_DRIVE_CACHE_HOME` (#178).
+    """
+    return apply_cache_home(_store_env(dict(os.environ if env is None else env)))
+
+
+def _store_env(base: dict[str, str]) -> dict[str, str]:
+    """``base`` with the resolved credentials store's variables injected."""
     preset = base.get(STORE_ENV)
     if preset == PASS:
         return pass_env(base)

@@ -543,3 +543,52 @@ def test_pass_store_compat_unknown_version_warns() -> None:
 
     check = pass_store_drive_compat_check(_FakeDriveVersion(None))
     assert check.ok is True and check.warn is True
+
+
+# --- #178: proton-drive cache on a network filesystem -----------------------------------
+
+_GLUSTER_HOME = "/dev/sda1 / ext4 rw 0 0\ngluster:/home /home fuse.glusterfs rw 0 0\n"
+
+
+def test_drive_cache_check_ok_on_local_disk() -> None:
+    from protonfs.commands.doctor import drive_cache_check
+
+    check = drive_cache_check({"HOME": "/no-such-home"}, _GLUSTER_HOME, "Linux")
+    assert check.ok and not check.warn
+    assert check.detail == "/no-such-home/.cache/proton-drive-cli (ext4)"
+
+
+def test_drive_cache_check_warns_on_a_network_home() -> None:
+    from protonfs.commands.doctor import drive_cache_check
+
+    check = drive_cache_check({"HOME": "/home/u"}, _GLUSTER_HOME, "Linux")
+    assert check.ok and check.warn  # advisory: never fails the exit code
+    assert "fuse.glusterfs" in check.detail
+    assert "PROTONFS_DRIVE_CACHE_HOME" in check.hint
+    assert "schedule" in check.hint
+
+
+def test_drive_cache_check_judges_the_directory_protonfs_passes() -> None:
+    from protonfs.commands.doctor import drive_cache_check
+
+    env = {"HOME": "/home/u", "PROTONFS_DRIVE_CACHE_HOME": "/var/tmp/u"}
+    check = drive_cache_check(env, _GLUSTER_HOME, "Linux")
+    assert not check.warn
+    assert check.detail == "/var/tmp/u/proton-drive-cli (ext4)"
+
+
+def test_drive_cache_check_says_when_the_override_is_on_a_network_fs_too() -> None:
+    from protonfs.commands.doctor import drive_cache_check
+
+    env = {"HOME": "/home/u", "PROTONFS_DRIVE_CACHE_HOME": "/home/u/cache"}
+    check = drive_cache_check(env, _GLUSTER_HOME, "Linux")
+    assert check.warn
+    assert "is set, but that is on a network filesystem too" in check.hint
+
+
+def test_drive_cache_check_unknown_filesystem_is_ok() -> None:
+    from protonfs.commands.doctor import drive_cache_check
+
+    check = drive_cache_check({"HOME": "/home/u"}, "", "Linux")
+    assert check.ok and not check.warn
+    assert "unknown" in check.detail

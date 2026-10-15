@@ -181,6 +181,58 @@ def upstream_currency_check(upstream_fetch=None) -> Check:
     return Check("upstream proton-drive", True, f"stable {upstream}; nothing newer than supported")
 
 
+def drive_cache_check(
+    env: dict[str, str] | None = None,
+    mounts_text: str | None = None,
+    system: str | None = None,
+) -> Check:
+    """Report where proton-drive keeps its cache and warn when that is a network mount (#178).
+
+    :param env: the environment to judge; defaults to this process's, with
+        :envvar:`PROTONFS_DRIVE_CACHE_HOME` applied as protonfs passes it to proton-drive.
+    :param mounts_text: ``/proc/self/mounts`` contents, for tests.
+    :param system: :func:`platform.system` override, for tests.
+    :returns: ``[ok]`` naming the directory and its filesystem, or ``[warn]`` with the
+        remedy when the filesystem is in :data:`protonfs.drivecache.NETWORK_FILESYSTEMS`.
+        Never fails the doctor exit code.
+
+    .. versionadded:: 2.6.0
+    """
+    from protonfs.drivecache import (
+        CACHE_HOME_ENV,
+        NETWORK_FILESYSTEMS,
+        apply_cache_home,
+        cache_dir,
+        filesystem_type,
+    )
+
+    env = apply_cache_home(dict(os.environ) if env is None else env)
+    path = cache_dir(env, system)
+    fstype = filesystem_type(path, mounts_text)
+    if fstype is None:
+        return Check("proton-drive cache", True, f"{path} (filesystem type unknown)")
+    if fstype not in NETWORK_FILESYSTEMS:
+        return Check("proton-drive cache", True, f"{path} ({fstype})")
+    fix = (
+        f"{CACHE_HOME_ENV} is set, but that is on a network filesystem too: point it at"
+        if env.get(CACHE_HOME_ENV)
+        else f"Set {CACHE_HOME_ENV} to"
+    )
+    return Check(
+        name="proton-drive cache",
+        ok=True,
+        warn=True,
+        detail=f"{path} is on {fstype}, a network filesystem",
+        hint=(
+            "proton-drive reads and writes its sqlite cache there on every call, which "
+            "makes listings far slower (75x on one GlusterFS home). "
+            f"{fix} a directory on local disk, e.g. `export {CACHE_HOME_ENV}=/var/tmp/$USER`, "
+            "then re-add scheduled jobs (`protonfs schedule --add`) so their wrappers "
+            "carry it."
+        ),
+    )
+
+
 def repo_currency_checks(root: Path) -> list[Check]:
     """Inside a protonfs root: index schema version, pending repo-state migrations
     (#67 registry), and config layering sanity. Empty when `root` is not a protonfs
@@ -311,6 +363,7 @@ def run_doctor(fix: bool = False, root: Path | None = None) -> list[Check]:
     if version is not None:
         checks.append(version_currency_check(drive))
         checks.append(upstream_currency_check())
+    checks.append(drive_cache_check())
     checks.extend(repo_currency_checks(root))
 
     from protonfs import credstore
@@ -475,10 +528,14 @@ def doctor(fix: bool = False) -> bool:
 def shell_exports() -> list[str]:
     """`VAR=value` lines that make the current shell match the environment protonfs
     hands proton-drive (the resolved credentials store: bus for keychain, or the pass
-    vars). Only needed to run the `proton-drive` binary by hand; every protonfs command
-    sets this up for itself."""
+    vars; plus ``XDG_CACHE_HOME`` when :envvar:`PROTONFS_DRIVE_CACHE_HOME` is set).
+    Only needed to run the `proton-drive` binary by hand; every protonfs command sets
+    this up for itself."""
     from protonfs import credstore
+    from protonfs.drivecache import CACHE_HOME_ENV
 
     env = credstore.drive_env()
     keys = (BUS_ENV, credstore.STORE_ENV, "PASSWORD_STORE_DIR", "GNUPGHOME")
+    if env.get(CACHE_HOME_ENV):
+        keys += ("XDG_CACHE_HOME",)  # #178: where protonfs moved proton-drive's cache
     return [f"{k}={env[k]}" for k in keys if env.get(k)]

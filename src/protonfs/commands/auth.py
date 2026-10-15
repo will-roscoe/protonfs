@@ -27,6 +27,7 @@ import click
 
 from protonfs.credstore import drive_env
 from protonfs.drive import DriveClient, DriveError, binary_path
+from protonfs.drivecache import apply_cache_home
 
 AUTH_SUBCOMMANDS = ("login", "logout", "status")
 
@@ -72,5 +73,7 @@ def auth_passthrough(subcommand: str, binary: str | None = None, runner=subproce
             click.echo(f"  ! {warning}")
     if result_env is None:
         result_env = drive_env()
+    else:
+        result_env = apply_cache_home(result_env)  # drive_env() applies it itself
     result = runner([bin_path, "auth", subcommand], env=result_env)
     return result.returncode

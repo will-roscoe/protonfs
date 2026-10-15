@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import fnmatch
 import json
+import os
 import re
 import secrets
 import shutil
@@ -45,6 +46,7 @@ from pathlib import Path
 
 from protonfs.config import CONFIG_DIR_NAME, config_path
 from protonfs.drive import binary_path
+from protonfs.drivecache import CACHE_HOME_ENV
 
 MANIFEST_FILE_NAME = "schedule.local.json"
 MANIFEST_SCHEMA_VERSION = 1
@@ -94,6 +96,9 @@ class ScheduledJob:
     # Defaulted for the same reason as `strict`; None means the command's own default.
     min_age: str | None = None
     keep: int | None = None
+    # #178: PROTONFS_DRIVE_CACHE_HOME when the job was added, exported by its wrapper so
+    # cron runs keep proton-drive's cache off a network home. None leaves the default.
+    drive_cache_home: str | None = None
 
 
 def _default_runner(args: list[str], stdin: str | None = None) -> subprocess.CompletedProcess:
@@ -231,7 +236,12 @@ def _wrapper_text(job: ScheduledJob, protonfs_bin: str, drive_bin: str, lock_pat
         f"export PROTONFS_LIST_TIMEOUT={job.list_timeout}\n"
         f"export PROTONFS_TRANSFER_TIMEOUT={job.transfer_timeout}\n"
         f"export PROTONFS_BATCH_SIZE={job.batch_size}\n"
-        f'cd "{job.repo}" || exit 1\n'
+        + (
+            f'export {CACHE_HOME_ENV}="{job.drive_cache_home}"\n'
+            if job.drive_cache_home
+            else ""
+        )
+        + f'cd "{job.repo}" || exit 1\n'
         "(\n"
         f'  flock -n 9 || {{ echo "===== skip $(date -u): job {job.id} running ====="; exit 0; }}\n'
         f"  flock -w {ROOT_LOCK_WAIT_SECONDS} 8 || "
@@ -495,6 +505,9 @@ def add_job(
 
     .. versionchanged:: 2.4.0
        ``min_age`` also applies to ``push`` jobs, as ``push --min-age`` (#168).
+
+    .. versionchanged:: 2.6.0
+       Records :envvar:`PROTONFS_DRIVE_CACHE_HOME` and exports it from the wrapper (#178).
     """
     if not is_protonfs_repo(repo_root):
         raise ScheduleError(f"{repo_root} is not a protonfs repo (run `protonfs setup`).")
@@ -532,6 +545,7 @@ def add_job(
         created_at=now or _utcnow(),
         log_path=str(sched_dir / f"{job_id}.log"),
         wrapper_path=str(sched_dir / f"{job_id}.sh"),
+        drive_cache_home=os.environ.get(CACHE_HOME_ENV) or None,
     )
 
     protonfs_bin = protonfs_bin or shutil.which("protonfs") or "protonfs"

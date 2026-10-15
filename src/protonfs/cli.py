@@ -1579,6 +1579,8 @@ def schedule(
             click.echo(f"scheduled job {job.id}: {job.cron}  {job.command}")
             click.echo(f"  wrapper: {job.wrapper_path}")
             click.echo(f"  log:     {job.log_path}")
+            if job.drive_cache_home:
+                click.echo(f"  proton-drive cache: {job.drive_cache_home}/proton-drive-cli")
         elif uninstall or all_:
             if all_:
                 removed = sched.remove_all(repo)
