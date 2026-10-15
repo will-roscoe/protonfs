@@ -569,8 +569,15 @@ A file that is an un-smudged git-LFS pointer stub is never pushed, even if
 misclassified upstream, because that would overwrite real Drive content with a
 131-byte placeholder. See :doc:`../guarantees` for the full mechanism.
 
-Progress is saved after each directory group, so an interrupted push resumes
-rather than restarting.
+A directory whose every file is new and being pushed, with nothing ignored, held
+back or already indexed inside it, is uploaded whole in one ``proton-drive`` call
+(up to :confval:`defaults.batch_size` files, several such directories per call),
+and proton-drive creates its subfolders. Every other file goes up with the other
+files of its folder. Each remote folder is created at most once per push.
+
+Progress is saved after each upload call or folder group, so an interrupted push
+resumes rather than restarting. Progress lines count files and bytes across the
+whole push.
 
 Examples::
 

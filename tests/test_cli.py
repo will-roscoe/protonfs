@@ -326,11 +326,10 @@ def test_cli_push_expands_a_local_glob_pattern(
     assert result.exit_code == 0, result.output
     assert "transferred=2" in result.output
     # the decisive assertion: `other/dump` did NOT match `mload*` and was never uploaded
-    uploaded = sorted(p for call in ctx.drive.upload_calls for p in call[0])
-    assert uploaded == [
-        str(tmp_path / "mload003_calib_1m" / "dump"),
-        str(tmp_path / "mload003_calib_2m" / "dump"),
-    ]
+    assert set(ctx.drive.revision_uids) == {
+        "/my-files/test/mload003_calib_1m/dump",
+        "/my-files/test/mload003_calib_2m/dump",
+    }
 
 
 def test_cli_push_pattern_matching_nothing_is_lenient_by_default(

@@ -73,7 +73,10 @@ def test_push_uploads_local_only_files_and_updates_index(
     result = push(ctx, None, resolve=None, dry_run=False)
 
     assert result.transferred_items == 1
-    assert fake.upload_calls[0][1] == "/my-files/test/run1"
+    # #185: a new directory goes up whole, into its parent
+    assert fake.upload_calls[0][:2] == ((str(tmp_path / "run1"),), "/my-files/test")
+    assert fake.folder_strategies == ["merge"]
+    assert set(fake.revision_uids) == {"/my-files/test/run1/dump_0001"}
     assert ctx.index.get("run1/dump_0001") is not None
     assert ctx.index.get("run1/dump_0001").remote_path == "/my-files/test/run1/dump_0001"
 
@@ -123,8 +126,9 @@ def test_push_does_not_index_failed_files(tmp_path: Path, make_fake_drive) -> No
 def test_push_multiple_parent_groups_all_uploaded_and_indexed(
     tmp_path: Path, make_fake_drive
 ) -> None:
-    # multi-group coverage (v0.1 review gap): files under different parents become
-    # separate upload calls, and every successful file is indexed.
+    # multi-group coverage (v0.1 review gap): files under different parents all land in
+    # their own folders, and every successful file is indexed. #185: two new directories
+    # under one parent share one upload call.
     (tmp_path / "run1").mkdir()
     (tmp_path / "run1" / "a").write_bytes(b"a")
     (tmp_path / "run2").mkdir()
@@ -137,10 +141,8 @@ def test_push_multiple_parent_groups_all_uploaded_and_indexed(
     result = push(ctx, None, resolve=None, dry_run=False)
 
     assert result.transferred_items == 2
-    assert sorted(call[1] for call in fake.upload_calls) == [
-        "/my-files/test/run1",
-        "/my-files/test/run2",
-    ]
+    assert [call[1] for call in fake.upload_calls] == ["/my-files/test"]
+    assert set(fake.revision_uids) == {"/my-files/test/run1/a", "/my-files/test/run2/b"}
     assert ctx.index.get("run1/a") is not None
     assert ctx.index.get("run2/b") is not None
 
@@ -1192,11 +1194,8 @@ def test_push_cli_uploads_mixed_file_and_dir_pathspecs(
     result = CliRunner().invoke(main, ["push", "a/one_00001", "b"])
 
     assert result.exit_code == 0
-    uploaded = {name for call in fake.upload_calls for name in call[0]}
-    assert any(u.endswith("a/one_00001") for u in uploaded)
-    assert any(u.endswith("b/two_00001") for u in uploaded)
     # the sibling file NOT named, and not under the named dir, stays local
-    assert not any(u.endswith("a/one_00002") for u in uploaded)
+    assert set(fake.revision_uids) == {"/my-files/test/a/one_00001", "/my-files/test/b/two_00001"}
 
 
 def test_push_cli_several_file_pathspecs_glob_expansion(
@@ -1239,8 +1238,9 @@ def test_push_only_pushes_just_the_named_files(tmp_path: Path, make_fake_drive) 
 
     assert result.transferred_items == 3
     assert set(ctx.index.all()) == {"run1/a", "run1/b", "run2/d"}
+    # run2 holds only a named file, so it goes up whole; run1 also holds unnamed run1/c
     assert sorted(call[1] for call in fake.upload_calls) == [
-        "/my-files/test/run1", "/my-files/test/run2",
+        "/my-files/test", "/my-files/test/run1",
     ]
 
 
@@ -1528,3 +1528,138 @@ def test_skip_thumbnails_config_key_and_env_override(tmp_path: Path, monkeypatch
     assert config_get(tmp_path, "defaults.skip_thumbnails") == "True"
     monkeypatch.setenv("PROTONFS_SKIP_THUMBNAILS", "0")
     assert load_context(tmp_path).config.defaults.skip_thumbnails is False
+
+
+# --- #185: whole-directory uploads and one create-folder per folder --------------------
+
+
+def _photo_tree(root: Path, days: int = 3, per_day: int = 2) -> list[str]:
+    rels = []
+    for day in range(1, days + 1):
+        for n in range(per_day):
+            rel = f"photos/2019/2019-05-0{day}/IMG_{n}.jpg"
+            (root / rel).parent.mkdir(parents=True, exist_ok=True)
+            (root / rel).write_bytes(f"{day}-{n}".encode())
+            rels.append(rel)
+    return rels
+
+
+def test_push_uploads_new_date_folders_in_shared_calls(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    rels = _photo_tree(tmp_path)
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.config.defaults.batch_size = 4  # photos/ and photos/2019 hold 6 files: too many
+    fake = make_fake_drive()
+    ctx.drive = fake
+
+    result = push(ctx, None, resolve=None, dry_run=False)
+
+    assert result.transferred_items == 6 and result.failed_items == 0
+    day = str(tmp_path / "photos" / "2019" / "2019-05-0{}")
+    assert [call[:2] for call in fake.upload_calls] == [
+        ((day.format(1), day.format(2)), "/my-files/test/photos/2019"),
+        ((day.format(3),), "/my-files/test/photos/2019"),
+    ]
+    assert fake.folder_strategies == ["merge", "merge"]
+    # the parent chain is created once, and the date folders not at all (proton-drive does)
+    assert fake.created_folders == [
+        ("/my-files", "test"), ("/my-files/test", "photos"), ("/my-files/test/photos", "2019"),
+    ]
+    assert set(ctx.index.all()) == set(rels)
+    assert all(ctx.index.get(r).remote_path == f"/my-files/test/{r}" for r in rels)
+
+
+def test_push_creates_each_remote_folder_once(tmp_path: Path, make_fake_drive) -> None:
+    from protonfs.commands.push import _ensure_remote_dir
+
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    fake = make_fake_drive()
+    ctx.drive = fake
+    known = {"/my-files/test"}
+
+    _ensure_remote_dir(ctx, "/my-files/test/photos/2019/a", known)
+    _ensure_remote_dir(ctx, "/my-files/test/photos/2019/b", known)
+
+    assert fake.created_folders == [
+        ("/my-files/test", "photos"),
+        ("/my-files/test/photos", "2019"),
+        ("/my-files/test/photos/2019", "a"),
+        ("/my-files/test/photos/2019", "b"),
+    ]
+
+
+@pytest.mark.parametrize("extra", ["ignored", "indexed", "symlink", "empty-dir"])
+def test_push_never_uploads_a_directory_whole_when_it_holds_something_else(
+    tmp_path: Path, make_fake_drive, extra: str
+) -> None:
+    (tmp_path / "run").mkdir()
+    (tmp_path / "run" / "new").write_bytes(b"new")
+    init_config(tmp_path, "/my-files/test")
+    if extra == "ignored":
+        (tmp_path / ".protonfs" / "ignore").write_text("*.tmp\n")
+        (tmp_path / "run" / "scratch.tmp").write_bytes(b"x")
+    elif extra == "indexed":
+        (tmp_path / "run" / "old").write_bytes(b"old")
+    elif extra == "symlink":
+        (tmp_path / "run" / "link").symlink_to(tmp_path / "run" / "new")
+    else:
+        (tmp_path / "run" / "sub").mkdir()
+    ctx = load_context(tmp_path)
+    fake = make_fake_drive()
+    ctx.drive = fake
+    if extra == "indexed":
+        push(ctx, "run/old", resolve=None, dry_run=False)
+        fake.upload_calls.clear()
+
+    push(ctx, "run/new", resolve=None, dry_run=False)
+
+    assert fake.upload_calls[0][:2] == ((str(tmp_path / "run" / "new"),), "/my-files/test/run")
+    assert "/my-files/test/run/scratch.tmp" not in fake.revision_uids
+
+
+def test_push_trusts_no_file_an_ambiguous_failure_could_name(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    # proton-drive names a failed file by basename only: in a call spanning two folders
+    # "IMG_0.jpg" could be either, so neither is indexed (the next push settles them).
+    _photo_tree(tmp_path, days=2, per_day=2)
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    fake = make_fake_drive(
+        upload_result=TransferResult(3, 0, 1, [{"name": "IMG_0.jpg", "error": "boom"}])
+    )
+    ctx.drive = fake
+
+    result = push(ctx, None, resolve=None, dry_run=False)
+
+    assert len(fake.upload_calls) == 1
+    assert result.failed_items == 1 and result.transferred_items == 2
+    assert set(ctx.index.all()) == {
+        "photos/2019/2019-05-01/IMG_1.jpg", "photos/2019/2019-05-02/IMG_1.jpg",
+    }
+
+
+def test_push_retries_an_unthumbnailable_file_from_a_whole_directory(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    (tmp_path / "scans" / "2019").mkdir(parents=True)
+    (tmp_path / "scans" / "2019" / "a.tif").write_bytes(b"tiff")
+    (tmp_path / "scans" / "2019" / "b.jpg").write_bytes(b"jpeg")
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    fake = make_fake_drive(no_thumbnail_codec=(".tif",))
+    ctx.drive = fake
+
+    result = push(ctx, None, resolve=None, dry_run=False)
+
+    assert result.transferred_items == 2 and result.failed_items == 0
+    assert fake.thumbnail_skips == [False, True]
+    assert fake.upload_calls[1][:2] == (
+        (str(tmp_path / "scans" / "2019" / "a.tif"),), "/my-files/test/scans/2019"
+    )
+    # the directory upload made scans/ and scans/2019, so the retry creates nothing
+    assert fake.created_folders == [("/my-files", "test")]
+    assert set(ctx.index.all()) == {"scans/2019/a.tif", "scans/2019/b.jpg"}
