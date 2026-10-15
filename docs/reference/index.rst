@@ -215,13 +215,30 @@ contract (see :doc:`../stability`).
 
 .. envvar:: PROTONFS_TRANSFER_TIMEOUT
 
-   Timeout in seconds for a Drive upload/download call (default ``300``).
+   Minimum timeout in seconds for a Drive upload/download call (default ``300``). A
+   call moving more data gets longer, see :envvar:`PROTONFS_TRANSFER_MIN_RATE`, and a
+   call that times out is retried with its timeout doubled.
 
    .. versionadded:: 1.0.0
 
+   .. versionchanged:: 2.5.0
+      Now the minimum: the timeout grows with the call's data, and doubles on each
+      timed-out retry. A call that times out on every attempt is reported as a
+      timeout rather than as throttling.
+
+.. envvar:: PROTONFS_TRANSFER_MIN_RATE
+
+   Slowest transfer rate, in bytes per second, that still counts as progress (default
+   ``524288``, 512 KiB/s). A Drive upload/download call gets at least its data size
+   divided by this rate before it times out, so a batch of large files is not cut off
+   by a timeout sized for small ones. ``0`` turns the scaling off.
+
+   .. versionadded:: 2.5.0
+
 .. envvar:: PROTONFS_TRANSFER_RETRIES
 
-   Max retries for a Drive upload/download call (default ``4``).
+   Max retries for a Drive upload/download call (default ``4``), after throttling or
+   a timeout.
 
    .. versionadded:: 1.0.0
 
@@ -249,6 +266,12 @@ contract (see :doc:`../stability`).
    Per-key override for :confval:`defaults.manifest`.
 
    .. versionadded:: 2.1.0
+
+.. envvar:: PROTONFS_SKIP_THUMBNAILS
+
+   Per-key override for :confval:`defaults.skip_thumbnails`.
+
+   .. versionadded:: 2.5.0
 
 .. envvar:: PROTONFS_NO_MANIFEST
 
@@ -346,6 +369,18 @@ Configuration file and keys
    .. versionchanged:: 2.3.0
       On by default. A repo with no manifest yet gets a warning from ``push``/``rm``
       until ``protonfs verify --repair`` has built one.
+
+.. confval:: defaults.skip_thumbnails
+   :type: bool
+   :default: false
+
+   Upload every file without a thumbnail (proton-drive's ``--skip-thumbnails``). Off,
+   ``push`` still sends a file without a thumbnail when proton-drive cannot build one
+   on this host (HEIC, AVIF or TIFF with no OS codec), after a warning. Turn it on to
+   skip that first failed attempt, or to save the time thumbnails take. Overridable via
+   :envvar:`PROTONFS_SKIP_THUMBNAILS`.
+
+   .. versionadded:: 2.5.0
 
 .. _reference-subcommands:
 
@@ -534,8 +569,15 @@ A file that is an un-smudged git-LFS pointer stub is never pushed, even if
 misclassified upstream, because that would overwrite real Drive content with a
 131-byte placeholder. See :doc:`../guarantees` for the full mechanism.
 
-Progress is saved after each directory group, so an interrupted push resumes
-rather than restarting.
+A directory whose every file is new and being pushed, with nothing ignored, held
+back or already indexed inside it, is uploaded whole in one ``proton-drive`` call
+(up to ``defaults.batch_size`` files, several such directories per call),
+and proton-drive creates its subfolders. Every other file goes up with the other
+files of its folder. Each remote folder is created at most once per push.
+
+Progress is saved after each upload call or folder group, so an interrupted push
+resumes rather than restarting. Progress lines count files and bytes across the
+whole push.
 
 Examples::
 
@@ -1152,8 +1194,8 @@ config
 Reads or writes protonfs's layered configuration. Known keys:
 :confval:`remote_root`, :confval:`device_id`, :confval:`defaults.on_conflict`,
 :confval:`defaults.low_io`, :confval:`defaults.event_log`,
-:confval:`defaults.progress_style`, :confval:`defaults.manifest` (each defined in the
-`Configuration`_ section above).
+:confval:`defaults.progress_style`, :confval:`defaults.manifest`,
+:confval:`defaults.skip_thumbnails` (each defined in the `Configuration`_ section above).
 
 .. _cmd-config-get:
 

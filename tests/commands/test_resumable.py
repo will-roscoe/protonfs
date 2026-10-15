@@ -68,6 +68,7 @@ def test_push_interrupted_on_later_group_keeps_earlier_group_indexed(
     (tmp_path / "run2" / "b").write_bytes(b"b")
     init_config(tmp_path, "/my-files/test")
     ctx = load_context(tmp_path)
+    ctx.config.defaults.batch_size = 1  # one upload call per directory
     fake = make_fake_drive()
     ctx.drive = fake
 
@@ -91,8 +92,8 @@ def test_push_interrupted_on_later_group_keeps_earlier_group_indexed(
     # The first group completed and was persisted to disk before the interruption; a fresh
     # IndexStore (as a re-run would load) sees it, so the re-run will not re-upload it.
     reloaded = IndexStore(tmp_path)
-    first_parent = Path(seen[0]).name  # "run1" or "run2", whichever ran first
-    assert reloaded.get(f"{first_parent}/{'a' if first_parent == 'run1' else 'b'}") is not None
+    assert len(seen) == 2
+    assert len(reloaded.all()) == 1  # whichever directory went up first
 
 
 def test_pull_is_idempotent(tmp_path: Path, make_fake_drive) -> None:

@@ -22,6 +22,13 @@ import pytest
 
 from protonfs.drive import RemoteEntry, RemoteIdentity, TransferResult
 
+# proton-drive 0.8.0's failure for an image this host has no codec to thumbnail (#183).
+THUMBNAIL_ERROR = (
+    "ValidationError: Failed to generate thumbnails (use --skip-thumbnails to upload "
+    "without thumbnails): Image: format not supported on this machine (HEIC/AVIF/TIFF "
+    "require the OS codec; AVIF encode needs an AV1 encoder)"
+)
+
 
 class FakeDrive:
     def __init__(
@@ -39,6 +46,7 @@ class FakeDrive:
         version: str | None = "v0.4.6",
         authed: bool = True,
         parent_names: dict[str, str | None] | None = None,
+        no_thumbnail_codec: tuple[str, ...] = (),
     ) -> None:
         # recorded calls
         self.upload_calls: list[tuple] = []
@@ -53,6 +61,10 @@ class FakeDrive:
         self.walk_roots: list[str] = []
         self.identity_calls: list[str] = []
         self.list_calls: list[str] = []
+        # #183: the skip_thumbnails flag of each upload call, in order.
+        self.thumbnail_skips: list[bool] = []
+        # #185: the folder_strategy of each upload call ("merge" for a whole directory).
+        self.folder_strategies: list[str | None] = []
         # configured responses
         self._walk_entries = walk_entries or []
         self._walk_by_root = walk_by_root
@@ -66,6 +78,9 @@ class FakeDrive:
         # download_result.failures) but that never land locally.
         self._download_dropped_files = download_dropped_files or set()
         self._remote_size_overrides = remote_size_overrides or {}
+        # #183 simulation: file suffixes (e.g. ".tif") this host has no thumbnail codec
+        # for; such a file fails unless uploaded with skip_thumbnails.
+        self._no_thumbnail_codec = no_thumbnail_codec
         # #144 simulation: a listing that carries no plaintext claimedSize (the shape the
         # #147 parse bug produced). Public so a test can flip it between two pushes.
         self.report_claimed_size = report_claimed_size
@@ -91,21 +106,58 @@ class FakeDrive:
     def is_authenticated(self):
         return self._authed
 
-    def upload(self, local_paths, remote_parent, file_strategy=None, folder_strategy=None):
+    def upload(
+        self, local_paths, remote_parent, file_strategy=None, folder_strategy=None,
+        skip_thumbnails=False,
+    ):
         self.upload_calls.append(
             (tuple(str(p) for p in local_paths), remote_parent, file_strategy)
         )
-        bucket = self._remote_files.setdefault(remote_parent, {})
-        skipped: set[str] = set()
-        renamed: dict[str, str] = {}
+        self.thumbnail_skips.append(skip_thumbnails)
+        self.folder_strategies.append(folder_strategy)
+        # #185: a directory uploads recursively, each file into the matching subfolder
+        # (proton-drive creates the folders; with -d merge it merges into existing ones).
+        by_parent: dict[str, list[Path]] = {}
+        for p in map(Path, local_paths):
+            if p.is_dir():
+                for f in sorted(p.rglob("*")):
+                    if f.is_file():
+                        sub = f.parent.relative_to(p.parent).as_posix()
+                        by_parent.setdefault(f"{remote_parent}/{sub}", []).append(f)
+            else:
+                by_parent.setdefault(remote_parent, []).append(p)
         if self._upload_result is not None:
-            result = self._upload_result
-        else:
-            result, skipped, renamed = self._resolve_conflicts(
-                local_paths, bucket, file_strategy
-            )
+            for parent, paths in by_parent.items():
+                self._land(paths, parent, file_strategy, self._upload_result, set(), {})
+            return self._upload_result
+        total = TransferResult(0, 0, 0, [])
+        for parent, paths in by_parent.items():
+            result = self._upload_into(paths, parent, file_strategy, skip_thumbnails)
+            total.transferred_items += result.transferred_items
+            total.skipped_items += result.skipped_items
+            total.failed_items += result.failed_items
+            total.failures += result.failures
+        return total
+
+    def _upload_into(self, local_paths, remote_parent, file_strategy, skip_thumbnails):
+        bucket = self._remote_files.setdefault(remote_parent, {})
+        unthumbnailable = [
+            p for p in local_paths
+            if not skip_thumbnails and Path(p).suffix.lower() in self._no_thumbnail_codec
+        ]
+        result, skipped, renamed = self._resolve_conflicts(
+            [p for p in local_paths if p not in unthumbnailable], bucket, file_strategy
+        )
+        for p in unthumbnailable:
+            result.failed_items += 1
+            result.failures.append({"name": Path(p).name, "error": THUMBNAIL_ERROR})
+        self._land(local_paths, remote_parent, file_strategy, result, skipped, renamed)
+        return result
+
+    def _land(self, local_paths, remote_parent, file_strategy, result, skipped, renamed):
         # Model what actually lands on the remote: every uploaded file EXCEPT the ones
         # proton-drive reported as failures and the ones configured as silently dropped.
+        bucket = self._remote_files.setdefault(remote_parent, {})
         failed = {f["name"] for f in result.failures}
         sha1s = self._remote_sha1.setdefault(remote_parent, {})
         for p in local_paths:
@@ -132,7 +184,6 @@ class FakeDrive:
                 bucket[name] = len(data)
                 sha1s[name] = hashlib.sha1(data).hexdigest()
                 self._remote_content[key] = data
-        return result
 
     def _resolve_conflicts(self, local_paths, bucket, file_strategy):
         """proton-drive's conflict semantics (cli-drive@0.5.0 under --json, #144): an
@@ -199,7 +250,10 @@ class FakeDrive:
             )
         return entries
 
-    def download(self, remote_paths, local_folder, file_strategy=None, folder_strategy=None):
+    def download(
+        self, remote_paths, local_folder, file_strategy=None, folder_strategy=None,
+        payload_bytes=None,
+    ):
         self.download_calls.append((tuple(remote_paths), str(local_folder), file_strategy))
         result = (
             self._download_result

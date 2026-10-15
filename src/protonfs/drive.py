@@ -69,6 +69,12 @@ TRANSFER_MAX_RETRIES = int(os.environ.get("PROTONFS_TRANSFER_RETRIES", "4"))
 TRANSFER_BACKOFF_BASE_SECONDS = float(os.environ.get("PROTONFS_TRANSFER_BACKOFF", "2"))
 TRANSFER_BACKOFF_CAP_SECONDS = float(os.environ.get("PROTONFS_TRANSFER_BACKOFF_CAP", "60"))
 
+# #184: a fixed timeout cannot fit every batch: one carrying several GiB over a slow uplink
+# legitimately runs for hours, and retrying it with the same timeout fails it the same way
+# each time. Each transfer's timeout is therefore at least its payload over this floor rate
+# (bytes per second), the slowest transfer still counted as progress rather than a hang.
+TRANSFER_MIN_RATE = float(os.environ.get("PROTONFS_TRANSFER_MIN_RATE", str(512 * 1024)))
+
 
 class DriveError(RuntimeError):
     """Base class for every proton-drive failure protonfs surfaces.
@@ -93,6 +99,17 @@ class DriveThrottleError(DriveError):
 
     Distinct from a generic DriveError so callers (and the CLI) can report "the remote is
     throttling" clearly, and so a whole-tree walk fails one directory rather than hanging.
+    """
+
+
+class DriveTransferTimeoutError(DriveError):
+    """A ``filesystem upload``/``download`` batch timed out on every attempt (#184).
+
+    Distinct from :class:`DriveThrottleError`: the remote did not refuse anything, the
+    batch carried more data than the link moved within the timeout. The remedy is a
+    longer timeout or a smaller batch, which the message names.
+
+    .. versionadded:: 2.5.0
     """
 
 
@@ -401,6 +418,48 @@ def _summarize_command(args: list[str]) -> str:
     return f"{parts[0]} {parts[1]} ({len(middle)} files) {parts[-1]}"
 
 
+class _TransferTimedOut(Exception):
+    """One transfer attempt hit its timeout; carries the timeout that expired (#184)."""
+
+    def __init__(self, seconds: float) -> None:
+        super().__init__(f"timed out after {seconds:.0f}s")
+        self.seconds = seconds
+
+
+def transfer_timeout(timeout: float, payload_bytes: int | None) -> float:
+    """Return the timeout for a transfer of ``payload_bytes``: ``timeout``, or longer.
+
+    The result is ``max(timeout, payload_bytes / TRANSFER_MIN_RATE)``, so a batch
+    carrying several GiB is not cut off by a timeout sized for small files (#184).
+
+    :param timeout: the configured timeout in seconds (``$PROTONFS_TRANSFER_TIMEOUT``).
+    :param payload_bytes: bytes the transfer moves, or ``None`` when unknown.
+    :returns: the timeout in seconds; ``timeout`` itself when ``payload_bytes`` is
+        ``None`` or :data:`TRANSFER_MIN_RATE` is not positive.
+
+    .. versionadded:: 2.5.0
+    """
+    if not payload_bytes or TRANSFER_MIN_RATE <= 0:
+        return timeout
+    return max(timeout, payload_bytes / TRANSFER_MIN_RATE)
+
+
+def _payload_bytes(paths: list[Path]) -> int:
+    """Total size of the regular files at or under ``paths``; unreadable entries count 0."""
+    total = 0
+    for path in paths:
+        try:
+            if path.is_dir():
+                total += sum(
+                    child.stat().st_size for child in path.rglob("*") if child.is_file()
+                )
+            else:
+                total += path.stat().st_size
+        except OSError:
+            continue
+    return total
+
+
 def _retry_with_backoff(
     attempt_fn: Callable[[], object],
     *,
@@ -415,11 +474,26 @@ def _retry_with_backoff(
     on a timeout or a throttle-classified `DriveError` (via `_is_throttle_error`), up to
     `retries` times. A genuine non-throttle `DriveError` propagates immediately, unretried.
     Past the retry budget, raises `DriveThrottleError` describing what was being retried.
+    A `_TransferTimedOut` (raised only by transfers, #184) is retried without a sleep and
+    re-raised as itself past the budget, since a transfer timeout is not throttling.
     """
     attempt = 0
     while True:
         try:
             return attempt_fn()
+        except _TransferTimedOut as exc:
+            attempt += 1
+            if attempt > retries:
+                raise
+            logger.warning(
+                "%s timed out after %.0fs; retrying with %.0fs (retry %d/%d)",
+                describe,
+                exc.seconds,
+                exc.seconds * 2,
+                attempt,
+                retries,
+            )
+            continue
         except subprocess.TimeoutExpired as exc:
             reason: str = f"{describe} timed out"
             last_error: Exception = exc
@@ -444,6 +518,21 @@ def _retry_with_backoff(
             retries,
         )
         sleep(delay)
+
+
+def is_thumbnail_failure(failure: dict) -> bool:
+    """Whether an upload failure is proton-drive refusing a file it cannot thumbnail.
+
+    proton-drive needs the OS image codec to build a thumbnail for HEIC, AVIF or TIFF,
+    and fails the file without one (``ValidationError: Failed to generate thumbnails``).
+    The same file uploads with ``-t`` (#183).
+
+    :param failure: one entry of :attr:`TransferResult.failures`.
+    :returns: ``True`` when re-uploading with ``skip_thumbnails`` should succeed.
+
+    .. versionadded:: 2.5.0
+    """
+    return "failed to generate thumbnail" in str(failure.get("error", "")).lower()
 
 
 def _classify(message: str) -> DriveError:
@@ -662,25 +751,54 @@ class DriveClient:
         base_delay: float = TRANSFER_BACKOFF_BASE_SECONDS,
         cap: float = TRANSFER_BACKOFF_CAP_SECONDS,
         sleep: Callable[[float], None] = time.sleep,
+        payload_bytes: int | None = None,
     ) -> TransferResult:
         """`_run_transfer`, but resilient to Proton API throttling (#69), parity with
         `list_with_backoff` (#33).
 
-        Each attempt is bounded by `timeout`; a timeout or a transient throttle error is
-        retried with exponential backoff up to `retries` times, after which it raises
-        `DriveThrottleError`. A genuine non-throttle failure (auth, quota, missing path)
-        is raised immediately, not retried. Retries happen at batch granularity -- the
-        whole `filesystem upload`/`download` invocation is re-run, not a sub-batch; runs
-        are resumable across invocations (#3) so re-running the batch is safe.
+        The first attempt is bounded by :func:`transfer_timeout` of `timeout` and
+        `payload_bytes`. A transient throttle error is retried with exponential backoff;
+        a timeout is retried at once with the timeout doubled (#184). Both count against
+        `retries`; past it, a throttle raises `DriveThrottleError` and a timeout raises
+        `DriveTransferTimeoutError`. A genuine non-throttle failure (auth, quota, missing
+        path) is raised immediately, not retried. Retries re-run the whole
+        `filesystem upload`/`download` invocation; proton-drive skips the files that
+        already landed, so only unfinished ones are sent again.
         """
-        return _retry_with_backoff(  # type: ignore[return-value]
-            lambda: self._run_transfer(args, timeout=timeout),
-            describe=f"`{_summarize_command(args)}`",
-            retries=retries,
-            base_delay=base_delay,
-            cap=cap,
-            sleep=sleep,
-        )
+        timeout = transfer_timeout(timeout, payload_bytes)
+        describe = f"`{_summarize_command(args)}`"
+        # #184: a timeout is not throttling. proton-drive skips files that already landed
+        # with the same content, and a killed upload leaves no partial node, so a retry
+        # resends only what was cut off; give it twice the time, without a backoff sleep.
+        current = {"timeout": timeout}
+
+        def attempt() -> TransferResult:
+            try:
+                return self._run_transfer(args, timeout=current["timeout"])
+            except subprocess.TimeoutExpired as exc:
+                timed_out = current["timeout"]
+                current["timeout"] = timed_out * 2
+                raise _TransferTimedOut(timed_out) from exc
+
+        try:
+            return _retry_with_backoff(  # type: ignore[return-value]
+                attempt,
+                describe=describe,
+                retries=retries,
+                base_delay=base_delay,
+                cap=cap,
+                sleep=sleep,
+            )
+        except _TransferTimedOut as exc:
+            from protonfs.commands.ls import human_size  # ls imports this module
+
+            size = f" moving {human_size(payload_bytes)}" if payload_bytes else ""
+            raise DriveTransferTimeoutError(
+                f"{describe} timed out after {exc.seconds:.0f}s{size}, on all "
+                f"{retries + 1} attempts. Raise PROTONFS_TRANSFER_TIMEOUT or lower "
+                "PROTONFS_TRANSFER_MIN_RATE (bytes/s), or lower PROTONFS_BATCH_SIZE so "
+                "each batch carries less."
+            ) from exc
 
     def version(self) -> str | None:
         """Return the raw ``proton-drive version`` output, or ``None`` if it can't run.
@@ -904,6 +1022,7 @@ class DriveClient:
         file_strategy: str | None = None,
         folder_strategy: str | None = None,
         *,
+        skip_thumbnails: bool = False,
         timeout: float = TRANSFER_TIMEOUT_SECONDS,
         retries: int = TRANSFER_MAX_RETRIES,
         base_delay: float = TRANSFER_BACKOFF_BASE_SECONDS,
@@ -916,14 +1035,24 @@ class DriveClient:
         :param remote_parent: the absolute Drive directory to upload into.
         :param file_strategy: proton-drive ``-f`` conflict strategy for files, or ``None``.
         :param folder_strategy: proton-drive ``-d`` strategy for folders, or ``None``.
-        :param timeout: per-attempt timeout (seconds).
-        :param retries: max throttle retries before giving up.
+        :param skip_thumbnails: upload without thumbnails (proton-drive's ``-t``), for
+            images this host has no codec to build one for (see
+            :func:`is_thumbnail_failure`).
+        :param timeout: first-attempt timeout (seconds), raised to fit the files' total
+            size by :func:`transfer_timeout` and doubled on each timed-out retry.
+        :param retries: max throttle or timeout retries before giving up.
         :param base_delay: base backoff delay (seconds), doubled each retry.
         :param cap: maximum backoff delay (seconds).
         :param sleep: sleep function (injectable for tests).
         :returns: the :class:`TransferResult` summary.
         :raises DriveThrottleError: when throttling outlasts the retry budget.
+        :raises DriveTransferTimeoutError: when every attempt timed out.
         :raises DriveError: on a non-throttle Drive failure (raised immediately).
+
+        .. versionchanged:: 2.5.0
+           The timeout scales with the files' total size, a timeout is retried with a
+           doubled timeout and reported as :class:`DriveTransferTimeoutError` rather than
+           as throttling (#184). Added ``skip_thumbnails`` (#183).
 
         .. seealso:: :meth:`download` for the reverse direction.
         """
@@ -932,9 +1061,12 @@ class DriveClient:
             args += ["-f", self._strategy("upload", "-f", file_strategy)]
         if folder_strategy:
             args += ["-d", self._strategy("upload", "-d", folder_strategy)]
+        if skip_thumbnails:
+            args.append("-t")
         args += [str(p) for p in local_paths] + [remote_parent]
         return self._run_transfer_with_backoff(
-            args, timeout=timeout, retries=retries, base_delay=base_delay, cap=cap, sleep=sleep
+            args, timeout=timeout, retries=retries, base_delay=base_delay, cap=cap, sleep=sleep,
+            payload_bytes=_payload_bytes(local_paths),
         )
 
     def download(
@@ -949,6 +1081,7 @@ class DriveClient:
         base_delay: float = TRANSFER_BACKOFF_BASE_SECONDS,
         cap: float = TRANSFER_BACKOFF_CAP_SECONDS,
         sleep: Callable[[float], None] = time.sleep,
+        payload_bytes: int | None = None,
     ) -> TransferResult:
         """Download remote files/folders into a local folder, riding out throttling.
 
@@ -956,14 +1089,21 @@ class DriveClient:
         :param local_folder: the local directory to download into.
         :param file_strategy: proton-drive ``-f`` conflict strategy for files, or ``None``.
         :param folder_strategy: proton-drive ``-d`` strategy for folders, or ``None``.
-        :param timeout: per-attempt timeout (seconds).
-        :param retries: max throttle retries before giving up.
+        :param timeout: first-attempt timeout (seconds), raised to fit ``payload_bytes``
+            by :func:`transfer_timeout` and doubled on each timed-out retry.
+        :param retries: max throttle or timeout retries before giving up.
         :param base_delay: base backoff delay (seconds), doubled each retry.
         :param cap: maximum backoff delay (seconds).
         :param sleep: sleep function (injectable for tests).
+        :param payload_bytes: expected total size of the download, or ``None`` if unknown.
         :returns: the :class:`TransferResult` summary.
         :raises DriveThrottleError: when throttling outlasts the retry budget.
+        :raises DriveTransferTimeoutError: when every attempt timed out.
         :raises DriveError: on a non-throttle Drive failure (raised immediately).
+
+        .. versionchanged:: 2.5.0
+           Added ``payload_bytes``; a timeout is retried with a doubled timeout and
+           reported as :class:`DriveTransferTimeoutError` rather than as throttling (#184).
 
         .. seealso:: :meth:`upload` for the reverse direction.
         """
@@ -974,7 +1114,8 @@ class DriveClient:
             args += ["-d", self._strategy("download", "-d", folder_strategy)]
         args += remote_paths + [str(local_folder)]
         return self._run_transfer_with_backoff(
-            args, timeout=timeout, retries=retries, base_delay=base_delay, cap=cap, sleep=sleep
+            args, timeout=timeout, retries=retries, base_delay=base_delay, cap=cap, sleep=sleep,
+            payload_bytes=payload_bytes,
         )
 
     def trash(self, remote_paths: list[str]) -> list[dict]:

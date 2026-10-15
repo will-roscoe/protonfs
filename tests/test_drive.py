@@ -6,11 +6,13 @@ from pathlib import Path
 
 import pytest
 
+import protonfs.drive as drive_mod
 from protonfs.drive import (
     DriveAuthError,
     DriveClient,
     DriveError,
     DriveThrottleError,
+    DriveTransferTimeoutError,
     TransferResult,
 )
 
@@ -567,6 +569,91 @@ def test_upload_retries_on_timeout_then_succeeds(monkeypatch: pytest.MonkeyPatch
     assert result is ok_result
 
 
+def test_transfer_timeout_scales_with_payload(monkeypatch: pytest.MonkeyPatch) -> None:
+    # #184: a batch carrying several GiB gets time to move them at the floor rate.
+    monkeypatch.setattr(drive_mod, "TRANSFER_MIN_RATE", 1024.0)
+
+    assert drive_mod.transfer_timeout(300, None) == 300
+    assert drive_mod.transfer_timeout(300, 1024 * 10) == 300  # small: the configured floor
+    assert drive_mod.transfer_timeout(300, 1024 * 1000) == 1000
+
+
+def test_upload_timeout_covers_the_files_on_disk(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    client = _client(monkeypatch)
+    monkeypatch.setattr(drive_mod, "TRANSFER_MIN_RATE", 100.0)
+    (tmp_path / "dir").mkdir()
+    (tmp_path / "dir" / "inner.bin").write_bytes(b"x" * 40_000)
+    (tmp_path / "top.bin").write_bytes(b"x" * 60_000)
+    seen: list[float] = []
+
+    def record(args, timeout=None):
+        seen.append(timeout)
+        return TransferResult(1, 0, 0, [])
+
+    monkeypatch.setattr(client, "_run_transfer", record)
+    client.upload([tmp_path / "dir", tmp_path / "top.bin"], "/my-files/test", timeout=10)
+
+    assert seen == [1000.0]  # 100,000 bytes at 100 B/s, over the 10s floor
+
+
+def test_transfer_timeout_is_retried_with_a_doubled_timeout_and_no_sleep(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _client(monkeypatch)
+    timeouts: list[float] = []
+    ok_result = TransferResult(transferred_items=1, skipped_items=0, failed_items=0, failures=[])
+
+    def slow(args, timeout=None):
+        timeouts.append(timeout)
+        if len(timeouts) < 3:
+            raise subprocess.TimeoutExpired(cmd="proton-drive", timeout=timeout)
+        return ok_result
+
+    monkeypatch.setattr(client, "_run_transfer", slow)
+    slept: list[float] = []
+    result = client.download(["/my-files/test/x"], Path("."), timeout=100, sleep=slept.append)
+
+    assert result is ok_result
+    assert timeouts == [100, 200, 400]
+    assert slept == []  # nothing was throttled, so nothing to back off from
+
+
+def test_transfer_that_always_times_out_is_not_reported_as_throttling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # #184: before, this raised DriveThrottleError("remote is throttling ...").
+    client = _client(monkeypatch)
+
+    def always_slow(args, timeout=None):
+        raise subprocess.TimeoutExpired(cmd="proton-drive", timeout=timeout)
+
+    monkeypatch.setattr(client, "_run_transfer", always_slow)
+    with pytest.raises(DriveTransferTimeoutError) as info:
+        client.download(
+            ["/my-files/test/x"], Path("."), timeout=10, retries=2, payload_bytes=3 * 1024**3
+        )
+
+    assert not isinstance(info.value, DriveThrottleError)
+    message = str(info.value)
+    assert "timed out after" in message and "3.0 GiB" in message
+    assert "PROTONFS_TRANSFER_TIMEOUT" in message and "PROTONFS_BATCH_SIZE" in message
+    assert "throttl" not in message
+
+
+def test_list_timeout_is_still_treated_as_throttling(monkeypatch: pytest.MonkeyPatch) -> None:
+    # #184 only changes transfers: a listing that hangs is the throttle signature (#33).
+    client = _client(monkeypatch)
+
+    def always_timeout(path, timeout=None):
+        raise subprocess.TimeoutExpired(cmd="proton-drive", timeout=timeout)
+
+    monkeypatch.setattr(client, "list", always_timeout)
+    with pytest.raises(DriveThrottleError):
+        client.list_with_backoff("/x", retries=1, base_delay=0, sleep=lambda _: None)
+
+
 # --- restore against proton-drive >= 0.5.0 trash semantics (#56) ------------
 
 
@@ -1098,3 +1185,30 @@ def test_unknown_version_is_not_cached(monkeypatch) -> None:
     client.upload([Path("a")], "/p", file_strategy="merge")
     client.upload([Path("a")], "/p", file_strategy="merge")
     assert (_opt(seen[0], "-f"), _opt(seen[1], "-f")) == ("merge", "create-new-revision")
+
+
+# --- #183: -t / --skip-thumbnails --------------------------------------------------------
+
+
+@pytest.mark.parametrize("version", ["0.4.6", "0.8.0"])
+def test_upload_skip_thumbnails_passes_t_before_the_paths(monkeypatch, version) -> None:
+    args = _transfer_args(
+        monkeypatch, version, lambda c: c.upload([Path("a.tif")], "/p", skip_thumbnails=True)
+    )
+    assert args[:2] == ["filesystem", "upload"]
+    assert args.index("-t") < args.index("a.tif")
+
+
+def test_upload_keeps_thumbnails_by_default(monkeypatch) -> None:
+    args = _transfer_args(monkeypatch, "0.8.0", lambda c: c.upload([Path("a.tif")], "/p"))
+    assert "-t" not in args
+
+
+def test_is_thumbnail_failure_matches_proton_drive_message() -> None:
+    from protonfs.drive import is_thumbnail_failure
+
+    assert is_thumbnail_failure(
+        {"name": "x.tif", "error": "ValidationError: Failed to generate thumbnails (use "
+         "--skip-thumbnails to upload without thumbnails): Image: format not supported"}
+    )
+    assert not is_thumbnail_failure({"name": "x", "error": "Name conflict ... already exists"})

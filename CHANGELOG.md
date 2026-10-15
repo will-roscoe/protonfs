@@ -8,6 +8,18 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 
 ## [Unreleased]
 
+### Features
+
+- **push**: `defaults.skip_thumbnails` (env `PROTONFS_SKIP_THUMBNAILS`) uploads every file without a thumbnail, passing proton-drive's `--skip-thumbnails`. Off by default (#183)
+
+- **push**: a first push of many small folders starts far fewer proton-drive processes. A directory whose every file is new and being pushed, with nothing ignored, held back or already indexed in it, goes up whole in one `filesystem upload -d merge` call, several such directories sharing a call up to `batch_size` files as long as no file name repeats in it, and proton-drive creates the subfolders. A directory is checked again just before its call, and goes up file by file if anything appeared in it since the scan. Each remote folder is created at most once per push; before, every path segment was created again for every folder. Every file is still verified at its own path in a listing of its folder. Progress lines now also show bytes sent across the whole push. On a test tree of 3 date folders under `photos/2019/` with `batch_size` 4, a first push made 13 proton-drive calls, against 20 for the same tree with 2.4.1's per-folder push. For the reported library (17,700 files in 1,123 date folders) that is roughly 1,240 calls instead of 5,600 (#185)
+
+### Bug fixes
+
+- **push**: an image proton-drive cannot thumbnail on this host (HEIC, AVIF or TIFF with no OS codec) is uploaded again without a thumbnail, after a warning, instead of failing. Before, each such file failed on every push and never reached Drive: on a headless Debian server, 158 TIFF scans (about 19 GiB) were re-sent and refused on every scheduled run (#183)
+
+- **drive**: an upload or download that runs out of time is no longer reported as throttling. Each call's timeout now grows with the data it carries, at least its size over `PROTONFS_TRANSFER_MIN_RATE` (default 512 KiB/s, so 1 GiB gets about 34 minutes), and `PROTONFS_TRANSFER_TIMEOUT` (default 300 s) is the minimum. A call that does time out is retried at once with twice the time; proton-drive skips the files that already landed, so only the one cut off is sent again. If every attempt times out, the error says how long it waited and how much data the call carried, and names the settings to change. Before, a batch holding several GiB over a slow uplink was retried with the same 300 s until it was abandoned as "remote is throttling" (#184)
+
 ## [2.4.1] - 2026-10-09
 
 ### Bug fixes
