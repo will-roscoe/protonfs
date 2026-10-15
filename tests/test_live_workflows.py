@@ -175,9 +175,13 @@ def test_workflow_offload_then_pull_restores_content(
     _seed(ctx, {"big/dump": payload})
     assert push(ctx, None, None, dry_run=False).failed_items == 0
 
-    result = _eventually(lambda: offload(ctx, None, verify=True, dry_run=False))
+    # min_age=0: the file was written moments ago, and offload's settle window (#158,
+    # one day by default) would otherwise hold it back.
+    result = _eventually(lambda: offload(ctx, None, verify=True, dry_run=False, min_age=0))
 
-    assert result.offloaded == 1, (result.skipped_paths, result.modified_paths)
+    assert result.offloaded == 1, (
+        result.skipped_paths, result.modified_paths, result.unsettled_paths
+    )
     assert not (ctx.root / "big" / "dump").exists()
     assert ctx.index.get("big/dump").local_state == "metadata-only"
 
