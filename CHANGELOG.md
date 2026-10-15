@@ -8,6 +8,8 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 
 ## [Unreleased]
 
+## [2.5.0] - 2026-10-15
+
 ### Features
 
 - **push**: `defaults.skip_thumbnails` (env `PROTONFS_SKIP_THUMBNAILS`) uploads every file without a thumbnail, passing proton-drive's `--skip-thumbnails`. Off by default (#183)
@@ -23,6 +25,8 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 ### Documentation
 
 - **reference**: `defaults.batch_size` and `PROTONFS_BATCH_SIZE` now have reference entries; the transfer-timeout error from #184 tells users to lower `PROTONFS_BATCH_SIZE`, and nothing documented it
+- **reference**: document defaults.batch_size and PROTONFS_BATCH_SIZE
+- **contributing**: say which commit messages decide a release
 
 ## [2.4.1] - 2026-10-09
 
@@ -744,7 +748,8 @@ the preceding development history and its first tagged release:
   line-matching, git-mutation error wrapping, `pathspec` deprecation, subpath
   prune data-loss fix.
 
-[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v2.4.1...HEAD
+[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v2.5.0...HEAD
+[2.5.0]: https://github.com/will-roscoe/protonfs/compare/v2.4.1...v2.5.0
 [2.4.1]: https://github.com/will-roscoe/protonfs/compare/v2.4.0...v2.4.1
 [2.4.0]: https://github.com/will-roscoe/protonfs/compare/v2.3.0...v2.4.0
 [2.3.0]: https://github.com/will-roscoe/protonfs/compare/v2.2.1...v2.3.0
