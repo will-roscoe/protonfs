@@ -16,6 +16,10 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 
 - **drive**: reading the installed proton-drive version no longer waits for proton-drive's own update check. Since cli-drive 0.8.0, `proton-drive version` prints its banner and then fetches proton.me's release manifest, with a 5 s timeout, to print an update hint; protonfs reads the version on every push and pull to choose its conflict-strategy names. It now stops after the banner, which takes 0.07 s instead of 0.2-0.3 s with 0.9.0 on a normal connection, and 0.11 s instead of 5.07 s when proton.me does not answer. `doctor` no longer repeats proton-drive's "a newer version is available" hint, which pointed past the version protonfs pins; its upstream check still reports newer releases
 
+## [2.5.0] - 2026-10-15
+
+### Features
+
 - **push**: `defaults.skip_thumbnails` (env `PROTONFS_SKIP_THUMBNAILS`) uploads every file without a thumbnail, passing proton-drive's `--skip-thumbnails`. Off by default (#183)
 
 - **push**: a first push of many small folders starts far fewer proton-drive processes. A directory whose every file is new and being pushed, with nothing ignored, held back or already indexed in it, goes up whole in one `filesystem upload -d merge` call, several such directories sharing a call up to `batch_size` files as long as no file name repeats in it, and proton-drive creates the subfolders. A directory is checked again just before its call, and goes up file by file if anything appeared in it since the scan. Each remote folder is created at most once per push; before, every path segment was created again for every folder. Every file is still verified at its own path in a listing of its folder. Progress lines now also show bytes sent across the whole push. On a test tree of 3 date folders under `photos/2019/` with `batch_size` 4, a first push made 13 proton-drive calls, against 20 for the same tree with 2.4.1's per-folder push. For the reported library (17,700 files in 1,123 date folders) that is roughly 1,240 calls instead of 5,600 (#185)
@@ -29,6 +33,8 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 ### Documentation
 
 - **reference**: `defaults.batch_size` and `PROTONFS_BATCH_SIZE` now have reference entries; the transfer-timeout error from #184 tells users to lower `PROTONFS_BATCH_SIZE`, and nothing documented it
+- **reference**: document defaults.batch_size and PROTONFS_BATCH_SIZE
+- **contributing**: say which commit messages decide a release
 
 ## [2.4.1] - 2026-10-09
 
@@ -750,7 +756,8 @@ the preceding development history and its first tagged release:
   line-matching, git-mutation error wrapping, `pathspec` deprecation, subpath
   prune data-loss fix.
 
-[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v2.4.1...HEAD
+[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v2.5.0...HEAD
+[2.5.0]: https://github.com/will-roscoe/protonfs/compare/v2.4.1...v2.5.0
 [2.4.1]: https://github.com/will-roscoe/protonfs/compare/v2.4.0...v2.4.1
 [2.4.0]: https://github.com/will-roscoe/protonfs/compare/v2.3.0...v2.4.0
 [2.3.0]: https://github.com/will-roscoe/protonfs/compare/v2.2.1...v2.3.0
