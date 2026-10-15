@@ -8,10 +8,13 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 
 ## [Unreleased]
 
+## [2.6.0] - 2026-10-15
+
 ### Features
 
 - **doctor**: reports where proton-drive keeps its cache and which filesystem it is on, and warns when that is a network mount (GlusterFS, NFS, Lustre, GPFS, CIFS). proton-drive reads and writes its sqlite cache on every call; on an HPC login node with a GlusterFS home, a listing that took 8 s with the cache on local disk ran past a 600 s timeout (#178)
 - **drive**: `PROTONFS_DRIVE_CACHE_HOME` moves proton-drive's cache to a local directory: protonfs passes it to proton-drive as `XDG_CACHE_HOME`, so the cache lands in `$PROTONFS_DRIVE_CACHE_HOME/proton-drive-cli`. proton-drive creates the directory itself, so a location under `/tmp` survives being wiped, which replaces the symlink and the `@reboot`/hourly `mkdir -p` crontab entries the affected host needed. `protonfs schedule --add` records the value and exports it from the job's wrapper, so cron jobs get it too; re-add existing jobs after setting it (#178)
+- **doctor**: warn when proton-drive's cache is on a network filesystem, and let protonfs move it (#196)
 
 ## [2.5.1] - 2026-10-15
 
@@ -767,7 +770,8 @@ the preceding development history and its first tagged release:
   line-matching, git-mutation error wrapping, `pathspec` deprecation, subpath
   prune data-loss fix.
 
-[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v2.5.1...HEAD
+[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v2.6.0...HEAD
+[2.6.0]: https://github.com/will-roscoe/protonfs/compare/v2.5.1...v2.6.0
 [2.5.1]: https://github.com/will-roscoe/protonfs/compare/v2.5.0...v2.5.1
 [2.5.0]: https://github.com/will-roscoe/protonfs/compare/v2.4.1...v2.5.0
 [2.4.1]: https://github.com/will-roscoe/protonfs/compare/v2.4.0...v2.4.1
