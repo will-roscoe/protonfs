@@ -388,6 +388,9 @@ Environment variables
        this host, whatever :confval:`defaults.manifest` says. Added in 2.1.0.
    * - :envvar:`PROTONFS_DRIVE_BIN`
      - Path/name of the ``proton-drive`` binary to invoke, in place of the default.
+   * - :envvar:`PROTONFS_DRIVE_CACHE_HOME`
+     - Directory proton-drive's cache is kept under (passed to it as ``XDG_CACHE_HOME``;
+       Linux). Added in 2.6.0.
    * - :envvar:`PROTONFS_DRIVE_VERSION`
      - Overrides the ``proton-drive`` version ``install-drive`` installs when
        ``--version`` is not passed.

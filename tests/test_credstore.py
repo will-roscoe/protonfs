@@ -327,3 +327,10 @@ def test_probe_pass_store_readback_mismatch(home, monkeypatch):
     ok, detail = cs.probe_pass_store(runner=_ScriptedPass(show_out="wrong"))
     assert ok is False
     assert "did not read back" in detail or detail == "show boom"
+
+
+def test_drive_env_applies_the_cache_home_override(home, monkeypatch):
+    # #178: every proton-drive call gets the moved cache, whatever the store
+    monkeypatch.setattr(cs.secretservice, "drive_env", lambda e=None: dict(e or {}))
+    env = cs.drive_env({"PROTONFS_DRIVE_CACHE_HOME": "/var/tmp/u"})
+    assert env["XDG_CACHE_HOME"] == "/var/tmp/u"

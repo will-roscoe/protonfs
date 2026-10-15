@@ -175,6 +175,21 @@ contract (see :doc:`../stability`).
 
    .. versionadded:: 1.0.0
 
+.. envvar:: PROTONFS_DRIVE_CACHE_HOME
+
+   Directory to keep proton-drive's cache under, passed to proton-drive as
+   ``XDG_CACHE_HOME``: the cache lands in ``$PROTONFS_DRIVE_CACHE_HOME/proton-drive-cli``.
+   Set it to a local disk when your home directory is a network mount (GlusterFS, NFS,
+   Lustre, GPFS, CIFS): proton-drive reads and writes its sqlite cache on every call,
+   and on one GlusterFS home that made listings 75 times slower. ``protonfs doctor``
+   warns when the cache is on such a mount. proton-drive creates the directory itself,
+   so a location under ``/tmp`` survives being wiped (the cache is rebuilt). Only the
+   cache moves; proton-drive's client ID, event state and logs stay where they are.
+   ``protonfs schedule --add`` records the value set when the job is added and exports
+   it from the job's wrapper, so re-add existing jobs after setting it. Linux only.
+
+   .. versionadded:: 2.6.0
+
 .. envvar:: PROTONFS_DRIVE_VERSION
 
    Overrides the ``proton-drive`` version ``install-drive`` installs when ``--version``
