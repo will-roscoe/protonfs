@@ -571,7 +571,7 @@ misclassified upstream, because that would overwrite real Drive content with a
 
 A directory whose every file is new and being pushed, with nothing ignored, held
 back or already indexed inside it, is uploaded whole in one ``proton-drive`` call
-(up to :confval:`defaults.batch_size` files, several such directories per call),
+(up to ``defaults.batch_size`` files, several such directories per call),
 and proton-drive creates its subfolders. Every other file goes up with the other
 files of its folder. Each remote folder is created at most once per push.
 
