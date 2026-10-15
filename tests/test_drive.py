@@ -1037,6 +1037,8 @@ def test_remote_identities_warns_when_binary_supplies_no_claimed_sizes(
     monkeypatch.setattr(
         subprocess, "run", _stub_run(_listing_json([("a", 10), ("b", 20)], claimed=False))
     )
+    # The warning names the binary's version, read through Popen, not the run stub.
+    monkeypatch.setattr(client, "version", lambda: None)
 
     with caplog.at_level(logging.WARNING, logger="protonfs.drive"):
         idents = client.remote_identities("/my-files/test")
