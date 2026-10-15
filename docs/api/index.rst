@@ -13,6 +13,7 @@ Module overview
    protonfs.context
    protonfs.diff
    protonfs.drive
+   protonfs.drivecache
    protonfs.ignore
    protonfs.index
    protonfs.indexcheck

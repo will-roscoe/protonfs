@@ -647,3 +647,30 @@ def test_cli_schedule_conflict_is_a_usage_error_and_a_warning_goes_to_stderr(
     assert prune.exit_code == 0, prune.output
     listed = runner.invoke(main, ["schedule", "--list", "--json"]).output
     assert '"keep": 3' in listed and '"min_age": "6h"' in listed
+
+
+def test_add_job_exports_the_drive_cache_home_it_was_added_with(repo: Path, monkeypatch) -> None:
+    # #178: cron does not see the user's shell exports, so the wrapper carries it
+    monkeypatch.setenv("PROTONFS_DRIVE_CACHE_HOME", "/var/tmp/u")
+    job = sched.add_job(repo, every="daily", runner=FakeCrontab())
+    assert job.drive_cache_home == "/var/tmp/u"
+    assert 'export PROTONFS_DRIVE_CACHE_HOME="/var/tmp/u"' in Path(job.wrapper_path).read_text()
+
+
+def test_add_job_without_drive_cache_home_exports_nothing(repo: Path, monkeypatch) -> None:
+    monkeypatch.delenv("PROTONFS_DRIVE_CACHE_HOME", raising=False)
+    job = sched.add_job(repo, every="daily", runner=FakeCrontab())
+    assert job.drive_cache_home is None
+    assert "PROTONFS_DRIVE_CACHE_HOME" not in Path(job.wrapper_path).read_text()
+
+
+def test_job_from_a_manifest_predating_drive_cache_home_still_loads(repo: Path) -> None:
+    import json
+
+    job = sched.add_job(repo, every="daily", runner=FakeCrontab())
+    manifest_path = repo / ".protonfs" / sched.MANIFEST_FILE_NAME
+    document = json.loads(manifest_path.read_text())
+    del document["jobs"][job.id]["drive_cache_home"]  # a pre-2.6.0 manifest
+    manifest_path.write_text(json.dumps(document))
+
+    assert sched.list_jobs(repo)[0].drive_cache_home is None
