@@ -118,10 +118,12 @@ def _download_and_index(
         local_folder.mkdir(parents=True, exist_ok=True)
         for batch in batches(group, batch_size):
             remote_paths = []
+            payload = 0  # #184: sizes the download's timeout
             for rel in batch:
                 entry = ctx.index.get(rel)
                 default_remote = f"{ctx.config.remote_root}/{rel}"
                 remote_paths.append(entry.remote_path if entry else default_remote)
+                payload += entry.size if entry else 0
             # Download into a staging directory and move each file into the tree only
             # once the transfer returns. Downloading straight to the destination left a
             # TRUNCATED file there when a pull was interrupted, and the next pull could
@@ -133,7 +135,9 @@ def _download_and_index(
             try:
                 # "replace": pull intentionally brings remote content down, overwriting any
                 # local copy at the destination (that is what remote-wins / remote-moved mean).
-                result = ctx.drive.download(remote_paths, tmp, file_strategy="replace")
+                result = ctx.drive.download(
+                    remote_paths, tmp, file_strategy="replace", payload_bytes=payload or None
+                )
                 for rel in batch:
                     landed = tmp / Path(rel).name
                     if landed.exists():

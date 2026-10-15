@@ -199,7 +199,10 @@ class FakeDrive:
             )
         return entries
 
-    def download(self, remote_paths, local_folder, file_strategy=None, folder_strategy=None):
+    def download(
+        self, remote_paths, local_folder, file_strategy=None, folder_strategy=None,
+        payload_bytes=None,
+    ):
         self.download_calls.append((tuple(remote_paths), str(local_folder), file_strategy))
         result = (
             self._download_result
