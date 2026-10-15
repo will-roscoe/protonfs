@@ -8,6 +8,10 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 
 ## [Unreleased]
 
+### Upgrade notes
+
+- **proton-drive pin bump 0.8.0 -> 0.9.0**: new installs and `protonfs upgrade` now fetch proton-drive 0.9.0 (released 2026-10-05). The commands, options and `--json` output protonfs uses are unchanged from 0.8.0, so nothing in protonfs depends on the bump. 0.8.0 and older stay installable via `PROTONFS_DRIVE_VERSION`. SHA-512 pins come from downloading and hashing each supported platform build (linux-x64, linux-arm64, darwin-x64, darwin-arm64) and checking it against upstream's manifest
+
 ### Features
 
 - **push**: `defaults.skip_thumbnails` (env `PROTONFS_SKIP_THUMBNAILS`) uploads every file without a thumbnail, passing proton-drive's `--skip-thumbnails`. Off by default (#183)
