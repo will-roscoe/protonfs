@@ -267,6 +267,12 @@ contract (see :doc:`../stability`).
 
    .. versionadded:: 2.1.0
 
+.. envvar:: PROTONFS_SKIP_THUMBNAILS
+
+   Per-key override for :confval:`defaults.skip_thumbnails`.
+
+   .. versionadded:: 2.5.0
+
 .. envvar:: PROTONFS_NO_MANIFEST
 
    Set (to any truthy value) to switch every remote-manifest read and write off on
@@ -363,6 +369,18 @@ Configuration file and keys
    .. versionchanged:: 2.3.0
       On by default. A repo with no manifest yet gets a warning from ``push``/``rm``
       until ``protonfs verify --repair`` has built one.
+
+.. confval:: defaults.skip_thumbnails
+   :type: bool
+   :default: false
+
+   Upload every file without a thumbnail (proton-drive's ``--skip-thumbnails``). Off,
+   ``push`` still sends a file without a thumbnail when proton-drive cannot build one
+   on this host (HEIC, AVIF or TIFF with no OS codec), after a warning. Turn it on to
+   skip that first failed attempt, or to save the time thumbnails take. Overridable via
+   :envvar:`PROTONFS_SKIP_THUMBNAILS`.
+
+   .. versionadded:: 2.5.0
 
 .. _reference-subcommands:
 
@@ -1169,8 +1187,8 @@ config
 Reads or writes protonfs's layered configuration. Known keys:
 :confval:`remote_root`, :confval:`device_id`, :confval:`defaults.on_conflict`,
 :confval:`defaults.low_io`, :confval:`defaults.event_log`,
-:confval:`defaults.progress_style`, :confval:`defaults.manifest` (each defined in the
-`Configuration`_ section above).
+:confval:`defaults.progress_style`, :confval:`defaults.manifest`,
+:confval:`defaults.skip_thumbnails` (each defined in the `Configuration`_ section above).
 
 .. _cmd-config-get:
 

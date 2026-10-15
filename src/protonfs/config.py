@@ -62,6 +62,7 @@ _ENV_DEFAULTS_OVERRIDES = {
     "progress_style": "PROTONFS_PROGRESS_STYLE",
     "batch_size": "PROTONFS_BATCH_SIZE",
     "manifest": "PROTONFS_MANIFEST",
+    "skip_thumbnails": "PROTONFS_SKIP_THUMBNAILS",
 }
 
 
@@ -85,6 +86,9 @@ class Defaults:
         current on ``push``/``rm``; overridable per-repo or via ``$PROTONFS_MANIFEST``.
         Off by default. Only an existing manifest is ever updated -- one is created by
         ``protonfs verify --repair`` from a full remote listing (#146).
+    :ivar skip_thumbnails: Upload every file without a thumbnail (proton-drive's ``-t``);
+        overridable per-repo or via ``$PROTONFS_SKIP_THUMBNAILS``. Off by default: a file
+        whose thumbnail this host cannot build is retried without one either way (#183).
 
     .. versionchanged:: 1.3.0
        Added the ``event_log`` and ``progress_style`` defaults.
@@ -94,6 +98,9 @@ class Defaults:
 
     .. versionchanged:: 2.1.0
        Added the ``manifest`` default.
+
+    .. versionchanged:: 2.5.0
+       Added the ``skip_thumbnails`` default.
     """
 
     on_conflict: str = "skip"
@@ -102,6 +109,7 @@ class Defaults:
     progress_style: str = "inline"
     batch_size: int = DEFAULT_BATCH_SIZE
     manifest: bool = True
+    skip_thumbnails: bool = False
 
 
 @dataclass
@@ -169,6 +177,7 @@ class Config:
                 progress_style=defaults_data.get("progress_style", "inline"),
                 batch_size=defaults_data.get("batch_size", DEFAULT_BATCH_SIZE),
                 manifest=defaults_data.get("manifest", True),
+                skip_thumbnails=defaults_data.get("skip_thumbnails", False),
             ),
         )
 
@@ -358,7 +367,7 @@ def _env_layer() -> dict:
         value = os.environ.get(env_name)
         if value is None:
             continue
-        if key in ("low_io", "event_log", "manifest"):
+        if key in ("low_io", "event_log", "manifest", "skip_thumbnails"):
             defaults_layer[key] = _parse_bool_env(value)
         elif key == "batch_size":
             # A non-positive size makes batches() produce no chunks; clamp to >= 1. A

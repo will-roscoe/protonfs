@@ -1185,3 +1185,30 @@ def test_unknown_version_is_not_cached(monkeypatch) -> None:
     client.upload([Path("a")], "/p", file_strategy="merge")
     client.upload([Path("a")], "/p", file_strategy="merge")
     assert (_opt(seen[0], "-f"), _opt(seen[1], "-f")) == ("merge", "create-new-revision")
+
+
+# --- #183: -t / --skip-thumbnails --------------------------------------------------------
+
+
+@pytest.mark.parametrize("version", ["0.4.6", "0.8.0"])
+def test_upload_skip_thumbnails_passes_t_before_the_paths(monkeypatch, version) -> None:
+    args = _transfer_args(
+        monkeypatch, version, lambda c: c.upload([Path("a.tif")], "/p", skip_thumbnails=True)
+    )
+    assert args[:2] == ["filesystem", "upload"]
+    assert args.index("-t") < args.index("a.tif")
+
+
+def test_upload_keeps_thumbnails_by_default(monkeypatch) -> None:
+    args = _transfer_args(monkeypatch, "0.8.0", lambda c: c.upload([Path("a.tif")], "/p"))
+    assert "-t" not in args
+
+
+def test_is_thumbnail_failure_matches_proton_drive_message() -> None:
+    from protonfs.drive import is_thumbnail_failure
+
+    assert is_thumbnail_failure(
+        {"name": "x.tif", "error": "ValidationError: Failed to generate thumbnails (use "
+         "--skip-thumbnails to upload without thumbnails): Image: format not supported"}
+    )
+    assert not is_thumbnail_failure({"name": "x", "error": "Name conflict ... already exists"})

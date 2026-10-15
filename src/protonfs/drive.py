@@ -520,6 +520,21 @@ def _retry_with_backoff(
         sleep(delay)
 
 
+def is_thumbnail_failure(failure: dict) -> bool:
+    """Whether an upload failure is proton-drive refusing a file it cannot thumbnail.
+
+    proton-drive needs the OS image codec to build a thumbnail for HEIC, AVIF or TIFF,
+    and fails the file without one (``ValidationError: Failed to generate thumbnails``).
+    The same file uploads with ``-t`` (#183).
+
+    :param failure: one entry of :attr:`TransferResult.failures`.
+    :returns: ``True`` when re-uploading with ``skip_thumbnails`` should succeed.
+
+    .. versionadded:: 2.5.0
+    """
+    return "failed to generate thumbnail" in str(failure.get("error", "")).lower()
+
+
 def _classify(message: str) -> DriveError:
     """Map a CLI error message to the most specific :class:`DriveError` subclass.
 
@@ -1007,6 +1022,7 @@ class DriveClient:
         file_strategy: str | None = None,
         folder_strategy: str | None = None,
         *,
+        skip_thumbnails: bool = False,
         timeout: float = TRANSFER_TIMEOUT_SECONDS,
         retries: int = TRANSFER_MAX_RETRIES,
         base_delay: float = TRANSFER_BACKOFF_BASE_SECONDS,
@@ -1019,6 +1035,9 @@ class DriveClient:
         :param remote_parent: the absolute Drive directory to upload into.
         :param file_strategy: proton-drive ``-f`` conflict strategy for files, or ``None``.
         :param folder_strategy: proton-drive ``-d`` strategy for folders, or ``None``.
+        :param skip_thumbnails: upload without thumbnails (proton-drive's ``-t``), for
+            images this host has no codec to build one for (see
+            :func:`is_thumbnail_failure`).
         :param timeout: first-attempt timeout (seconds), raised to fit the files' total
             size by :func:`transfer_timeout` and doubled on each timed-out retry.
         :param retries: max throttle or timeout retries before giving up.
@@ -1033,7 +1052,7 @@ class DriveClient:
         .. versionchanged:: 2.5.0
            The timeout scales with the files' total size, a timeout is retried with a
            doubled timeout and reported as :class:`DriveTransferTimeoutError` rather than
-           as throttling (#184).
+           as throttling (#184). Added ``skip_thumbnails`` (#183).
 
         .. seealso:: :meth:`download` for the reverse direction.
         """
@@ -1042,6 +1061,8 @@ class DriveClient:
             args += ["-f", self._strategy("upload", "-f", file_strategy)]
         if folder_strategy:
             args += ["-d", self._strategy("upload", "-d", folder_strategy)]
+        if skip_thumbnails:
+            args.append("-t")
         args += [str(p) for p in local_paths] + [remote_parent]
         return self._run_transfer_with_backoff(
             args, timeout=timeout, retries=retries, base_delay=base_delay, cap=cap, sleep=sleep,
