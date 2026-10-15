@@ -8,6 +8,8 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 
 ## [Unreleased]
 
+## [2.5.1] - 2026-10-15
+
 ### Upgrade notes
 
 - **proton-drive pin bump 0.8.0 -> 0.9.0**: new installs and `protonfs upgrade` now fetch proton-drive 0.9.0 (released 2026-10-05). The commands, options and `--json` output protonfs uses are unchanged from 0.8.0, so nothing in protonfs depends on the bump. 0.8.0 and older stay installable via `PROTONFS_DRIVE_VERSION`. SHA-512 pins come from downloading and hashing each supported platform build (linux-x64, linux-arm64, darwin-x64, darwin-arm64) and checking it against upstream's manifest
@@ -15,6 +17,10 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 ### Features
 
 - **drive**: reading the installed proton-drive version no longer waits for proton-drive's own update check. Since cli-drive 0.8.0, `proton-drive version` prints its banner and then fetches proton.me's release manifest, with a 5 s timeout, to print an update hint; protonfs reads the version on every push and pull to choose its conflict-strategy names. It now stops after the banner, which takes 0.07 s instead of 0.2-0.3 s with 0.9.0 on a normal connection, and 0.11 s instead of 5.07 s when proton.me does not answer. `doctor` no longer repeats proton-drive's "a newer version is available" hint, which pointed past the version protonfs pins; its upstream check still reports newer releases
+
+### Performance
+
+- **drive**: pin proton-drive 0.9.0 and skip its update check when reading the version (#194)
 
 ## [2.5.0] - 2026-10-15
 
@@ -756,7 +762,8 @@ the preceding development history and its first tagged release:
   line-matching, git-mutation error wrapping, `pathspec` deprecation, subpath
   prune data-loss fix.
 
-[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v2.5.0...HEAD
+[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v2.5.1...HEAD
+[2.5.1]: https://github.com/will-roscoe/protonfs/compare/v2.5.0...v2.5.1
 [2.5.0]: https://github.com/will-roscoe/protonfs/compare/v2.4.1...v2.5.0
 [2.4.1]: https://github.com/will-roscoe/protonfs/compare/v2.4.0...v2.4.1
 [2.4.0]: https://github.com/will-roscoe/protonfs/compare/v2.3.0...v2.4.0
