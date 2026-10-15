@@ -78,9 +78,9 @@ class Defaults:
     :ivar progress_style: Default display style for progress updates (e.g. ``"inline"``,
         ``"lines"``); overridable per-repo or via ``$PROTONFS_PROGRESS_STYLE``.
     :ivar batch_size: Files per ``filesystem upload``/``download`` call; overridable
-        per-repo or via ``$PROTONFS_BATCH_SIZE``. Lower it on a slow/throttled link so each
-        transfer call stays under ``$PROTONFS_TRANSFER_TIMEOUT`` (a large batch that times
-        out is retried whole, so smaller batches also lose less work per throttle-retry).
+        per-repo or via ``$PROTONFS_BATCH_SIZE``. Each call's timeout grows with its data
+        (``$PROTONFS_TRANSFER_MIN_RATE``); a smaller batch still makes progress visible,
+        and saved to the index, more often.
     :ivar manifest: Keep the remote manifest (``<remote_root>/.protonfs/manifest.json``)
         current on ``push``/``rm``; overridable per-repo or via ``$PROTONFS_MANIFEST``.
         Off by default. Only an existing manifest is ever updated -- one is created by

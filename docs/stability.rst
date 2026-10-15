@@ -399,7 +399,10 @@ Environment variables
    * - :envvar:`PROTONFS_LIST_BACKOFF_CAP`
      - Cap in seconds on the Drive listing retry backoff (default ``60``).
    * - :envvar:`PROTONFS_TRANSFER_TIMEOUT`
-     - Timeout in seconds for a Drive upload/download call (default ``300``).
+     - Minimum timeout in seconds for a Drive upload/download call (default ``300``).
+   * - :envvar:`PROTONFS_TRANSFER_MIN_RATE`
+     - Slowest transfer rate in bytes per second that still counts as progress; scales
+       each upload/download call's timeout with its data (default ``524288``).
    * - :envvar:`PROTONFS_TRANSFER_RETRIES`
      - Max retries for a Drive upload/download call (default ``4``).
    * - :envvar:`PROTONFS_TRANSFER_BACKOFF`

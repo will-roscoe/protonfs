@@ -565,7 +565,9 @@ def test_interrupted_download_leaves_no_partial_file_in_the_tree(
     )
     fake = make_fake_drive()
 
-    def interrupted(remote_paths, local_folder, file_strategy=None, folder_strategy=None):
+    def interrupted(
+        remote_paths, local_folder, file_strategy=None, folder_strategy=None, payload_bytes=None
+    ):
         # what a dropped link looks like: some bytes written, then nothing
         (Path(local_folder) / "dump_0001").write_bytes(b"partial")
         raise KeyboardInterrupt

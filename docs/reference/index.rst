@@ -215,13 +215,30 @@ contract (see :doc:`../stability`).
 
 .. envvar:: PROTONFS_TRANSFER_TIMEOUT
 
-   Timeout in seconds for a Drive upload/download call (default ``300``).
+   Minimum timeout in seconds for a Drive upload/download call (default ``300``). A
+   call moving more data gets longer, see :envvar:`PROTONFS_TRANSFER_MIN_RATE`, and a
+   call that times out is retried with its timeout doubled.
 
    .. versionadded:: 1.0.0
 
+   .. versionchanged:: 2.5.0
+      Now the minimum: the timeout grows with the call's data, and doubles on each
+      timed-out retry. A call that times out on every attempt is reported as a
+      timeout rather than as throttling.
+
+.. envvar:: PROTONFS_TRANSFER_MIN_RATE
+
+   Slowest transfer rate, in bytes per second, that still counts as progress (default
+   ``524288``, 512 KiB/s). A Drive upload/download call gets at least its data size
+   divided by this rate before it times out, so a batch of large files is not cut off
+   by a timeout sized for small ones. ``0`` turns the scaling off.
+
+   .. versionadded:: 2.5.0
+
 .. envvar:: PROTONFS_TRANSFER_RETRIES
 
-   Max retries for a Drive upload/download call (default ``4``).
+   Max retries for a Drive upload/download call (default ``4``), after throttling or
+   a timeout.
 
    .. versionadded:: 1.0.0
 
