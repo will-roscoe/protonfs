@@ -32,7 +32,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 
-DEFAULT_VERSION = "0.8.0"
+DEFAULT_VERSION = "0.9.0"
 VERSION_ENV = "PROTONFS_DRIVE_VERSION"
 SHA512_ENV = "PROTONFS_DRIVE_SHA512"
 DOWNLOAD_BASE = "https://proton.me/download/drive/cli"
@@ -53,6 +53,24 @@ DOWNLOAD_TIMEOUT = 60  # seconds; avoids a stalled connection hanging the instal
 # override (we never install unverified). Older pinned versions stay in the table so
 # PROTONFS_DRIVE_VERSION downgrades remain verifiable.
 PINNED_SHA512 = {
+    # 0.9.0 (released 2026-10-05): manifest checksums independently re-verified by
+    # downloading each binary and hashing it (2026-10-15, via repin_proton_drive.py).
+    ("0.9.0", "linux-x64"): (
+        "3533025ba69ae112b64e3e01fbcc1ad0688136a4043f6cf6a72886967d85fdcd"
+        "9ec235479c2e113171614be5225bfba93427509a05ca5aa6071d924fa7e91ca8"
+    ),
+    ("0.9.0", "linux-arm64"): (
+        "c8d5a6b174e57f06d05cb5483400b9963faf58e743b6b33706bb73ecff718047"
+        "ffce6b439994255b94b5b226b90d2e91bef7418ec96c1c3f5d8bf39b6cd01321"
+    ),
+    ("0.9.0", "darwin-x64"): (
+        "a9fc830f38b680ef537fd92db75e1d6e345374f977efa523b145ccc7ec985707"
+        "56f6ca32378d1bad6a84c9542f24ef43a63c6ec956e5dda9ca731b60b001a6e6"
+    ),
+    ("0.9.0", "darwin-arm64"): (
+        "3f4125de5e41dcc7f4e0e07e8d60737aa18f35c6ecc1ba3fce47ea97b331857e"
+        "efaf88e74671135af57122d4cb5439b817ec528f8df383550ac7810aeaf0217b"
+    ),
     # 0.8.0 (released 2026-08-13): manifest checksums independently re-verified by
     # downloading each binary and hashing it (2026-08-13, via repin_proton_drive.py).
     ("0.8.0", "linux-x64"): (
@@ -140,7 +158,7 @@ PINNED_SHA512 = {
 # `highest_supported()` requires a newer protonfs release, which re-pins via
 # .github/scripts/repin_proton_drive.py and adds the new version here. Older entries
 # stay so PROTONFS_DRIVE_VERSION downgrades remain a supported, checkable choice.
-SUPPORTED_DRIVE_VERSIONS = ("0.8.0", "0.7.0", "0.6.0", "0.5.0", "0.4.6")
+SUPPORTED_DRIVE_VERSIONS = ("0.9.0", "0.8.0", "0.7.0", "0.6.0", "0.5.0", "0.4.6")
 
 
 def highest_supported() -> str:
