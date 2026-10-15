@@ -102,6 +102,24 @@ classification, where `<spec>` is `major` | `minor` | `patch` | `pre` | `prepre`
 documented in `docs/stability.rst`. Only maintainers cutting releases normally
 use these.
 
+### Merging into `main`
+
+Only the commit messages that land on `main` count, and only the first line
+(subject) of each is classified; a directive is the one thing read from the body.
+How the PR is merged decides what those messages are:
+
+- **Squash**: the PR title becomes the subject (or the commit's own subject when
+  the PR has one commit). Give a release PR a releasing title such as
+  `feat: …`; a title like `release: …` releases nothing.
+- **Merge commit**: the merge commit's subject is `Merge pull request #N …` and
+  the PR title only reaches its body, so the title does not count. The PR's own
+  commits land too and are classified as they are.
+- **Rebase**: the PR's commits land as they are.
+
+When a merge did not release, a later push cannot fix it by re-running the
+workflow: the history is the same. Land a commit whose subject releases, or one
+carrying a `+:<spec>` directive, which works with every merge method.
+
 ## Reporting bugs and requesting features
 
 Use the issue templates (they open automatically at
