@@ -37,6 +37,10 @@ DEFAULT_BINARY = "proton-drive"
 # `+` (if any) is deliberately not captured (issue #65: the support matrix compares
 # on the semver only).
 _VERSION_RE = re.compile(r"cli-drive@(\d+\.\d+\.\d+)")
+# The last line of the `proton-drive version` banner. cli-drive 0.8.0+ then fetches
+# proton.me's release manifest (up to 5 s) to print an update hint; protonfs pins its
+# own version and checks upstream itself, so version() stops reading here.
+_VERSION_BANNER_END = "Proton Drive SDK"
 
 # #179: cli-drive@0.8.0 renamed the conflict strategies. protonfs speaks the 0.4.6-0.7.0
 # names everywhere; these are translated, per command and option, only for 0.8.0 onwards.
@@ -801,21 +805,39 @@ class DriveClient:
             ) from exc
 
     def version(self) -> str | None:
-        """Return the raw ``proton-drive version`` output, or ``None`` if it can't run.
+        """Return the ``proton-drive version`` banner, or ``None`` if it can't run.
 
-        :returns: the version banner string, or ``None`` when the binary is missing or
-            exits non-zero (e.g. a keyring fault before it can answer).
+        Reading stops after the ``Proton Drive SDK`` line and the process is killed,
+        so the binary's own update check (cli-drive 0.8.0+) is never waited on.
+
+        :returns: the banner lines, e.g. ``"Proton Drive CLI cli-drive@0.9.0+…\\nProton
+            Drive SDK js@0.22.2+…"``, or ``None`` when the binary is missing or exits
+            non-zero before finishing the banner (e.g. a keyring fault).
+
+        .. versionchanged:: 2.5.0
+           Returns the banner only, without the update hint cli-drive 0.8.0+ prints
+           after it.
 
         .. seealso:: :meth:`drive_version` for the parsed semver used by the support matrix.
         """
         if not self._binary_available():
             return None
-        result = subprocess.run(
-            [self._binary, "version"], capture_output=True, text=True, env=self._drive_env()
-        )
-        if result.returncode != 0:
+        lines: list[str] = []
+        with subprocess.Popen(
+            [self._binary, "version"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            env=self._drive_env(),
+        ) as proc:
+            for line in proc.stdout:
+                lines.append(line)
+                if line.startswith(_VERSION_BANNER_END):
+                    proc.kill()
+                    return "".join(lines).strip()
+        if proc.returncode != 0:
             return None
-        return result.stdout.strip()
+        return "".join(lines).strip()
 
     def drive_version(self) -> str | None:
         """The installed proton-drive's semver, e.g. "0.5.0", or None if the binary

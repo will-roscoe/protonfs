@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -47,6 +48,39 @@ def test_drive_version_parses_semver_from_raw_output(
     fake_bin.chmod(0o755)
     client = DriveClient(binary=str(fake_bin))
     assert client.drive_version() == "0.5.0"
+
+
+def _banner_bin(tmp_path: Path, after: str) -> str:
+    fake_bin = tmp_path / "proton-drive"
+    fake_bin.write_text(
+        "#!/bin/sh\necho 'Proton Drive CLI cli-drive@0.9.0+75612299'\n"
+        f"echo 'Proton Drive SDK js@0.22.2+75612299'\n{after}\n"
+    )
+    fake_bin.chmod(0o755)
+    return str(fake_bin)
+
+
+def test_version_does_not_wait_for_the_update_check(tmp_path: Path) -> None:
+    # cli-drive 0.8.0+ fetches proton.me's manifest (up to 5 s) after the banner.
+    client = DriveClient(binary=_banner_bin(tmp_path, "sleep 30\necho 'You are running...'"))
+    start = time.monotonic()
+    assert client.version() == (
+        "Proton Drive CLI cli-drive@0.9.0+75612299\nProton Drive SDK js@0.22.2+75612299"
+    )
+    assert time.monotonic() - start < 10
+    assert client.drive_version() == "0.9.0"
+
+
+def test_version_drops_the_update_hint(tmp_path: Path) -> None:
+    client = DriveClient(binary=_banner_bin(tmp_path, "echo 'A newer version is available'"))
+    assert "newer" not in client.version()
+
+
+def test_version_returns_none_when_binary_fails_before_the_banner(tmp_path: Path) -> None:
+    fake_bin = tmp_path / "proton-drive"
+    fake_bin.write_text("#!/bin/sh\necho 'keyring locked' >&2\nexit 1\n")
+    fake_bin.chmod(0o755)
+    assert DriveClient(binary=str(fake_bin)).version() is None
 
 
 def test_drive_version_returns_none_when_binary_missing() -> None:
@@ -1003,6 +1037,8 @@ def test_remote_identities_warns_when_binary_supplies_no_claimed_sizes(
     monkeypatch.setattr(
         subprocess, "run", _stub_run(_listing_json([("a", 10), ("b", 20)], claimed=False))
     )
+    # The warning names the binary's version, read through Popen, not the run stub.
+    monkeypatch.setattr(client, "version", lambda: None)
 
     with caplog.at_level(logging.WARNING, logger="protonfs.drive"):
         idents = client.remote_identities("/my-files/test")

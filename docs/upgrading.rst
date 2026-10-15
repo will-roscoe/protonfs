@@ -68,10 +68,14 @@ version; the older ones stay installable for downgrades via
    * - proton-drive
      - Status
      - Notes
-   * - ``0.8.0``
+   * - ``0.9.0``
      - highest supported (default)
-     - Required for the ``pass`` credentials store (:envvar:`PROTONFS_CREDENTIALS_STORE`);
-       older binaries ignore ``PROTON_DRIVE_CREDENTIALS_STORE``.
+     - No protonfs-visible behavioural change from 0.8.0: the commands, options and
+       ``--json`` output protonfs uses are unchanged.
+   * - ``0.8.0``
+     - supported (downgrade only)
+     - Renamed the conflict strategies (``-f``/``-d``); protonfs translates its own
+       names for 0.8.0 and later when it builds each command.
    * - ``0.7.0``
      - supported (downgrade only)
      - No protonfs-visible behavioural change from 0.6.0.
