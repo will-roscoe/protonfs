@@ -20,6 +20,10 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 
 - **drive**: an upload or download that runs out of time is no longer reported as throttling. Each call's timeout now grows with the data it carries, at least its size over `PROTONFS_TRANSFER_MIN_RATE` (default 512 KiB/s, so 1 GiB gets about 34 minutes), and `PROTONFS_TRANSFER_TIMEOUT` (default 300 s) is the minimum. A call that does time out is retried at once with twice the time; proton-drive skips the files that already landed, so only the one cut off is sent again. If every attempt times out, the error says how long it waited and how much data the call carried, and names the settings to change. Before, a batch holding several GiB over a slow uplink was retried with the same 300 s until it was abandoned as "remote is throttling" (#184)
 
+### Documentation
+
+- **reference**: `defaults.batch_size` and `PROTONFS_BATCH_SIZE` now have reference entries; the transfer-timeout error from #184 tells users to lower `PROTONFS_BATCH_SIZE`, and nothing documented it
+
 ## [2.4.1] - 2026-10-09
 
 ### Bug fixes

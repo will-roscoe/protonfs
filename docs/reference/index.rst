@@ -235,6 +235,13 @@ contract (see :doc:`../stability`).
 
    .. versionadded:: 2.5.0
 
+.. envvar:: PROTONFS_BATCH_SIZE
+
+   Per-key override for :confval:`defaults.batch_size`. A value below ``1`` counts as
+   ``1``; a value that is not an integer is an error when the config loads.
+
+   .. versionadded:: 1.6.0
+
 .. envvar:: PROTONFS_TRANSFER_RETRIES
 
    Max retries for a Drive upload/download call (default ``4``), after throttling or
@@ -354,6 +361,18 @@ Configuration file and keys
    :envvar:`PROTONFS_PROGRESS_STYLE`.
 
    .. versionadded:: 1.3.0
+
+.. confval:: defaults.batch_size
+   :type: int
+   :default: 200
+
+   Most files sent in one proton-drive ``filesystem upload`` or ``download`` call. Each
+   call's timeout grows with the data it carries (:envvar:`PROTONFS_TRANSFER_MIN_RATE`);
+   a smaller batch saves progress to the index more often and resends less after a
+   failed call. Not a ``config get``/``config set`` key: set it in a ``config.json``
+   layer's ``defaults`` object, or override it via :envvar:`PROTONFS_BATCH_SIZE`.
+
+   .. versionadded:: 1.6.0
 
 .. confval:: defaults.manifest
    :type: bool
@@ -571,7 +590,7 @@ misclassified upstream, because that would overwrite real Drive content with a
 
 A directory whose every file is new and being pushed, with nothing ignored, held
 back or already indexed inside it, is uploaded whole in one ``proton-drive`` call
-(up to ``defaults.batch_size`` files, several such directories per call),
+(up to :confval:`defaults.batch_size` files, several such directories per call),
 and proton-drive creates its subfolders. Every other file goes up with the other
 files of its folder. Each remote folder is created at most once per push.
 
