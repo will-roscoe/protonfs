@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import os
 import time
 from pathlib import Path
@@ -1886,11 +1887,22 @@ def test_push_does_not_trust_a_move_the_listing_does_not_show(
     assert ctx.index.get("a/x.jpg").remote_path == f"{ROOT}/a/x.jpg"
 
 
-def test_push_records_where_the_node_is_when_the_rename_after_a_move_fails(
+def test_push_records_where_the_node_is_when_neither_the_rename_nor_the_move_back_works(
     tmp_path: Path, make_fake_drive
 ) -> None:
+    from protonfs.drive import DriveError
+
     ctx = _pushed_tree(tmp_path, make_fake_drive, {"a/x.jpg": b"photo"}, fail_renames=True)
     _move(tmp_path, "a/x.jpg", "b/y.jpg")
+    real_move = ctx.drive.move
+
+    def move_once(paths, target):              # the move lands; moving it back fails
+        if ctx.drive.move_calls:
+            ctx.drive.move_calls.append((tuple(paths), target))
+            raise DriveError("simulated move-back failure")
+        return real_move(paths, target)
+
+    ctx.drive.move = move_once
 
     result = push(ctx, None, resolve=None, dry_run=False)
 
@@ -2333,3 +2345,95 @@ def test_cli_push_prints_every_per_run_total_on_its_summary_line(
     assert result.exit_code == 0, result.output
     summary = next(line for line in result.output.splitlines() if "transferred=" in line)
     assert "moved=1" in summary and "local-deleted=1" in summary
+
+
+# --- #197 review fixes ---------------------------------------------------------------------
+
+
+def test_push_uploads_a_regenerated_identical_file_instead_of_moving_the_old_one(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    # git-LFS use: run1/cal.dat removed to free disk, an identical run2/cal.dat written
+    # later. mv keeps the mtime; regenerating does not, so this is not a move and run1's
+    # Drive copy must stay where it is.
+    import os
+
+    ctx = _pushed_tree(tmp_path, make_fake_drive, {"run1/cal.dat": b"calibration"})
+    (tmp_path / "run1" / "cal.dat").unlink()
+    (tmp_path / "run2").mkdir()
+    (tmp_path / "run2" / "cal.dat").write_bytes(b"calibration")
+    old = ctx.index.get("run1/cal.dat").mtime
+    os.utime(tmp_path / "run2" / "cal.dat", (old + 3600, old + 3600))
+
+    result = push(ctx, None, resolve=None, dry_run=False)
+
+    assert ctx.drive.move_calls == [] and ctx.drive.rename_calls == []
+    assert result.moved_items == 0 and result.transferred_items == 1
+    assert _on_drive(ctx.drive, f"{ROOT}/run1/cal.dat")
+    assert ctx.index.get("run1/cal.dat") is not None
+
+
+def test_push_never_pairs_empty_files_as_moves(tmp_path: Path, make_fake_drive) -> None:
+    # every empty file has the same content, so content says nothing about which moved
+    ctx = _pushed_tree(tmp_path, make_fake_drive, {"a/.keep": b"", "a/x.jpg": b"photo"})
+    _move(tmp_path, "a/.keep", "b/.keep")
+
+    result = push(ctx, None, resolve=None, dry_run=False)
+
+    assert ctx.drive.move_calls == []
+    assert result.moved_items == 0
+
+
+def test_push_finishes_a_move_whose_index_save_was_interrupted(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    # the Drive move landed, then the process died before the index was saved: the next
+    # push must recognise the node at the new path, not upload a second copy beside it
+    ctx = _pushed_tree(tmp_path, make_fake_drive, {"a/x.jpg": b"photo"})
+    _move(tmp_path, "a/x.jpg", "b/x.jpg")
+    ctx.drive.move([f"{ROOT}/a/x.jpg"], f"{ROOT}/b")
+    ctx.drive.move_calls.clear()
+
+    result = push(ctx, None, resolve=None, dry_run=False)
+
+    assert _uploaded(ctx.drive) == []
+    assert ctx.drive.move_calls == []
+    assert result.moved_items == 1
+    assert ctx.index.get("a/x.jpg") is None
+    assert ctx.index.get("b/x.jpg").remote_path == f"{ROOT}/b/x.jpg"
+
+
+def test_push_moves_the_node_back_when_the_rename_after_its_move_fails(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    # otherwise a stray b/x.jpg is left on Drive that no host ever had
+    ctx = _pushed_tree(tmp_path, make_fake_drive, {"a/x.jpg": b"photo"}, fail_renames=True)
+    _move(tmp_path, "a/x.jpg", "b/y.jpg")
+
+    result = push(ctx, None, resolve=None, dry_run=False)
+
+    assert result.moved_items == 0
+    assert _uploaded(ctx.drive) == [str(tmp_path / "b" / "y.jpg")]
+    assert ctx.drive.move_calls[-1] == ((f"{ROOT}/b/x.jpg",), f"{ROOT}/a")
+    assert not _on_drive(ctx.drive, f"{ROOT}/b/x.jpg")
+    assert _on_drive(ctx.drive, f"{ROOT}/a/x.jpg")
+    assert ctx.index.get("a/x.jpg").remote_path == f"{ROOT}/a/x.jpg"
+
+
+def test_push_mass_delete_cap_counts_only_files_held_here(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    # offloaded entries are not on this machine, so they cannot dilute the fraction: 12
+    # of 21 held files gone is a mass deletion however many offloaded entries exist
+    ctx = _photos(tmp_path, make_fake_drive)
+    for i in range(500):
+        ctx.index.set(f"cold/c{i:03d}", dataclasses.replace(
+            ctx.index.get("top.txt"), remote_path=f"{ROOT}/cold/c{i:03d}",
+            local_state="metadata-only",
+        ))
+    for i in range(12):
+        (tmp_path / "photos" / f"p{i:02d}.jpg").unlink()
+
+    refused = push(ctx, None, resolve=None, dry_run=True, deletions="trash")
+
+    assert refused.failures and refused.failures[0]["kind"] == "deletion-refused"

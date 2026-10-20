@@ -685,7 +685,8 @@ def _deletion_refusal(
     wrong directory looks exactly like that). Unless ``allow_mass_delete``, also refused
     when a top-level directory of the scope vanished entirely, or when ``rels`` exceeds
     :data:`MASS_DELETE_LIMIT`, or exceeds :data:`MASS_DELETE_FLOOR` and
-    :data:`MASS_DELETE_FRACTION` of the tracked files in scope.
+    :data:`MASS_DELETE_FRACTION` of the files held here in scope (offloaded entries are
+    not counted).
 
     :returns: a failure dict (``name``, ``error``, ``kind`` = ``deletion-refused``).
     """
@@ -721,11 +722,13 @@ def _deletion_refusal(
             f"refusing to trash {n} file(s): the whole of {', '.join(vanished)} is gone "
             "locally. Re-run with --allow-mass-delete if that was deliberate."
         )
+    # Offloaded entries are not on this machine, so only held files count towards the
+    # fraction; otherwise a large offloaded archive would hide a mass deletion.
     if n > MASS_DELETE_LIMIT or (
-        n > MASS_DELETE_FLOOR and n > MASS_DELETE_FRACTION * len(in_scope)
+        n > MASS_DELETE_FLOOR and n > MASS_DELETE_FRACTION * len(held)
     ):
         return refused(
-            f"refusing to trash {n} of {len(in_scope)} tracked file(s) in one run (the cap "
+            f"refusing to trash {n} of {len(held)} file(s) held here in one run (the cap "
             f"is {MASS_DELETE_LIMIT}, or {MASS_DELETE_FRACTION:.0%} once more than "
             f"{MASS_DELETE_FLOOR}). Check with --dry-run, then re-run with "
             "--allow-mass-delete if that was deliberate."
@@ -784,15 +787,18 @@ def _plan_moves(
     """The ``(old, new)`` local moves to apply on Drive instead of uploading ``new``.
 
     ``new`` comes from the local-only files about to be uploaded, ``old`` from the files
-    this device held that are gone locally, both inside ``subpath``. An ``only`` push
+    this device held that are gone locally, both inside ``subpath``; they pair on the same
+    content and the same whole-second mtime. An ``only`` push
     scanned too little to know what is gone, so it plans nothing; a path still on disk
     (hidden from the scan, e.g. now ignored) is never taken for gone.
     """
     if only is not None:
         return []
     states = {e.rel_path: e.state for e in diff_entries}
+    # A move keeps the file's mtime; a file regenerated with the same bytes gets a new
+    # one, and moving the old node for it would take that copy away from its old path.
     added = {
-        rel: (local[rel].sha256, local[rel].size)
+        rel: (local[rel].sha256, local[rel].size, int(local[rel].mtime))
         for rel in to_push
         if states.get(rel) == SyncState.LOCAL_ONLY
     }
@@ -801,7 +807,7 @@ def _plan_moves(
     deleted = {}
     for rel in held_and_gone(diff_entries, ctx.index, ctx.root, subpath):
         entry = ctx.index.get(rel)
-        deleted[rel] = (entry.sha256, entry.size)
+        deleted[rel] = (entry.sha256, entry.size, int(entry.mtime))
     return pair_moves(deleted, added) if deleted else []
 
 
@@ -828,13 +834,17 @@ def _apply_moves(
     Per target folder: create it, list it, ``move`` the nodes that change folder (in
     batches), ``rename`` the ones that change name, then list it again. A pair counts as
     moved only when the second listing shows a node at the new name with the indexed
-    content that the first did not. A pair is not attempted when its new name, or the
-    name it would pass through between a move and a rename, is taken in the folder.
+    content. A pair is not attempted when its new name, or the name it would pass through
+    between a move and a rename, is taken in the folder -- except when the node at the
+    new name already holds the indexed content and nothing is left at the old path: an
+    earlier push moved it and stopped before saving the index, so it is recorded as
+    moved without touching Drive.
 
     A moved pair's index entry moves to ``new`` with its digests kept, its manifest
     entry is queued in ``verified`` and ``old`` is queued in ``forgotten``. When a move
-    landed but the rename after it did not, ``old``'s entry is pointed at where the node
-    now is. Every DriveError is a warning, never raised.
+    landed but the rename after it did not, the node is moved back to its old folder; if
+    that fails too, ``old``'s entry is pointed at where the node now is. Every DriveError
+    is a warning, never raised.
 
     :returns: ``(moved, unmoved)``: the count moved, and the ``new`` paths to upload.
     """
@@ -861,7 +871,12 @@ def _apply_moves(
             new_name = PurePosixPath(new).name
             needs_move = old_parent != target
             if new_name in before:
-                unmoved.append(new)
+                if _same_content(before[new_name], entry) and _gone_from(
+                    ctx, old_parent, old_name, before if not needs_move else None, reporter
+                ):
+                    plan.append((old, new, entry, False, new_name, new_name))  # already moved
+                else:
+                    unmoved.append(new)
                 continue
             if needs_move and old_name != new_name:
                 # Moved first, the node sits at target/old_name until its rename.
@@ -909,11 +924,33 @@ def _apply_moves(
                 moved += 1
                 continue
             if needs_move and old_name != new_name and old_name in after:
-                # The move landed and the rename did not: record where the node is now.
+                # The move landed and the rename did not. Put the node back, so Drive does
+                # not keep a file at a path no machine ever had; failing that, record where
+                # it is now.
+                old_parent = entry.remote_path.rpartition("/")[0]
+                try:
+                    ctx.drive.move([f"{target}/{old_name}"], old_parent)
+                except DriveError as exc:
+                    reporter.warn(f"moving {target}/{old_name} back to {old_parent} failed: {exc}")
+                if _gone_from(ctx, target, old_name, None, reporter):
+                    unmoved.append(new)
+                    continue
                 ctx.index.set(old, dataclasses.replace(entry, remote_path=f"{target}/{old_name}"))
                 forgotten.append(old)
             unmoved.append(new)
     return moved, unmoved
+
+
+def _gone_from(ctx: RepoContext, parent: str, name: str, listed: dict | None, reporter) -> bool:
+    """Whether Drive's folder ``parent`` has no node ``name``, using ``listed`` when given,
+    else a fresh listing. A folder that cannot be listed counts as not gone."""
+    if listed is None:
+        try:
+            listed = ctx.drive.remote_identities(parent)
+        except DriveError as exc:
+            reporter.warn(f"cannot list {parent} ({exc})")
+            return False
+    return name not in listed
 
 
 def _remote_dir(ctx: RepoContext, parent: str) -> str:

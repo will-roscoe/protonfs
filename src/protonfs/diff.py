@@ -260,21 +260,22 @@ def held_and_gone(
     return gone
 
 
-def pair_moves(
-    deleted: dict[str, tuple[str, int]], added: dict[str, tuple[str, int]]
-) -> list[tuple[str, str]]:
+def pair_moves(deleted: dict[str, tuple], added: dict[str, tuple]) -> list[tuple[str, str]]:
     """Return ``(old, new)`` pairs that look like one file moved or renamed locally.
 
-    A deleted path and an added path pair when they hold the same content (same sha256
-    and size; an empty sha256 never pairs). Pairing is one-to-one. Within a group of
-    identical files, pairs are chosen in rounds: first a deleted and an added path that
-    are each other's only candidate with the same basename, then the same for the parent
-    directory, and finally the last deleted and added path when exactly one of each is
-    left. Anything still ambiguous stays unpaired.
+    A deleted path and an added path pair when their keys are equal: the same sha256 and
+    size, plus anything else the caller adds to the key (``push`` adds the whole-second
+    mtime, which ``mv`` keeps and regenerating a file does not). A key with an empty
+    sha256 or a size of 0 never pairs: every empty file has the same content.
 
-    :param deleted: ``{rel_path: (sha256, size)}`` for paths gone locally (from the
+    Pairing is one-to-one. Within a group of identical files, pairs are chosen in rounds:
+    first a deleted and an added path that are each other's only candidate with the same
+    basename, then the same for the parent directory, and finally the last deleted and
+    added path when exactly one of each is left. Anything still ambiguous stays unpaired.
+
+    :param deleted: ``{rel_path: (sha256, size, ...)}`` for paths gone locally (from the
         index).
-    :param added: ``{rel_path: (sha256, size)}`` for new local paths (from the scan).
+    :param added: ``{rel_path: (sha256, size, ...)}`` for new local paths (from the scan).
     :returns: the pairs, ``old`` from ``deleted`` and ``new`` from ``added``, ordered by
         ``new``.
 
@@ -282,10 +283,10 @@ def pair_moves(
     """
     from pathlib import PurePosixPath
 
-    def by_content(paths: dict[str, tuple[str, int]]) -> dict[tuple[str, int], list[str]]:
-        groups: dict[tuple[str, int], list[str]] = {}
+    def by_content(paths: dict[str, tuple]) -> dict[tuple, list[str]]:
+        groups: dict[tuple, list[str]] = {}
         for rel, key in paths.items():
-            if key[0]:
+            if key[0] and key[1]:
                 groups.setdefault(key, []).append(rel)
         return groups
 
