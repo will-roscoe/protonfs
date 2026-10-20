@@ -35,7 +35,7 @@ class SyncState(str, Enum):
     :cvar REMOTE_ONLY: Absent locally, with the copy on Drive. With a remote view: listed
         remotely but absent both locally and in the index. Without one: a file this machine
         held that is now gone locally, whose last recorded copy is on Drive (``pull``
-        restores it).
+        restores it, unless told not to; see :func:`held_and_gone`).
     :cvar METADATA_ONLY: Index has a metadata-only record (never materialized locally)
         and, when a remote view exists, the remote still matches it.
     :cvar CONFLICT: Local diverged from the index and no remote view is available to
@@ -223,3 +223,103 @@ def _classify_absent(
     if _remote_diverged(remote_entry, index_entry):
         return SyncState.REMOTE_CHANGED
     return SyncState.METADATA_ONLY
+
+
+def held_and_gone(
+    diff_entries: list[DiffEntry], index: IndexStore, root, subpath: str | None = None
+) -> set[str]:
+    """Return the paths this machine held that are now gone from disk, inside ``subpath``.
+
+    A path qualifies when its index entry is not ``metadata-only`` (so it was downloaded
+    or uploaded here, never offloaded), it classified as ``remote-only`` (no remote view)
+    or ``local-deleted`` (remote view), and nothing exists at it on disk. A path the scan
+    skipped but that still exists (now ignored, say) is not gone. These are the files a
+    ``pull`` restores by default, ``pull --no-restore`` leaves alone, and ``push`` may
+    treat as moved or (with ``deletions="trash"``) trash.
+
+    :param diff_entries: the output of :func:`classify`.
+    :param index: the repo's index.
+    :param root: the repo root, a :class:`~pathlib.Path`.
+    :param subpath: repo-relative scope, or ``None`` for the whole repo.
+    :returns: the repo-relative paths.
+
+    .. versionadded:: 2.7.0
+    """
+    gone = set()
+    for e in diff_entries:
+        if e.state not in (SyncState.REMOTE_ONLY, SyncState.LOCAL_DELETED):
+            continue
+        entry = index.get(e.rel_path)
+        if (
+            entry is not None
+            and entry.local_state != "metadata-only"
+            and within_subpath(e.rel_path, subpath)
+            and not (root / e.rel_path).exists()
+        ):
+            gone.add(e.rel_path)
+    return gone
+
+
+def pair_moves(deleted: dict[str, tuple], added: dict[str, tuple]) -> list[tuple[str, str]]:
+    """Return ``(old, new)`` pairs that look like one file moved or renamed locally.
+
+    A deleted path and an added path pair when their keys are equal: the same sha256 and
+    size, plus anything else the caller adds to the key (``push`` adds the whole-second
+    mtime, which ``mv`` keeps and regenerating a file does not). A key with an empty
+    sha256 or a size of 0 never pairs: every empty file has the same content.
+
+    Pairing is one-to-one. Within a group of identical files, pairs are chosen in rounds:
+    first a deleted and an added path that are each other's only candidate with the same
+    basename, then the same for the parent directory, and finally the last deleted and
+    added path when exactly one of each is left. Anything still ambiguous stays unpaired.
+
+    :param deleted: ``{rel_path: (sha256, size, ...)}`` for paths gone locally (from the
+        index).
+    :param added: ``{rel_path: (sha256, size, ...)}`` for new local paths (from the scan).
+    :returns: the pairs, ``old`` from ``deleted`` and ``new`` from ``added``, ordered by
+        ``new``.
+
+    .. versionadded:: 2.7.0
+    """
+    from pathlib import PurePosixPath
+
+    def by_content(paths: dict[str, tuple]) -> dict[tuple, list[str]]:
+        groups: dict[tuple, list[str]] = {}
+        for rel, key in paths.items():
+            if key[0] and key[1]:
+                groups.setdefault(key, []).append(rel)
+        return groups
+
+    def unique_matches(olds: list[str], news: list[str], key) -> list[tuple[str, str]]:
+        """Pairs whose ``key`` is shared by exactly one old and exactly one new path."""
+        old_by: dict[str, list[str]] = {}
+        new_by: dict[str, list[str]] = {}
+        for rel in olds:
+            old_by.setdefault(key(rel), []).append(rel)
+        for rel in news:
+            new_by.setdefault(key(rel), []).append(rel)
+        return [
+            (old_by[k][0], new_by[k][0])
+            for k in old_by
+            if len(old_by[k]) == 1 and len(new_by.get(k, [])) == 1
+        ]
+
+    rules = (
+        lambda rel: PurePosixPath(rel).name,
+        lambda rel: str(PurePosixPath(rel).parent),
+    )
+    olds_by_content = by_content(deleted)
+    pairs: list[tuple[str, str]] = []
+    for content, news in by_content(added).items():
+        olds = sorted(olds_by_content.get(content, []))
+        news = sorted(news)
+        for rule in rules:
+            if not olds or not news:
+                break
+            matched = unique_matches(olds, news, rule)
+            pairs += matched
+            olds = [r for r in olds if r not in {old for old, _ in matched}]
+            news = [r for r in news if r not in {new for _, new in matched}]
+        if len(olds) == 1 and len(news) == 1:
+            pairs.append((olds[0], news[0]))
+    return sorted(pairs, key=lambda pair: pair[1])

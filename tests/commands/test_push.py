@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import os
 import time
 from pathlib import Path
@@ -17,7 +18,7 @@ from protonfs.commands.status import compute_status
 from protonfs.config import init_config
 from protonfs.context import load_context
 from protonfs.diff import DiffEntry, SyncState
-from protonfs.drive import DriveError, RemoteIdentity, TransferResult
+from protonfs.drive import DriveError, RemoteEntry, RemoteIdentity, TransferResult
 from protonfs.index import IndexStore
 from protonfs.lfs import POINTER_SIGNATURE
 
@@ -1726,3 +1727,713 @@ def test_push_retries_an_unthumbnailable_file_from_a_whole_directory(
     # the directory upload made scans/ and scans/2019, so the retry creates nothing
     assert fake.created_folders == [("/my-files", "test")]
     assert set(ctx.index.all()) == {"scans/2019/a.tif", "scans/2019/b.jpg"}
+
+
+# --- #197: a local move or rename becomes a remote move or rename ---------------------
+
+ROOT = "/my-files/test"
+
+
+def _pushed_tree(tmp_path: Path, make_fake_drive, files: dict[str, bytes], **fake_kwargs):
+    """A repo whose ``files`` were pushed once, so the index and the fake Drive hold them."""
+    init_config(tmp_path, ROOT)
+    ctx = load_context(tmp_path)
+    ctx.drive = make_fake_drive(**fake_kwargs)
+    for rel, data in files.items():
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_bytes(data)
+    push(ctx, None, resolve=None, dry_run=False)
+    ctx.drive.upload_calls.clear()
+    return ctx
+
+
+def _move(tmp_path: Path, old: str, new: str) -> None:
+    (tmp_path / new).parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path / old).rename(tmp_path / new)
+
+
+def _uploaded(fake) -> list[str]:
+    """Every file sent by an upload call, a whole directory (#185) expanded to its files."""
+    files = []
+    for call in fake.upload_calls:
+        for sent in map(Path, call[0]):
+            files += sorted(map(str, sent.rglob("*"))) if sent.is_dir() else [str(sent)]
+    return files
+
+
+def _on_drive(fake, remote_path: str) -> bool:
+    parent, name = remote_path.rsplit("/", 1)
+    return name in fake.remote_identities(parent)
+
+
+def test_push_applies_a_local_move_as_one_remote_move_without_uploading(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    ctx = _pushed_tree(tmp_path, make_fake_drive, {"a/x.jpg": b"photo", "a/y.jpg": b"other"})
+    before = ctx.index.get("a/x.jpg")
+    revision = ctx.drive.revision_uids[f"{ROOT}/a/x.jpg"]
+    _move(tmp_path, "a/x.jpg", "b/x.jpg")
+
+    result = push(ctx, None, resolve=None, dry_run=False)
+
+    assert ctx.drive.move_calls == [((f"{ROOT}/a/x.jpg",), f"{ROOT}/b")]
+    assert ctx.drive.rename_calls == []
+    assert _uploaded(ctx.drive) == []
+    assert result.moved_items == 1
+    assert result.transferred_items == 0
+    assert ctx.index.get("a/x.jpg") is None
+    after = ctx.index.get("b/x.jpg")
+    assert (after.sha256, after.sha1, after.size) == (before.sha256, before.sha1, before.size)
+    assert after.remote_path == f"{ROOT}/b/x.jpg"
+    assert after.local_state == "present"
+    # the same Drive node, so its revision history and share links survive
+    assert ctx.drive.revision_uids[f"{ROOT}/b/x.jpg"] == revision
+    assert compute_status(ctx, None)[SyncState.LOCALLY_INDEXED.value] == 2
+
+
+def test_push_applies_a_rename_in_place_as_a_remote_rename(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    ctx = _pushed_tree(tmp_path, make_fake_drive, {"a/x.jpg": b"photo"})
+    _move(tmp_path, "a/x.jpg", "a/renamed.jpg")
+
+    result = push(ctx, None, resolve=None, dry_run=False)
+
+    assert ctx.drive.rename_calls == [(f"{ROOT}/a/x.jpg", "renamed.jpg")]
+    assert ctx.drive.move_calls == []
+    assert _uploaded(ctx.drive) == []
+    assert result.moved_items == 1
+    assert ctx.index.get("a/renamed.jpg").remote_path == f"{ROOT}/a/renamed.jpg"
+    assert ctx.index.get("a/x.jpg") is None
+
+
+def test_push_moves_then_renames_when_folder_and_name_both_change(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    ctx = _pushed_tree(tmp_path, make_fake_drive, {"a/x.jpg": b"photo"})
+    _move(tmp_path, "a/x.jpg", "b/c/y.jpg")
+
+    result = push(ctx, None, resolve=None, dry_run=False)
+
+    assert ctx.drive.move_calls == [((f"{ROOT}/a/x.jpg",), f"{ROOT}/b/c")]
+    assert ctx.drive.rename_calls == [(f"{ROOT}/b/c/x.jpg", "y.jpg")]
+    assert (f"{ROOT}/b", "c") in ctx.drive.created_folders  # target made first
+    assert _uploaded(ctx.drive) == []
+    assert result.moved_items == 1
+    assert _on_drive(ctx.drive, f"{ROOT}/b/c/y.jpg")
+    assert not _on_drive(ctx.drive, f"{ROOT}/a/x.jpg")
+
+
+def test_push_pairs_identical_files_by_basename_and_leaves_the_rest_deleted(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    ctx = _pushed_tree(tmp_path, make_fake_drive, {"a/x.jpg": b"same", "c/z.jpg": b"same"})
+    _move(tmp_path, "a/x.jpg", "b/x.jpg")
+    (tmp_path / "c" / "z.jpg").unlink()
+
+    result = push(ctx, None, resolve=None, dry_run=False)
+
+    assert ctx.drive.move_calls == [((f"{ROOT}/a/x.jpg",), f"{ROOT}/b")]
+    assert result.moved_items == 1
+    # the unpaired deletion is left to the deletion policy: still indexed, still on Drive
+    assert ctx.index.get("c/z.jpg") is not None
+    assert _on_drive(ctx.drive, f"{ROOT}/c/z.jpg")
+
+
+def test_push_uploads_a_file_edited_then_moved_and_keeps_the_old_path_indexed(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    ctx = _pushed_tree(tmp_path, make_fake_drive, {"a/x.jpg": b"before"})
+    (tmp_path / "a" / "x.jpg").write_bytes(b"after the edit")
+    _move(tmp_path, "a/x.jpg", "b/x.jpg")
+
+    result = push(ctx, None, resolve=None, dry_run=False)
+
+    assert ctx.drive.move_calls == []
+    assert _uploaded(ctx.drive) == [str(tmp_path / "b" / "x.jpg")]
+    assert result.moved_items == 0
+    assert result.transferred_items == 1
+    assert ctx.index.get("a/x.jpg") is not None
+
+
+def test_push_falls_back_to_uploading_when_the_move_fails(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    ctx = _pushed_tree(tmp_path, make_fake_drive, {"a/x.jpg": b"photo"}, fail_moves=True)
+    _move(tmp_path, "a/x.jpg", "b/x.jpg")
+
+    result = push(ctx, None, resolve=None, dry_run=False)
+
+    assert len(ctx.drive.move_calls) == 1
+    assert _uploaded(ctx.drive) == [str(tmp_path / "b" / "x.jpg")]
+    assert result.moved_items == 0
+    assert result.transferred_items == 1
+    assert result.failed_items == 0
+    assert ctx.index.get("a/x.jpg").remote_path == f"{ROOT}/a/x.jpg"
+    assert ctx.index.get("b/x.jpg") is not None
+
+
+def test_push_does_not_trust_a_move_the_listing_does_not_show(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    # the counting rule: a move reported as done is checked against the listing
+    ctx = _pushed_tree(tmp_path, make_fake_drive, {"a/x.jpg": b"photo"}, ignored_moves=True)
+    _move(tmp_path, "a/x.jpg", "b/x.jpg")
+
+    result = push(ctx, None, resolve=None, dry_run=False)
+
+    assert result.moved_items == 0
+    assert _uploaded(ctx.drive) == [str(tmp_path / "b" / "x.jpg")]
+    assert ctx.index.get("a/x.jpg").remote_path == f"{ROOT}/a/x.jpg"
+
+
+def test_push_records_where_the_node_is_when_neither_the_rename_nor_the_move_back_works(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    from protonfs.drive import DriveError
+
+    ctx = _pushed_tree(tmp_path, make_fake_drive, {"a/x.jpg": b"photo"}, fail_renames=True)
+    _move(tmp_path, "a/x.jpg", "b/y.jpg")
+    real_move = ctx.drive.move
+
+    def move_once(paths, target):              # the move lands; moving it back fails
+        if ctx.drive.move_calls:
+            ctx.drive.move_calls.append((tuple(paths), target))
+            raise DriveError("simulated move-back failure")
+        return real_move(paths, target)
+
+    ctx.drive.move = move_once
+
+    result = push(ctx, None, resolve=None, dry_run=False)
+
+    assert result.moved_items == 0
+    assert _uploaded(ctx.drive) == [str(tmp_path / "b" / "y.jpg")]
+    # the old path's index entry follows its node, so a later trash or restore finds it
+    assert ctx.index.get("a/x.jpg").remote_path == f"{ROOT}/b/x.jpg"
+    assert _on_drive(ctx.drive, f"{ROOT}/b/x.jpg")
+
+
+def test_push_skips_the_move_when_the_target_name_is_taken_on_drive(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    ctx = _pushed_tree(tmp_path, make_fake_drive, {"a/x.jpg": b"photo", "b/x.jpg": b"photo"})
+    # another host's copy holds b/x.jpg on Drive; this host forgets it locally
+    ctx.index.remove("b/x.jpg")
+    _move(tmp_path, "a/x.jpg", "c/x.jpg")
+    (tmp_path / "b" / "x.jpg").unlink()
+    (tmp_path / "c" / "x.jpg").rename(tmp_path / "b" / "x.jpg")
+
+    push(ctx, None, resolve=None, dry_run=False)
+
+    assert ctx.drive.move_calls == []
+    assert ctx.index.get("a/x.jpg") is not None  # untouched; the upload path adopts b/x.jpg
+
+
+def test_push_dry_run_counts_moves_and_changes_nothing(tmp_path: Path, make_fake_drive) -> None:
+    ctx = _pushed_tree(tmp_path, make_fake_drive, {"a/x.jpg": b"photo"})
+    _move(tmp_path, "a/x.jpg", "b/x.jpg")
+
+    result = push(ctx, None, resolve=None, dry_run=True)
+
+    assert result.moved_items == 1
+    assert result.transferred_items == 0
+    assert ctx.drive.move_calls == []
+    assert ctx.index.get("a/x.jpg") is not None
+
+
+def test_push_scoped_to_a_subpath_never_pairs_a_deletion_outside_it(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    ctx = _pushed_tree(tmp_path, make_fake_drive, {"a/x.jpg": b"photo"})
+    _move(tmp_path, "a/x.jpg", "b/x.jpg")
+
+    result = push(ctx, "b", resolve=None, dry_run=False)
+
+    assert ctx.drive.move_calls == []
+    assert result.transferred_items == 1
+    assert ctx.index.get("a/x.jpg") is not None
+
+
+def test_push_of_named_files_never_pairs_with_paths_it_did_not_scan(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    # with `only`, every other indexed file is unscanned, not deleted
+    ctx = _pushed_tree(tmp_path, make_fake_drive, {"a/x.jpg": b"photo"})
+    (tmp_path / "b").mkdir()
+    (tmp_path / "b" / "copy.jpg").write_bytes(b"photo")
+
+    push(ctx, None, resolve=None, dry_run=False, only={"b/copy.jpg"})
+
+    assert ctx.drive.move_calls == ctx.drive.rename_calls == []
+    assert ctx.index.get("a/x.jpg") is not None
+
+
+def test_push_updates_the_remote_manifest_for_a_move(tmp_path: Path, make_fake_drive) -> None:
+    from protonfs import manifest
+    from protonfs.manifest import Manifest
+
+    ctx = _pushed_tree(tmp_path, make_fake_drive, {"a/x.jpg": b"photo"})
+    ctx.config.defaults.manifest = True
+    ident = ctx.drive.remote_identities(f"{ROOT}/a")["x.jpg"]
+    listed = RemoteEntry(
+        "a/x.jpg", False, ident.claimed_size, claimed_size=ident.claimed_size,
+        sha1=ident.sha1, revision=ident.revision,
+    )
+    manifest.rebuild(ctx, {"a/x.jpg": listed}, None)
+    path = f"{ROOT}/.protonfs/manifest.json"
+    assert "a/x.jpg" in Manifest.from_bytes(ctx.drive._remote_content[path]).entries
+    _move(tmp_path, "a/x.jpg", "b/x.jpg")
+
+    push(ctx, None, resolve=None, dry_run=False)
+
+    written = Manifest.from_bytes(ctx.drive._remote_content[path])
+    assert "a/x.jpg" not in written.entries
+    entry = written.entries["b/x.jpg"]
+    assert entry.sha256 == ctx.index.get("b/x.jpg").sha256
+    assert entry.revision == ctx.drive.revision_uids[f"{ROOT}/b/x.jpg"]
+
+
+def test_cli_push_reports_moved_files(tmp_path: Path, monkeypatch, make_fake_drive) -> None:
+    from click.testing import CliRunner
+
+    from protonfs.cli import main
+
+    ctx = _pushed_tree(tmp_path, make_fake_drive, {"a/x.jpg": b"photo"})
+    ctx.index.save()
+    _move(tmp_path, "a/x.jpg", "b/x.jpg")
+    _inject_ctx(monkeypatch, ctx)
+
+    result = CliRunner().invoke(main, ["push"])
+
+    assert result.exit_code == 0, result.output
+    assert "moved=1" in result.output
+    assert "nothing to push" not in result.output
+
+
+# --- #197: the deletion policy (keep | trash) ---------------------------------------------
+
+
+def _photos(tmp_path: Path, make_fake_drive, count: int = 20, **fake_kwargs):
+    files = {f"photos/p{i:02d}.jpg": f"photo {i}".encode() for i in range(count)}
+    files["top.txt"] = b"root file"
+    return _pushed_tree(tmp_path, make_fake_drive, files, **fake_kwargs)
+
+
+def test_push_keeps_a_file_deleted_locally_by_default(tmp_path: Path, make_fake_drive) -> None:
+    ctx = _photos(tmp_path, make_fake_drive)
+    (tmp_path / "photos" / "p00.jpg").unlink()
+
+    result = push(ctx, None, resolve=None, dry_run=False)
+
+    assert ctx.drive.trashed == []
+    assert result.trashed_items == 0
+    assert ctx.index.get("photos/p00.jpg") is not None
+
+
+def test_push_with_deletions_trash_trashes_the_remote_copy_and_drops_the_entry(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    ctx = _photos(tmp_path, make_fake_drive)
+    (tmp_path / "photos" / "p00.jpg").unlink()
+
+    result = push(ctx, None, resolve=None, dry_run=False, deletions="trash")
+
+    assert ctx.drive.trashed == [f"{ROOT}/photos/p00.jpg"]
+    assert result.trashed_items == 1
+    assert result.trashed == ["photos/p00.jpg"]
+    assert result.failed_items == 0
+    assert ctx.index.get("photos/p00.jpg") is None
+    assert not _on_drive(ctx.drive, f"{ROOT}/photos/p00.jpg")
+
+
+def test_push_takes_the_deletion_policy_from_config(tmp_path: Path, make_fake_drive) -> None:
+    ctx = _photos(tmp_path, make_fake_drive)
+    ctx.config.defaults.deletions = "trash"
+    (tmp_path / "photos" / "p00.jpg").unlink()
+
+    push(ctx, None, resolve=None, dry_run=False)
+    assert ctx.drive.trashed == [f"{ROOT}/photos/p00.jpg"]
+
+    (tmp_path / "photos" / "p01.jpg").unlink()
+    push(ctx, None, resolve=None, dry_run=False, deletions="keep")  # the flag wins
+    assert ctx.index.get("photos/p01.jpg") is not None
+
+
+def test_push_dry_run_lists_what_would_be_trashed(tmp_path: Path, make_fake_drive) -> None:
+    ctx = _photos(tmp_path, make_fake_drive)
+    (tmp_path / "photos" / "p00.jpg").unlink()
+    (tmp_path / "photos" / "p01.jpg").unlink()
+
+    result = push(ctx, None, resolve=None, dry_run=True, deletions="trash")
+
+    assert result.trashed == ["photos/p00.jpg", "photos/p01.jpg"]
+    assert result.trashed_items == 2
+    assert ctx.drive.trashed == []
+    assert ctx.index.get("photos/p00.jpg") is not None
+
+
+def test_push_never_trashes_a_path_that_is_now_ignored(tmp_path: Path, make_fake_drive) -> None:
+    # ignoring a path stops syncing it; it must not delete Drive's copy
+    ctx = _photos(tmp_path, make_fake_drive)
+    (tmp_path / ".protonfs" / "ignore").write_text("photos/p00.jpg\n")
+    (tmp_path / "photos" / "p00.jpg").unlink()
+
+    result = push(ctx, None, resolve=None, dry_run=False, deletions="trash")
+
+    assert ctx.drive.trashed == []
+    assert result.trashed_items == 0
+
+
+def test_push_refuses_to_trash_a_vanished_top_level_directory_without_the_override(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    import shutil
+
+    ctx = _photos(tmp_path, make_fake_drive)
+    shutil.rmtree(tmp_path / "photos")
+
+    refused = push(ctx, None, resolve=None, dry_run=False, deletions="trash")
+
+    assert ctx.drive.trashed == []
+    assert refused.trashed_items == 0
+    assert refused.failed_items == 1
+    assert refused.failures[0]["kind"] == "deletion-refused"
+    assert "photos" in refused.failures[0]["error"]
+    assert ctx.index.get("photos/p00.jpg") is not None
+
+    allowed = push(
+        ctx, None, resolve=None, dry_run=False, deletions="trash", allow_mass_delete=True
+    )
+
+    assert allowed.trashed_items == 20
+    assert allowed.failed_items == 0
+
+
+def test_push_refuses_to_trash_everything_this_machine_held_even_with_the_override(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    # every held file gone at once looks like an unmounted disk or the wrong directory
+    ctx = _pushed_tree(tmp_path, make_fake_drive, {"a.txt": b"a", "b.txt": b"b"})
+    (tmp_path / "a.txt").unlink()
+    (tmp_path / "b.txt").unlink()
+
+    result = push(
+        ctx, None, resolve=None, dry_run=False, deletions="trash", allow_mass_delete=True
+    )
+
+    assert ctx.drive.trashed == []
+    assert result.failures[0]["kind"] == "deletion-refused"
+    assert "protonfs rm" in result.failures[0]["error"]
+
+
+def test_push_refuses_a_mass_deletion_over_the_per_run_cap(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    ctx = _photos(tmp_path, make_fake_drive)
+    for i in range(12):  # 12 of 21 tracked files
+        (tmp_path / "photos" / f"p{i:02d}.jpg").unlink()
+
+    refused = push(ctx, None, resolve=None, dry_run=True, deletions="trash")
+
+    assert refused.failures[0]["kind"] == "deletion-refused"
+    assert "--allow-mass-delete" in refused.failures[0]["error"]
+    assert "12" in refused.failures[0]["error"]
+
+    allowed = push(
+        ctx, None, resolve=None, dry_run=False, deletions="trash", allow_mass_delete=True
+    )
+    assert allowed.trashed_items == 12
+
+
+def test_push_caps_a_run_at_the_absolute_limit(
+    tmp_path: Path, make_fake_drive, monkeypatch
+) -> None:
+    monkeypatch.setattr("protonfs.commands.push.MASS_DELETE_LIMIT", 2)
+    monkeypatch.setattr("protonfs.commands.push.MASS_DELETE_FRACTION", 1.0)
+    ctx = _photos(tmp_path, make_fake_drive)
+    for i in range(3):
+        (tmp_path / "photos" / f"p{i:02d}.jpg").unlink()
+
+    result = push(ctx, None, resolve=None, dry_run=False, deletions="trash")
+
+    assert ctx.drive.trashed == []
+    assert result.failures[0]["kind"] == "deletion-refused"
+
+
+def test_push_reports_a_trash_that_failed_and_keeps_the_entry(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    ctx = _photos(tmp_path, make_fake_drive, fail_trash=True)
+    (tmp_path / "photos" / "p00.jpg").unlink()
+
+    result = push(ctx, None, resolve=None, dry_run=False, deletions="trash")
+
+    assert result.trashed_items == 0
+    assert result.failed_items == 1
+    assert result.failures[0]["kind"] == "trash"
+    assert ctx.index.get("photos/p00.jpg") is not None
+
+
+def test_push_trashes_the_old_path_of_a_move_it_had_to_upload_instead(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    ctx = _photos(tmp_path, make_fake_drive, fail_moves=True)
+    _move(tmp_path, "photos/p00.jpg", "misc/p00.jpg")
+
+    result = push(ctx, None, resolve=None, dry_run=False, deletions="trash")
+
+    assert result.moved_items == 0
+    assert result.transferred_items == 1
+    assert result.trashed == ["photos/p00.jpg"]
+    assert ctx.index.get("photos/p00.jpg") is None
+    assert ctx.index.get("misc/p00.jpg") is not None
+
+
+def test_push_never_trashes_the_old_path_of_a_move_it_applied(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    ctx = _photos(tmp_path, make_fake_drive)
+    _move(tmp_path, "photos/p00.jpg", "misc/p00.jpg")
+
+    result = push(ctx, None, resolve=None, dry_run=False, deletions="trash")
+
+    assert result.moved_items == 1
+    assert ctx.drive.trashed == []
+    assert _on_drive(ctx.drive, f"{ROOT}/misc/p00.jpg")
+
+
+def test_push_with_a_subpath_or_named_files_trashes_nothing_outside_them(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    ctx = _pushed_tree(
+        tmp_path, make_fake_drive,
+        {"a/x": b"x", "a/keep": b"k", "b/y": b"y", "b/keep": b"k2"},
+    )
+    (tmp_path / "a" / "x").unlink()
+    (tmp_path / "b" / "y").unlink()
+
+    push(ctx, "b", resolve=None, dry_run=False, deletions="trash")
+    push(ctx, None, resolve=None, dry_run=False, deletions="trash", only={"b/keep"})
+
+    assert ctx.drive.trashed == [f"{ROOT}/b/y"]
+    assert ctx.index.get("a/x") is not None
+
+
+def test_push_drops_a_trashed_file_from_the_remote_manifest(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    from protonfs import manifest
+    from protonfs.manifest import Manifest
+
+    ctx = _photos(tmp_path, make_fake_drive)
+    ctx.config.defaults.manifest = True
+    ident = ctx.drive.remote_identities(f"{ROOT}/photos")["p00.jpg"]
+    listed = RemoteEntry(
+        "photos/p00.jpg", False, ident.claimed_size, claimed_size=ident.claimed_size,
+        sha1=ident.sha1, revision=ident.revision,
+    )
+    manifest.rebuild(ctx, {"photos/p00.jpg": listed}, None)
+    (tmp_path / "photos" / "p00.jpg").unlink()
+
+    push(ctx, None, resolve=None, dry_run=False, deletions="trash")
+
+    path = f"{ROOT}/.protonfs/manifest.json"
+    assert "photos/p00.jpg" not in Manifest.from_bytes(ctx.drive._remote_content[path]).entries
+
+
+def test_cli_push_deletions_trash_reports_and_lists_on_a_dry_run(
+    tmp_path: Path, monkeypatch, make_fake_drive
+) -> None:
+    from click.testing import CliRunner
+
+    from protonfs.cli import main
+
+    ctx = _photos(tmp_path, make_fake_drive)
+    ctx.index.save()
+    (tmp_path / "photos" / "p00.jpg").unlink()
+    _inject_ctx(monkeypatch, ctx)
+
+    preview = CliRunner().invoke(main, ["push", "--dry-run", "--deletions", "trash"])
+
+    assert preview.exit_code == 0, preview.output
+    assert "trashed=1" in preview.output
+    assert "trash photos/p00.jpg" in preview.output
+    assert ctx.drive.trashed == []
+
+    done = CliRunner().invoke(main, ["push", "--deletions", "trash"])
+
+    assert done.exit_code == 0, done.output
+    assert "trashed=1" in done.output
+    assert ctx.drive.trashed == [f"{ROOT}/photos/p00.jpg"]
+
+
+def test_cli_push_refused_deletion_exits_1_and_names_the_override(
+    tmp_path: Path, monkeypatch, make_fake_drive
+) -> None:
+    import shutil
+
+    from click.testing import CliRunner
+
+    from protonfs.cli import main
+
+    ctx = _photos(tmp_path, make_fake_drive)
+    ctx.index.save()
+    shutil.rmtree(tmp_path / "photos")
+    _inject_ctx(monkeypatch, ctx)
+
+    result = CliRunner().invoke(main, ["push", "--deletions", "trash"])
+
+    assert result.exit_code == 1, result.output
+    assert "--allow-mass-delete" in result.output
+    assert "--resolve" not in result.output  # not a remote conflict
+
+
+def test_push_never_trashes_the_old_path_of_a_move_held_by_the_settle_window(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    # a copy-then-delete move gives the new file a fresh mtime, so --min-age holds it
+    # back; until it is pushed, Drive's copy at the old path is the only one
+    ctx = _photos(tmp_path, make_fake_drive)
+    data = (tmp_path / "photos" / "p00.jpg").read_bytes()
+    (tmp_path / "photos" / "p00.jpg").unlink()
+    (tmp_path / "misc").mkdir()
+    (tmp_path / "misc" / "p00.jpg").write_bytes(data)
+
+    result = push(ctx, None, resolve=None, dry_run=False, deletions="trash", min_age=3600)
+
+    assert result.unsettled_items == 1
+    assert ctx.drive.trashed == []
+    assert ctx.index.get("photos/p00.jpg") is not None
+
+
+# --- #197: push reports the local deletions it left on Drive ------------------------------
+
+
+def test_push_counts_the_local_deletions_it_kept(tmp_path: Path, make_fake_drive) -> None:
+    ctx = _photos(tmp_path, make_fake_drive)
+    (tmp_path / "photos" / "p00.jpg").unlink()
+    (tmp_path / "photos" / "p01.jpg").unlink()
+    _move(tmp_path, "photos/p02.jpg", "misc/p02.jpg")
+
+    preview = push(ctx, None, resolve=None, dry_run=True)
+    result = push(ctx, None, resolve=None, dry_run=False)
+
+    assert preview.local_deleted_items == 2
+    assert result.local_deleted_items == 2  # the move is not a deletion
+    assert result.moved_items == 1
+
+    trashed = push(ctx, None, resolve=None, dry_run=False, deletions="trash")
+    assert trashed.local_deleted_items == 0
+    assert trashed.trashed_items == 2
+
+
+def test_cli_push_prints_every_per_run_total_on_its_summary_line(
+    tmp_path: Path, monkeypatch, make_fake_drive
+) -> None:
+    from click.testing import CliRunner
+
+    from protonfs.cli import main
+
+    ctx = _photos(tmp_path, make_fake_drive)
+    ctx.index.save()
+    (tmp_path / "photos" / "p00.jpg").unlink()
+    _move(tmp_path, "photos/p01.jpg", "misc/p01.jpg")
+    _inject_ctx(monkeypatch, ctx)
+
+    result = CliRunner().invoke(main, ["push"])
+
+    assert result.exit_code == 0, result.output
+    summary = next(line for line in result.output.splitlines() if "transferred=" in line)
+    assert "moved=1" in summary and "local-deleted=1" in summary
+
+
+# --- #197 review fixes ---------------------------------------------------------------------
+
+
+def test_push_uploads_a_regenerated_identical_file_instead_of_moving_the_old_one(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    # git-LFS use: run1/cal.dat removed to free disk, an identical run2/cal.dat written
+    # later. mv keeps the mtime; regenerating does not, so this is not a move and run1's
+    # Drive copy must stay where it is.
+    import os
+
+    ctx = _pushed_tree(tmp_path, make_fake_drive, {"run1/cal.dat": b"calibration"})
+    (tmp_path / "run1" / "cal.dat").unlink()
+    (tmp_path / "run2").mkdir()
+    (tmp_path / "run2" / "cal.dat").write_bytes(b"calibration")
+    old = ctx.index.get("run1/cal.dat").mtime
+    os.utime(tmp_path / "run2" / "cal.dat", (old + 3600, old + 3600))
+
+    result = push(ctx, None, resolve=None, dry_run=False)
+
+    assert ctx.drive.move_calls == [] and ctx.drive.rename_calls == []
+    assert result.moved_items == 0 and result.transferred_items == 1
+    assert _on_drive(ctx.drive, f"{ROOT}/run1/cal.dat")
+    assert ctx.index.get("run1/cal.dat") is not None
+
+
+def test_push_never_pairs_empty_files_as_moves(tmp_path: Path, make_fake_drive) -> None:
+    # every empty file has the same content, so content says nothing about which moved
+    ctx = _pushed_tree(tmp_path, make_fake_drive, {"a/.keep": b"", "a/x.jpg": b"photo"})
+    _move(tmp_path, "a/.keep", "b/.keep")
+
+    result = push(ctx, None, resolve=None, dry_run=False)
+
+    assert ctx.drive.move_calls == []
+    assert result.moved_items == 0
+
+
+def test_push_finishes_a_move_whose_index_save_was_interrupted(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    # the Drive move landed, then the process died before the index was saved: the next
+    # push must recognise the node at the new path, not upload a second copy beside it
+    ctx = _pushed_tree(tmp_path, make_fake_drive, {"a/x.jpg": b"photo"})
+    _move(tmp_path, "a/x.jpg", "b/x.jpg")
+    ctx.drive.move([f"{ROOT}/a/x.jpg"], f"{ROOT}/b")
+    ctx.drive.move_calls.clear()
+
+    result = push(ctx, None, resolve=None, dry_run=False)
+
+    assert _uploaded(ctx.drive) == []
+    assert ctx.drive.move_calls == []
+    assert result.moved_items == 1
+    assert ctx.index.get("a/x.jpg") is None
+    assert ctx.index.get("b/x.jpg").remote_path == f"{ROOT}/b/x.jpg"
+
+
+def test_push_moves_the_node_back_when_the_rename_after_its_move_fails(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    # otherwise a stray b/x.jpg is left on Drive that no host ever had
+    ctx = _pushed_tree(tmp_path, make_fake_drive, {"a/x.jpg": b"photo"}, fail_renames=True)
+    _move(tmp_path, "a/x.jpg", "b/y.jpg")
+
+    result = push(ctx, None, resolve=None, dry_run=False)
+
+    assert result.moved_items == 0
+    assert _uploaded(ctx.drive) == [str(tmp_path / "b" / "y.jpg")]
+    assert ctx.drive.move_calls[-1] == ((f"{ROOT}/b/x.jpg",), f"{ROOT}/a")
+    assert not _on_drive(ctx.drive, f"{ROOT}/b/x.jpg")
+    assert _on_drive(ctx.drive, f"{ROOT}/a/x.jpg")
+    assert ctx.index.get("a/x.jpg").remote_path == f"{ROOT}/a/x.jpg"
+
+
+def test_push_mass_delete_cap_counts_only_files_held_here(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    # offloaded entries are not on this machine, so they cannot dilute the fraction: 12
+    # of 21 held files gone is a mass deletion however many offloaded entries exist
+    ctx = _photos(tmp_path, make_fake_drive)
+    for i in range(500):
+        ctx.index.set(f"cold/c{i:03d}", dataclasses.replace(
+            ctx.index.get("top.txt"), remote_path=f"{ROOT}/cold/c{i:03d}",
+            local_state="metadata-only",
+        ))
+    for i in range(12):
+        (tmp_path / "photos" / f"p{i:02d}.jpg").unlink()
+
+    refused = push(ctx, None, resolve=None, dry_run=True, deletions="trash")
+
+    assert refused.failures and refused.failures[0]["kind"] == "deletion-refused"

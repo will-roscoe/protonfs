@@ -21,6 +21,7 @@ from pathlib import Path
 import click
 
 from protonfs.config import (
+    DELETION_POLICIES,
     Config,
     MissingDeviceIdError,
     config_path,
@@ -47,11 +48,15 @@ KNOWN_KEYS = (
     "defaults.progress_style",
     "defaults.manifest",
     "defaults.skip_thumbnails",
+    "defaults.deletions",
 )
 _BOOL_KEYS = {
     "defaults.low_io", "defaults.event_log", "defaults.manifest", "defaults.skip_thumbnails"
 }
-_CHOICE_KEYS = {"defaults.progress_style": ("inline", "lines")}
+_CHOICE_KEYS = {
+    "defaults.progress_style": ("inline", "lines"),
+    "defaults.deletions": DELETION_POLICIES,
+}
 
 
 def _get_nested(data: dict, dotted_key: str):

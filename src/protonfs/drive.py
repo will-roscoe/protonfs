@@ -22,7 +22,7 @@ import subprocess
 import time
 from collections import deque
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from protonfs.logs import backend_passthrough_enabled
@@ -148,12 +148,26 @@ class TransferResult:
 
     :ivar unsettled_items: files push held back because they were modified within its
         settle window (``min_age``); not part of the CLI's JSON; populated by push.
+    :ivar local_deleted_items: files this machine held that are gone locally (deleted, or
+        moved away) and were left alone: by pull with ``no_restore``, or by push when it
+        neither moved nor trashed them; not part of the CLI's JSON.
+    :ivar moved_items: files push moved or renamed on Drive to follow a local move,
+        instead of uploading them again; not part of the CLI's JSON; populated by push.
+    :ivar trashed_items: files push moved to the Drive trash because they were deleted
+        locally (``deletions="trash"``); with a dry run, the ones it would. Populated by
+        push.
+    :ivar trashed: the repo-relative paths counted in ``trashed_items``.
 
     .. versionchanged:: 1.7.0
        Added ``adopted_items`` for the push self-heal-adopt path.
 
     .. versionchanged:: 2.4.0
        Added ``unsettled_items`` for push's settle window (#168).
+
+    .. versionchanged:: 2.7.0
+       Added ``local_deleted_items`` for the local deletions pull and push left alone,
+       ``moved_items`` for the local moves push applies on Drive, and ``trashed_items``
+       and ``trashed`` for the local deletions it sends to the Drive trash (#197).
     """
 
     transferred_items: int
@@ -162,6 +176,10 @@ class TransferResult:
     failures: list[dict]
     adopted_items: int = 0
     unsettled_items: int = 0
+    local_deleted_items: int = 0
+    moved_items: int = 0
+    trashed_items: int = 0
+    trashed: list[str] = field(default_factory=list)
 
     @classmethod
     def from_json(cls, data: dict) -> TransferResult:
@@ -1151,6 +1169,47 @@ class DriveClient:
         """
         result = self._run_json(["filesystem", "trash", *remote_paths])
         return result if isinstance(result, list) else []
+
+    # Like trash and create-folder, move and rename run without a timeout: killing one
+    # part-way would leave it unknown which nodes moved. Callers check the listing after.
+
+    def move(self, remote_paths: list[str], target_parent: str) -> list[dict]:
+        """Move remote nodes into the folder ``target_parent``, keeping their names.
+
+        The node itself moves, so its revision history and share links go with it.
+
+        :param remote_paths: absolute Drive paths of the nodes to move.
+        :param target_parent: absolute Drive path of the folder to move them into; it
+            must exist.
+        :returns: the raw per-node CLI results. A node that could not be moved (its name
+            is taken in the target, or it is gone) may be reported here with ``ok`` false
+            rather than raised, so check a listing to learn what moved.
+        :raises DriveError: when the command itself fails.
+
+        .. versionadded:: 2.7.0
+
+        .. seealso:: :meth:`rename` to change a node's name in place.
+        """
+        result = self._run_json(["filesystem", "move", *remote_paths, target_parent])
+        return result if isinstance(result, list) else []
+
+    def rename(self, remote_path: str, new_name: str) -> dict:
+        """Rename a remote node in place (it stays in the same folder).
+
+        :param remote_path: absolute Drive path of the node.
+        :param new_name: its new name (a name, not a path).
+        :returns: the raw CLI result.
+        :raises DriveError: when the command fails or reports the node as not renamed
+            (e.g. the name is taken).
+
+        .. versionadded:: 2.7.0
+        """
+        result = self._run_json(["filesystem", "rename", remote_path, new_name])
+        items = result if isinstance(result, list) else [result]
+        for item in items:
+            if isinstance(item, dict) and item.get("ok") is False:
+                raise DriveError(f"rename of {remote_path} failed: {json.dumps(item)}")
+        return items[0] if items and isinstance(items[0], dict) else {}
 
     def restore(self, remote_paths: list[str]) -> list[dict]:
         """Restore trashed nodes given their ORIGINAL remote paths.

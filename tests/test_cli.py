@@ -726,7 +726,7 @@ def test_pull_interrupt_exits_130(tmp_path, monkeypatch, make_fake_drive):
     )
     monkeypatch.setattr("protonfs.context.load_context", lambda *a, **k: ctx)
 
-    def fake_pull_files(ctx, subpath, resolve, dry_run, refresh=False, reporter=None):
+    def fake_pull_files(ctx, subpath, resolve, dry_run, refresh=False, reporter=None, **_kw):
         raise KeyboardInterrupt
 
     monkeypatch.setattr("protonfs.commands.pull.pull", fake_pull_files)

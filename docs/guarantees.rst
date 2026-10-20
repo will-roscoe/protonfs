@@ -155,6 +155,13 @@ aggregate count with no per-file attribution, so each file in that batch must
 match the remote strictly (size, and sha1 where both sides have one) before it
 is indexed.
 
+A local move that push applies on Drive (``filesystem move``/``rename``, see
+:ref:`push <push-moves>`) is held to the same rule. It counts as moved only when a listing
+of the target folder taken afterwards shows a node at the new name, absent before,
+with the indexed size (and sha1 where both sides have one). Otherwise the file is
+uploaded as a new file, and the old path's index entry is left alone, or pointed at
+the node's actual location when a move landed and the rename after it did not.
+
 Stricter checks reach entries already recorded
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 Each index entry was judged by the checks of the protonfs that wrote it, and later
@@ -312,8 +319,10 @@ and the full table in :doc:`stability`.
 ``pull --resolve``: never silently overwrite a local edit
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 A bare ``pull`` (no ``--resolve``) only ever brings down files that are absent
-locally (``metadata-only`` and ``remote-only``) — it
-cannot overwrite a local file
+locally (``metadata-only`` and ``remote-only``; with ``--no-restore``, not the
+``remote-only`` files this machine held and has since deleted or moved) — it
+cannot overwrite a local file, and a path the scan skipped that still exists on disk
+is never downloaded over
 because it never considers a locally-present file as a pull candidate without a
 remote view. A file that changed on **both** sides since the last sync
 (``both-modified``) or that locally diverged with no provable remote view

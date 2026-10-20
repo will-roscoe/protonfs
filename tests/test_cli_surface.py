@@ -60,8 +60,12 @@ EXPECTED_OPTIONS: dict[str, frozenset[str]] = {
     "deinit": frozenset({"--dry-run", "--yes"}),
     "status": frozenset({"--format", "--remote"}),
     "ls": frozenset({"--remote", "--trash", "--dirs", "--state", "--format", "--visual"}),
-    "push": frozenset({"--resolve", "--dry-run", "--strict", "--min-age"}),
-    "pull": frozenset({"--resolve", "--dry-run", "--refresh", "--strict"}),
+    "push": frozenset(
+        {"--resolve", "--dry-run", "--strict", "--min-age", "--deletions", "--allow-mass-delete"}
+    ),
+    "pull": frozenset(
+        {"--resolve", "--dry-run", "--refresh", "--strict", "--no-restore"}
+    ),
     "offload": frozenset({"--no-verify", "--min-age", "--dry-run", "--yes"}),
     "prune": frozenset({"--keep", "--min-age", "--no-push", "--dry-run", "--yes"}),
     "rm": frozenset({"-r", "--recursive", "-f", "--force", "--yes"}),
@@ -76,7 +80,7 @@ EXPECTED_OPTIONS: dict[str, frozenset[str]] = {
         {
             "--list", "--add", "--uninstall", "-U", "--all", "--every", "--cron",
             "--at", "--command", "--path", "--resolve", "--strict", "--min-age", "--keep",
-            "--label", "--json",
+            "--deletions", "--no-restore", "--label", "--json",
         }
     ),
     "auth": frozenset(),

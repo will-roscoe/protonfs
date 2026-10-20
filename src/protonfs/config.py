@@ -63,7 +63,14 @@ _ENV_DEFAULTS_OVERRIDES = {
     "batch_size": "PROTONFS_BATCH_SIZE",
     "manifest": "PROTONFS_MANIFEST",
     "skip_thumbnails": "PROTONFS_SKIP_THUMBNAILS",
+    # deletions has no environment override on purpose: trashing is destructive, and one
+    # exported variable would switch it on for every repo on the machine (#197).
 }
+
+#: Values of ``defaults.deletions``: what ``push`` does on Drive with a file this device
+#: held that is gone locally. ``keep`` leaves Drive's copy alone; ``trash`` moves it to the
+#: Drive trash and drops it from the index (#197).
+DELETION_POLICIES = ("keep", "trash")
 
 
 @dataclass
@@ -89,6 +96,10 @@ class Defaults:
     :ivar skip_thumbnails: Upload every file without a thumbnail (proton-drive's ``-t``);
         overridable per-repo or via ``$PROTONFS_SKIP_THUMBNAILS``. Off by default: a file
         whose thumbnail this host cannot build is retried without one either way (#183).
+    :ivar deletions: What ``push`` does with a file this device held that is gone locally:
+        ``"keep"`` (the default) leaves Drive's copy, ``"trash"`` moves it to the Drive
+        trash (see :data:`DELETION_POLICIES`); overridable per-repo or per push
+        (``--deletions``), with no environment override.
 
     .. versionchanged:: 1.3.0
        Added the ``event_log`` and ``progress_style`` defaults.
@@ -101,6 +112,9 @@ class Defaults:
 
     .. versionchanged:: 2.5.0
        Added the ``skip_thumbnails`` default.
+
+    .. versionchanged:: 2.7.0
+       Added the ``deletions`` default (#197).
     """
 
     on_conflict: str = "skip"
@@ -110,6 +124,7 @@ class Defaults:
     batch_size: int = DEFAULT_BATCH_SIZE
     manifest: bool = True
     skip_thumbnails: bool = False
+    deletions: str = "keep"
 
 
 @dataclass
@@ -178,6 +193,7 @@ class Config:
                 batch_size=defaults_data.get("batch_size", DEFAULT_BATCH_SIZE),
                 manifest=defaults_data.get("manifest", True),
                 skip_thumbnails=defaults_data.get("skip_thumbnails", False),
+                deletions=defaults_data.get("deletions", "keep"),
             ),
         )
 
