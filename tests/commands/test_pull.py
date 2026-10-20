@@ -77,32 +77,117 @@ def test_pull_downloads_metadata_only_files_and_updates_index(
     assert updated.origin_device == "other-device"  # origin is preserved, not overwritten
 
 
-def test_pull_restores_a_file_deleted_locally(tmp_path: Path, make_fake_drive) -> None:
-    # The index says the file is present (local_state != metadata-only) but it is absent
-    # on disk. With no remote view that classifies LOCAL_DELETED (#150; it was called
-    # REMOTE_ONLY before 2.0) and a bare pull re-downloads it, as it always did.
+def _held_entry(rel: str) -> IndexEntry:
+    """An entry this machine materialised (``present``), as push or pull records it."""
+    return IndexEntry(
+        size=1,
+        mtime=1.0,
+        sha256="h",
+        sha1="",
+        remote_path=f"/my-files/test/{rel}",
+        origin_device="d1",
+        local_state="present",
+        last_synced="2026-07-08T00:00:00+00:00",
+    )
+
+
+def test_pull_skips_a_file_deleted_locally_and_counts_it(tmp_path: Path, make_fake_drive) -> None:
+    # #197: the index says the file is present but it is gone on disk. That is a local
+    # deletion (or the old half of a move), so a bare pull leaves it gone and reports it.
     init_config(tmp_path, "/my-files/test")
     ctx = load_context(tmp_path)
-    ctx.index.set(
-        "gone/dump_0001",
-        IndexEntry(
-            size=1,
-            mtime=1.0,
-            sha256="h",
-            sha1="",
-            remote_path="/my-files/test/gone/dump_0001",
-            origin_device="d1",
-            local_state="present",
-            last_synced="2026-07-08T00:00:00+00:00",
-        ),
-    )
+    ctx.index.set("gone/dump_0001", _held_entry("gone/dump_0001"))
     ctx.drive = make_fake_drive()
 
     result = pull(ctx, None, resolve=None, dry_run=False)
 
+    assert result.transferred_items == 0
+    assert result.local_deleted_items == 1
+    assert ctx.drive.download_calls == []
+    assert not (tmp_path / "gone" / "dump_0001").exists()
+    assert ctx.index.get("gone/dump_0001").local_state == "present"
+
+
+def test_pull_dry_run_counts_files_deleted_locally(tmp_path: Path, make_fake_drive) -> None:
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.index.set("gone/dump_0001", _held_entry("gone/dump_0001"))
+    ctx.drive = make_fake_drive()
+
+    result = pull(ctx, None, resolve=None, dry_run=True)
+
+    assert result.transferred_items == 0
+    assert result.local_deleted_items == 1
+
+
+def test_pull_restore_deleted_brings_a_file_deleted_locally_back(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.index.set("gone/dump_0001", _held_entry("gone/dump_0001"))
+    ctx.drive = make_fake_drive()
+
+    result = pull(ctx, None, resolve=None, dry_run=False, restore_deleted=True)
+
     assert result.transferred_items == 1
+    assert result.local_deleted_items == 0
     assert (tmp_path / "gone" / "dump_0001").exists()
     assert ctx.index.get("gone/dump_0001").local_state == "present"
+
+
+def test_pull_restore_deleted_with_a_remote_view_restores_what_drive_still_lists(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    # With --resolve the walk tells local-deleted (Drive still lists it) from
+    # remote-deleted (it is gone from Drive too): only the first can be restored.
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.index.set("kept_remotely", _held_entry("kept_remotely"))
+    ctx.index.set("gone_remotely", _held_entry("gone_remotely"))
+    ctx.drive = make_fake_drive(
+        walk_entries=[RemoteEntry(rel_path="kept_remotely", is_dir=False, size=1)]
+    )
+
+    skipped = pull(ctx, None, resolve="remote", dry_run=True)
+    assert skipped.local_deleted_items == 1
+    assert skipped.transferred_items == 0
+
+    result = pull(ctx, None, resolve="remote", dry_run=False, restore_deleted=True)
+
+    downloaded = [p for call in ctx.drive.download_calls for p in call[0]]
+    assert downloaded == ["/my-files/test/kept_remotely"]
+    assert result.transferred_items == 1
+
+
+def test_cli_pull_reports_files_deleted_locally_and_how_to_restore_them(
+    tmp_path: Path, monkeypatch, make_fake_drive
+) -> None:
+    from click.testing import CliRunner
+
+    from protonfs.cli import main
+
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.index.set("gone/dump_0001", _held_entry("gone/dump_0001"))
+    ctx.index.save()
+    ctx.drive = make_fake_drive()
+    monkeypatch.setattr("protonfs.context.load_context", lambda *a, **k: ctx)
+
+    result = CliRunner().invoke(main, ["pull"])
+
+    assert result.exit_code == 0, result.output
+    assert "transferred=0" in result.output
+    assert "local-deleted=1" in result.output
+    assert "--restore-deleted" in result.output
+    assert ctx.drive.download_calls == []
+
+    restored = CliRunner().invoke(main, ["pull", "--restore-deleted"])
+
+    assert restored.exit_code == 0, restored.output
+    assert "transferred=1" in restored.output
+    assert "local-deleted=" not in restored.output
+    assert (tmp_path / "gone" / "dump_0001").exists()
 
 
 def test_pull_multiple_parent_groups_downloads_all(tmp_path: Path, make_fake_drive) -> None:
@@ -376,9 +461,10 @@ def test_pull_subpath_scopes_true_remote_only_entries_too(
     ctx.index.set("elsewhere/dump_0003", gone)
     ctx.drive = make_fake_drive()
 
-    result = pull(ctx, "wanted", resolve=None, dry_run=False)
+    result = pull(ctx, "wanted", resolve=None, dry_run=False, restore_deleted=True)
 
     assert result.transferred_items == 1
+    assert result.local_deleted_items == 0  # out of scope: neither restored nor counted
     assert not (tmp_path / "elsewhere" / "dump_0003").exists()
 
 
@@ -581,3 +667,53 @@ def test_interrupted_download_leaves_no_partial_file_in_the_tree(
     assert not (tmp_path / "run1" / "dump_0001").exists()  # no truncated file in the tree
     staging = tmp_path / ".protonfs" / "download"
     assert not staging.exists() or list(staging.iterdir()) == []  # and none left staged
+
+
+def test_sync_after_a_local_move_restores_nothing_at_the_old_path(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    # #197: a scheduled `sync` is pull then push. A file moved locally between runs
+    # used to come back at its old path on the pull, every night.
+    from protonfs.commands.push import push
+
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.drive = make_fake_drive()
+    (tmp_path / "a").mkdir()
+    (tmp_path / "a" / "x.jpg").write_bytes(b"photo")
+    (tmp_path / "a" / "y.jpg").write_bytes(b"other")
+    push(ctx, None, resolve=None, dry_run=False)
+    assert ctx.index.get("a/x.jpg").local_state == "present"
+
+    (tmp_path / "b").mkdir()
+    (tmp_path / "a" / "x.jpg").rename(tmp_path / "b" / "x.jpg")  # moved
+    (tmp_path / "a" / "y.jpg").unlink()  # deleted
+
+    pulled = pull(ctx, None, resolve=None, dry_run=False)
+    push(ctx, None, resolve=None, dry_run=False)
+
+    assert pulled.transferred_items == 0
+    assert pulled.local_deleted_items == 2
+    assert not (tmp_path / "a" / "x.jpg").exists()
+    assert not (tmp_path / "a" / "y.jpg").exists()
+    assert (tmp_path / "b" / "x.jpg").read_bytes() == b"photo"
+
+
+def test_pull_restore_deleted_never_overwrites_a_held_file_that_is_now_ignored(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    # An ignored file is invisible to the scan, so it classifies like a deletion. It is
+    # still on disk, though: restoring would overwrite it with Drive's copy.
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    (tmp_path / ".protonfs" / "ignore").write_text("*.log\n")
+    (tmp_path / "run.log").write_bytes(b"local edits")
+    ctx.index.set("run.log", _held_entry("run.log"))
+    ctx.drive = make_fake_drive()
+
+    result = pull(ctx, None, resolve=None, dry_run=False, restore_deleted=True)
+
+    assert result.transferred_items == 0
+    assert result.local_deleted_items == 0
+    assert ctx.drive.download_calls == []
+    assert (tmp_path / "run.log").read_bytes() == b"local edits"

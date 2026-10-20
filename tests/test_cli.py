@@ -290,12 +290,13 @@ def test_cli_pull_accepts_multiple_paths_from_a_glob(
     ctx = load_context(tmp_path)
     for rel in ("03pol021/dump", "03pol022/dump", "elsewhere/dump"):
         ctx.index.set(rel, _tracked_entry(f"/my-files/test/{rel}"))
-    # entries are `present` in the index but absent on disk -> classify REMOTE_ONLY
+    # entries are `present` in the index but absent on disk -> classify LOCAL_DELETED,
+    # which only --restore-deleted brings back (#197)
     ctx.index.save()
     ctx.drive = make_fake_drive()
     monkeypatch.setattr("protonfs.context.load_context", lambda *a, **k: ctx)
 
-    result = CliRunner().invoke(main, ["pull", "03pol021", "03pol022"])
+    result = CliRunner().invoke(main, ["pull", "--restore-deleted", "03pol021", "03pol022"])
 
     assert result.exit_code == 0, result.output
     assert "transferred=2" in result.output
@@ -366,9 +367,9 @@ def test_cli_pull_expands_index_pattern_including_offloaded_file(
     disk (offloaded) -- a filesystem-only glob would miss exactly this case."""
     init_config(tmp_path, "/my-files/test")
     ctx = load_context(tmp_path)
-    ctx.index.set(
-        "mload003_calib_1m/output.ev", _tracked_entry("/my-files/test/mload003_calib_1m/output.ev")
-    )
+    offloaded = _tracked_entry("/my-files/test/mload003_calib_1m/output.ev")
+    offloaded.local_state = "metadata-only"  # what offload records
+    ctx.index.set("mload003_calib_1m/output.ev", offloaded)
     ctx.index.save()
     ctx.drive = make_fake_drive()
     monkeypatch.setattr("protonfs.context.load_context", lambda *a, **k: ctx)
@@ -726,7 +727,7 @@ def test_pull_interrupt_exits_130(tmp_path, monkeypatch, make_fake_drive):
     )
     monkeypatch.setattr("protonfs.context.load_context", lambda *a, **k: ctx)
 
-    def fake_pull_files(ctx, subpath, resolve, dry_run, refresh=False, reporter=None):
+    def fake_pull_files(ctx, subpath, resolve, dry_run, refresh=False, reporter=None, **_kw):
         raise KeyboardInterrupt
 
     monkeypatch.setattr("protonfs.commands.pull.pull", fake_pull_files)

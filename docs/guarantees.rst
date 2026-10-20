@@ -271,15 +271,17 @@ walk Drive first.
 - ``metadata-only`` — an index entry this device deliberately never materialized
   (e.g. after ``refresh`` or ``offload``); with a remote view, the remote still
   matches it.
-- ``local-deleted`` *(remote view)* — a file this device held is gone locally,
-  and the remote still lists it.
+- ``local-deleted`` — a file this device held is gone locally: deleted, or the old
+  path of a move (and, with a remote view, the remote still lists it). A bare
+  ``pull`` leaves it gone; ``pull --restore-deleted`` brings it back. Before 3.0,
+  without a remote view this was reported ``remote-only`` and every ``pull``
+  restored it, which undid each local deletion and move.
 - ``conflict`` — local diverged from the index and there is no remote view to
   attribute a direction to. ``push`` sends it as a new revision when the remote
   still holds the indexed copy and reports a real conflict otherwise; ``status
   --remote`` says which before anything is sent.
-- ``remote-only`` — absent locally, with the copy on Drive: listed on Drive and
-  absent from the index (remote view), or held by this device and now gone
-  locally, as the index records (no remote view).
+- ``remote-only`` *(remote view)* — listed on Drive and absent both locally and
+  from the index.
 - ``local-modified`` *(remote view)* — local content diverged from the index; the
   remote has not.
 - ``remote-modified`` *(remote view)* — the remote diverged from the index; local
@@ -312,8 +314,8 @@ and the full table in :doc:`stability`.
 ``pull --resolve``: never silently overwrite a local edit
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 A bare ``pull`` (no ``--resolve``) only ever brings down files that are absent
-locally (``metadata-only`` and ``remote-only``) — it
-cannot overwrite a local file
+locally (``metadata-only`` and ``remote-only``, plus ``local-deleted`` with
+``--restore-deleted``) — it cannot overwrite a local file
 because it never considers a locally-present file as a pull candidate without a
 remote view. A file that changed on **both** sides since the last sync
 (``both-modified``) or that locally diverged with no provable remote view

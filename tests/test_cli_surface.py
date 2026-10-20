@@ -61,7 +61,9 @@ EXPECTED_OPTIONS: dict[str, frozenset[str]] = {
     "status": frozenset({"--format", "--remote"}),
     "ls": frozenset({"--remote", "--trash", "--dirs", "--state", "--format", "--visual"}),
     "push": frozenset({"--resolve", "--dry-run", "--strict", "--min-age"}),
-    "pull": frozenset({"--resolve", "--dry-run", "--refresh", "--strict"}),
+    "pull": frozenset(
+        {"--resolve", "--dry-run", "--refresh", "--strict", "--restore-deleted"}
+    ),
     "offload": frozenset({"--no-verify", "--min-age", "--dry-run", "--yes"}),
     "prune": frozenset({"--keep", "--min-age", "--no-push", "--dry-run", "--yes"}),
     "rm": frozenset({"-r", "--recursive", "-f", "--force", "--yes"}),

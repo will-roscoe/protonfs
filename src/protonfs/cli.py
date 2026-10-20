@@ -340,6 +340,7 @@ def _accumulate_transfer(total, part) -> None:
     total.failed_items += part.failed_items
     total.failures += part.failures
     total.unsettled_items += part.unsettled_items
+    total.local_deleted_items += part.local_deleted_items
 
 
 def _verify_index(repair: bool) -> None:
@@ -649,6 +650,16 @@ def ls(
         if trash:
             raise click.UsageError("--visual has nothing to chart for --trash.")
 
+    if "remote-only" in states and not remote and not trash:
+        # #197: a file deleted locally is local-deleted in every mode, so remote-only is
+        # only ever reported when Drive was actually listed.
+        click.echo(
+            "note: without --remote, remote-only matches nothing: a file deleted locally "
+            "is reported as local-deleted, and remote-only needs a Drive listing. Add "
+            "--remote, or filter on --state local-deleted.",
+            err=True,
+        )
+
     ctx = load_context()
     console = Console()
     subpaths = _normalize_paths(path)
@@ -864,9 +875,21 @@ def push(
     is_flag=True,
     help="Fail (exit 1) if a PATH pattern matches nothing, instead of skipping it.",
 )
+@click.option(
+    "--restore-deleted",
+    is_flag=True,
+    help="Also download files this machine held that are now gone locally (deleted, or "
+    "moved away), restoring them at their old paths. Without this they are left alone "
+    "and counted as local-deleted=.",
+)
 @_drive_error_boundary
 def pull(
-    path: tuple[str, ...], resolve: str | None, dry_run: bool, refresh: bool, strict: bool
+    path: tuple[str, ...],
+    resolve: str | None,
+    dry_run: bool,
+    refresh: bool,
+    strict: bool,
+    restore_deleted: bool,
 ) -> None:
     """Download remote-only/changed files from Drive (any number of PATHs).
 
@@ -882,6 +905,10 @@ def pull(
     Diverged files (edited locally AND changed on the remote since the last sync) are
     left untouched unless you pass --resolve; they are reported and pull exits non-zero.
 
+    A file this machine held that is now gone locally (deleted, or the old path of a
+    move) is left alone and counted as ``local-deleted=``; ``--restore-deleted`` brings
+    it back.
+
     .. versionchanged:: 1.11.0
        A quoted PATH glob pattern is now expanded by protonfs against the index, rather
        than depending on the shell to expand it first (#131) -- so a scheduled job can
@@ -891,6 +918,11 @@ def pull(
     .. versionchanged:: 2.1.0
        With an empty index, the index is seeded from the remote manifest when the root
        has one, instead of stopping with "run refresh first" (#146).
+
+    .. versionchanged:: 3.0.0
+       Files deleted or moved away locally are no longer restored: they are counted as
+       ``local-deleted=`` in the summary. Added ``--restore-deleted`` to restore them
+       (#197).
     """
     from protonfs import manifest
     from protonfs.commands.pull import pull as pull_files
@@ -927,12 +959,24 @@ def pull(
         for subpath in subpaths:
             _accumulate_transfer(
                 result,
-                pull_files(ctx, subpath, resolve, dry_run, refresh=refresh),
+                pull_files(
+                    ctx, subpath, resolve, dry_run, refresh=refresh,
+                    restore_deleted=restore_deleted,
+                ),
             )
+    local_deleted = (
+        f" local-deleted={result.local_deleted_items}" if result.local_deleted_items else ""
+    )
     click.echo(
         f"transferred={result.transferred_items} skipped={result.skipped_items} "
-        f"failed={result.failed_items}"
+        f"failed={result.failed_items}{local_deleted}"
     )
+    if result.local_deleted_items:
+        click.echo(
+            f"  -> {result.local_deleted_items} file(s) this machine held are gone locally "
+            "(deleted, or moved away) and were left alone. Run `protonfs pull "
+            "--restore-deleted [PATH]` to bring them back."
+        )
     for failure in result.failures:
         click.echo(f"  FAILED {failure['name']}: {failure['error']}")
     if result.failed_items:

@@ -668,6 +668,15 @@ never silently overwritten. Choose a side with ``--resolve``:
 - ``both`` — fetch the remote copy alongside the local one under a ``.remote``
   suffix (untracked) for a manual merge.
 
+A file this machine held that is now **gone locally** (``local-deleted``: you
+deleted it, or moved it elsewhere in the tree) is left alone. ``pull`` counts it as
+``local-deleted=N`` in its summary instead of downloading it back to its old path;
+``--restore-deleted`` restores it, for the "I deleted that by accident" case.
+
+.. versionchanged:: 3.0.0
+   A bare ``pull`` no longer restores files deleted or moved away locally; added
+   ``--restore-deleted``.
+
 ``--refresh`` seeds the index from a fresh remote listing before pulling (metadata
 only, no download) — useful on a machine whose index doesn't yet know everything
 already on Drive. Without an index yet, plain ``pull`` refuses to run and tells
