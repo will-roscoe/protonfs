@@ -17,7 +17,7 @@ from pathlib import Path, PurePosixPath
 from protonfs import manifest
 from protonfs.batching import batches, group_by_parent
 from protonfs.context import RepoContext
-from protonfs.diff import DiffEntry, SyncState, classify, pair_moves, within_subpath
+from protonfs.diff import DiffEntry, SyncState, classify, held_and_gone, pair_moves, within_subpath
 from protonfs.drive import DriveError, TransferResult, is_thumbnail_failure
 from protonfs.ignore import IgnoreMatcher
 from protonfs.index import IndexEntry
@@ -645,16 +645,9 @@ def push(
 def _still_deleted(
     ctx: RepoContext, diff_entries: list[DiffEntry], subpath: str | None
 ) -> set[str]:
-    """Paths inside ``subpath`` classified ``local-deleted`` that are still indexed and
-    still absent from disk: the local deletions this push has left on Drive."""
-    return {
-        e.rel_path
-        for e in diff_entries
-        if e.state == SyncState.LOCAL_DELETED
-        and within_subpath(e.rel_path, subpath)
-        and ctx.index.get(e.rel_path) is not None
-        and not (ctx.root / e.rel_path).exists()
-    }
+    """Paths inside ``subpath`` this machine held that are still indexed and still absent
+    from disk: the local deletions this push has left on Drive."""
+    return held_and_gone(diff_entries, ctx.index, ctx.root, subpath)
 
 
 def _trash_candidates(
@@ -667,24 +660,19 @@ def _trash_candidates(
 ) -> list[str]:
     """Files gone locally that ``deletions="trash"`` would trash, sorted.
 
-    Held files (``local-deleted``) inside ``subpath``, except the old paths of planned
-    moves, paths now ignored (ignoring stops syncing; it never deletes Drive's copy),
-    paths still on disk (hidden from the scan), and paths whose ``(sha256, size)`` is in
+    Files this machine held that are gone (:func:`~protonfs.diff.held_and_gone`) inside
+    ``subpath``, except the old paths of planned moves, paths now ignored (ignoring stops
+    syncing; it never deletes Drive's copy), and paths whose ``(sha256, size)`` is in
     ``unsettled``: a file the settle window held back that may be the same file moved,
     whose only Drive copy is still the old path.
     """
     candidates = []
-    for e in diff_entries:
-        if (
-            e.state == SyncState.LOCAL_DELETED
-            and within_subpath(e.rel_path, subpath)
-            and e.rel_path not in moving
-            and not ignore.matches(e.rel_path)
-            and not (ctx.root / e.rel_path).exists()
-        ):
-            entry = ctx.index.get(e.rel_path)
-            if (entry.sha256, entry.size) not in unsettled:
-                candidates.append(e.rel_path)
+    for rel in held_and_gone(diff_entries, ctx.index, ctx.root, subpath):
+        if rel in moving or ignore.matches(rel):
+            continue
+        entry = ctx.index.get(rel)
+        if (entry.sha256, entry.size) not in unsettled:
+            candidates.append(rel)
     return sorted(candidates)
 
 
@@ -811,14 +799,9 @@ def _plan_moves(
     if not added:
         return []
     deleted = {}
-    for rel, state in states.items():
-        if (
-            state == SyncState.LOCAL_DELETED
-            and within_subpath(rel, subpath)
-            and not (ctx.root / rel).exists()
-        ):
-            entry = ctx.index.get(rel)
-            deleted[rel] = (entry.sha256, entry.size)
+    for rel in held_and_gone(diff_entries, ctx.index, ctx.root, subpath):
+        entry = ctx.index.get(rel)
+        deleted[rel] = (entry.sha256, entry.size)
     return pair_moves(deleted, added) if deleted else []
 
 

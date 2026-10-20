@@ -1,9 +1,6 @@
 # src/protonfs/commands/pull.py
 """``protonfs pull``: download remote-only/changed files from Drive into the working tree.
 
-Files deleted or moved away locally (``local-deleted``) are left alone and counted;
-``restore_deleted`` brings them back.
-
 .. versionadded:: 1.0.0
 """
 from __future__ import annotations
@@ -16,7 +13,7 @@ from pathlib import Path, PurePosixPath
 from protonfs.batching import batches, group_by_parent
 from protonfs.config import CONFIG_DIR_NAME
 from protonfs.context import RepoContext
-from protonfs.diff import SyncState, classify, within_subpath
+from protonfs.diff import SyncState, classify, held_and_gone, within_subpath
 from protonfs.drive import RemoteEntry, TransferResult
 from protonfs.ignore import IgnoreMatcher
 from protonfs.index import IndexEntry
@@ -224,7 +221,7 @@ def pull(
     dry_run: bool,
     refresh: bool = False,
     reporter=None,
-    restore_deleted: bool = False,
+    no_restore: bool = False,
 ) -> TransferResult:
     """Download remote-only (and, with ``resolve``, diverged) files into the tree.
 
@@ -233,9 +230,9 @@ def pull(
     live remote walk (needed to attribute a direction to diverged files) is paid for
     only when a ``resolve`` policy is supplied.
 
-    A file this machine held that is now gone locally (``local-deleted``: deleted, or
-    the old path of a move) is not downloaded unless ``restore_deleted`` is set; it is
-    counted in ``local_deleted_items`` instead.
+    A file this machine held that is now gone locally is restored, unless ``no_restore``
+    is set: then it is left alone (it was deleted, or moved away, on purpose) and counted
+    in ``local_deleted_items``. See :func:`~protonfs.diff.held_and_gone`.
 
     .. versionchanged:: 1.10.2
        Each download is now verified against the local filesystem afterward instead of
@@ -244,10 +241,10 @@ def pull(
        locally afterward is now counted in ``failed_items`` and left unindexed for the
        next pull to retry, instead of silently vanishing from both tallies.
 
-    .. versionchanged:: 3.0.0
-       A held file that is gone locally is no longer restored by default: it is counted
-       in ``local_deleted_items`` and left alone, so a local deletion or move survives a
-       pull. Added ``restore_deleted`` for the old behaviour (#197).
+    .. versionchanged:: 2.7.0
+       Added ``no_restore``, so a scheduled sync can leave local deletions and moves in
+       place for push to act on (#197). A path that still exists on disk but was hidden
+       from the scan (now ignored, say) is never downloaded over.
 
     :param ctx: the loaded repo context.
     :param subpath: repo-root-relative subtree to pull, or ``None`` for everything.
@@ -259,10 +256,10 @@ def pull(
         local scan already computed here) so a fresh repo has entries to pull.
     :param reporter: :class:`~protonfs.reporting.Reporter` to narrate progress through;
         defaults to the process reporter (:func:`~protonfs.reporting.get_reporter`).
-    :param restore_deleted: when true, also download ``local-deleted`` files (those this
-        machine held and that are now gone locally), restoring them at their old paths.
+    :param no_restore: when true, do not download files this machine held that are now
+        gone locally; count them in ``local_deleted_items`` instead.
     :returns: a :class:`~protonfs.drive.TransferResult` of what was fetched/skipped;
-        ``local_deleted_items`` counts the local deletions left alone.
+        ``local_deleted_items`` counts the files ``no_restore`` left alone.
     :raises protonfs.drive.DriveError: on a Drive or lock failure.
 
     .. seealso:: :func:`protonfs.commands.push.push` for the upload direction.
@@ -313,20 +310,17 @@ def pull(
     ]
     if resolve is not None:
         to_pull += [e.rel_path for e in diff_entries if e.state == SyncState.REMOTE_MODIFIED]
-    # #197: a file this machine held that is gone locally was deleted or moved here on
-    # purpose, as far as pull can tell. Restoring it is opt-in; otherwise count it so the
-    # summary says what was left alone. (With a remote view, one Drive no longer lists is
-    # remote-deleted instead and cannot be restored either way.)
     # A path still on disk was only hidden from the scan (now ignored, say): it is not
-    # deleted, and downloading over it would overwrite it.
-    local_deleted = [
-        e.rel_path
-        for e in diff_entries
-        if e.state == SyncState.LOCAL_DELETED and not (ctx.root / e.rel_path).exists()
-    ]
-    if restore_deleted:
-        to_pull += local_deleted
-        local_deleted = []
+    # absent, and downloading over it would overwrite it.
+    to_pull = [rel for rel in to_pull if not (ctx.root / rel).exists()]
+    # #197: a file this machine held that is gone locally is restored by default (the
+    # git-LFS reading: its copy is on Drive). With no_restore it was deleted or moved away
+    # on purpose; leave it for push to act on and count it.
+    local_deleted: list[str] = []
+    if no_restore:
+        gone = held_and_gone(diff_entries, ctx.index, ctx.root)
+        local_deleted = sorted(gone)   # with a remote view these were never pullable anyway
+        to_pull = [rel for rel in to_pull if rel not in gone]
 
     # Diverged on both sides (a remote copy exists to reconcile against): resolvable.
     both_modified = [e.rel_path for e in diff_entries if e.state == SyncState.BOTH_MODIFIED]

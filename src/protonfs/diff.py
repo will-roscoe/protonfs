@@ -32,8 +32,10 @@ class SyncState(str, Enum):
         did not diverge from it either. Without a remote view this says nothing about
         Drive: it is the index that matches, not a verified remote copy (#150).
     :cvar LOCAL_ONLY: Present locally, never recorded in the index.
-    :cvar REMOTE_ONLY: *Remote view.* Listed remotely but absent both locally and in the
-        index (``pull`` downloads it).
+    :cvar REMOTE_ONLY: Absent locally, with the copy on Drive. With a remote view: listed
+        remotely but absent both locally and in the index. Without one: a file this machine
+        held that is now gone locally, whose last recorded copy is on Drive (``pull``
+        restores it, unless told not to; see :func:`held_and_gone`).
     :cvar METADATA_ONLY: Index has a metadata-only record (never materialized locally)
         and, when a remote view exists, the remote still matches it.
     :cvar CONFLICT: Local diverged from the index and no remote view is available to
@@ -42,10 +44,8 @@ class SyncState(str, Enum):
     :cvar REMOTE_MODIFIED: *Remote view.* Remote diverged from the index; local did not.
     :cvar BOTH_MODIFIED: *Remote view.* Both local and remote diverged from the index
         independently.
-    :cvar LOCAL_DELETED: A file this machine materialised (index ``local_state`` is
-        ``present``) that is now gone locally: deleted, or the old path of a move. With a
-        remote view the remote still lists it (otherwise it is ``REMOTE_DELETED``).
-        ``pull`` leaves it gone unless asked to restore it.
+    :cvar LOCAL_DELETED: *Remote view.* A previously-materialized local file is now gone
+        locally but still present on the remote.
     :cvar REMOTE_CHANGED: *Remote view.* No local file, but the index's remote-side
         record and the current remote listing disagree.
     :cvar REMOTE_DELETED: *Remote view.* An index entry exists but the remote no longer
@@ -58,11 +58,6 @@ class SyncState(str, Enum):
        ``SYNCED`` (``"synced"``) renamed to ``LOCALLY_INDEXED`` (``"locally-indexed"``),
        since it described a check against the index, not Drive (#150).
        ``SyncState.SYNCED`` remains as a deprecated alias of ``LOCALLY_INDEXED``.
-
-    .. versionchanged:: 3.0.0
-       Without a remote view, a held file that is gone locally is ``LOCAL_DELETED``
-       rather than ``REMOTE_ONLY``, so ``REMOTE_ONLY`` only comes from a listing and a
-       bare ``pull`` no longer restores local deletions and moves (#197).
     """
 
     LOCALLY_INDEXED = "locally-indexed"
@@ -210,15 +205,14 @@ def _classify_absent(
     remote_entry: RemoteEntry | None,
     rel_path: str,
 ) -> SyncState:
-    """An index entry with no local file. Without a remote view, a held file (anything
-    but ``metadata-only``) that is gone locally is ``LOCAL_DELETED``: this machine had it,
-    so its absence is a deletion or a move, never "not downloaded yet" (#197). With a
-    remote view we can also tell a remote deletion and a remote change apart."""
+    """An index entry with no local file. Without a remote view a held file that is gone
+    locally is ``REMOTE_ONLY`` (its recorded copy is on Drive, and ``pull`` restores it);
+    with one we can tell a local deletion, a remote deletion, and a remote change apart."""
     if remote is None:
         return (
             SyncState.METADATA_ONLY
             if index_entry.local_state == "metadata-only"
-            else SyncState.LOCAL_DELETED
+            else SyncState.REMOTE_ONLY
         )
     if remote_entry is None:
         return SyncState.REMOTE_DELETED
@@ -229,6 +223,41 @@ def _classify_absent(
     if _remote_diverged(remote_entry, index_entry):
         return SyncState.REMOTE_CHANGED
     return SyncState.METADATA_ONLY
+
+
+def held_and_gone(
+    diff_entries: list[DiffEntry], index: IndexStore, root, subpath: str | None = None
+) -> set[str]:
+    """Return the paths this machine held that are now gone from disk, inside ``subpath``.
+
+    A path qualifies when its index entry is not ``metadata-only`` (so it was downloaded
+    or uploaded here, never offloaded), it classified as ``remote-only`` (no remote view)
+    or ``local-deleted`` (remote view), and nothing exists at it on disk. A path the scan
+    skipped but that still exists (now ignored, say) is not gone. These are the files a
+    ``pull`` restores by default, ``pull --no-restore`` leaves alone, and ``push`` may
+    treat as moved or (with ``deletions="trash"``) trash.
+
+    :param diff_entries: the output of :func:`classify`.
+    :param index: the repo's index.
+    :param root: the repo root, a :class:`~pathlib.Path`.
+    :param subpath: repo-relative scope, or ``None`` for the whole repo.
+    :returns: the repo-relative paths.
+
+    .. versionadded:: 2.7.0
+    """
+    gone = set()
+    for e in diff_entries:
+        if e.state not in (SyncState.REMOTE_ONLY, SyncState.LOCAL_DELETED):
+            continue
+        entry = index.get(e.rel_path)
+        if (
+            entry is not None
+            and entry.local_state != "metadata-only"
+            and within_subpath(e.rel_path, subpath)
+            and not (root / e.rel_path).exists()
+        ):
+            gone.add(e.rel_path)
+    return gone
 
 
 def pair_moves(
@@ -249,7 +278,7 @@ def pair_moves(
     :returns: the pairs, ``old`` from ``deleted`` and ``new`` from ``added``, ordered by
         ``new``.
 
-    .. versionadded:: 3.0.0
+    .. versionadded:: 2.7.0
     """
     from pathlib import PurePosixPath
 

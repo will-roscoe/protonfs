@@ -653,16 +653,6 @@ def ls(
         if trash:
             raise click.UsageError("--visual has nothing to chart for --trash.")
 
-    if "remote-only" in states and not remote and not trash:
-        # #197: a file deleted locally is local-deleted in every mode, so remote-only is
-        # only ever reported when Drive was actually listed.
-        click.echo(
-            "note: without --remote, remote-only matches nothing: a file deleted locally "
-            "is reported as local-deleted, and remote-only needs a Drive listing. Add "
-            "--remote, or filter on --state local-deleted.",
-            err=True,
-        )
-
     ctx = load_context()
     console = Console()
     subpaths = _normalize_paths(path)
@@ -929,11 +919,11 @@ def push(
     help="Fail (exit 1) if a PATH pattern matches nothing, instead of skipping it.",
 )
 @click.option(
-    "--restore-deleted",
+    "--no-restore",
     is_flag=True,
-    help="Also download files this machine held that are now gone locally (deleted, or "
-    "moved away), restoring them at their old paths. Without this they are left alone "
-    "and counted as local-deleted=.",
+    help="Leave files this machine held that are now gone locally (deleted, or moved "
+    "away) alone instead of restoring them, and count them as local-deleted=. A PATH "
+    "naming one such file is still restored.",
 )
 @_drive_error_boundary
 def pull(
@@ -942,7 +932,7 @@ def pull(
     dry_run: bool,
     refresh: bool,
     strict: bool,
-    restore_deleted: bool,
+    no_restore: bool,
 ) -> None:
     """Download remote-only/changed files from Drive (any number of PATHs).
 
@@ -958,9 +948,10 @@ def pull(
     Diverged files (edited locally AND changed on the remote since the last sync) are
     left untouched unless you pass --resolve; they are reported and pull exits non-zero.
 
-    A file this machine held that is now gone locally (deleted, or the old path of a
-    move) is left alone and counted as ``local-deleted=``; ``--restore-deleted`` brings
-    it back.
+    A file this machine held that is now gone locally is restored, since its copy is on
+    Drive. With ``--no-restore`` it is left alone and counted as ``local-deleted=``, so a
+    deletion or move made locally survives for ``push`` to act on; a PATH given literally
+    (not a pattern) that names such a file is still restored.
 
     .. versionchanged:: 1.11.0
        A quoted PATH glob pattern is now expanded by protonfs against the index, rather
@@ -972,10 +963,8 @@ def pull(
        With an empty index, the index is seeded from the remote manifest when the root
        has one, instead of stopping with "run refresh first" (#146).
 
-    .. versionchanged:: 3.0.0
-       Files deleted or moved away locally are no longer restored: they are counted as
-       ``local-deleted=`` in the summary. Added ``--restore-deleted`` to restore them
-       (#197).
+    .. versionchanged:: 2.7.0
+       Added ``--no-restore`` (#197).
     """
     from protonfs import manifest
     from protonfs.commands.pull import pull as pull_files
@@ -1009,12 +998,17 @@ def pull(
             path, lambda p: _expand_pattern_index(list(ctx.index.all()), p)
         )
         _report_unmatched(unmatched, strict, "pull")
+        # Asking for one file by name is asking for it back, --no-restore or not.
+        named_files = {
+            rel for rel in _normalize_paths(tuple(p for p in path if not _is_pattern(p)))
+            if rel is not None and ctx.index.get(rel) is not None
+        }
         for subpath in subpaths:
             _accumulate_transfer(
                 result,
                 pull_files(
                     ctx, subpath, resolve, dry_run, refresh=refresh,
-                    restore_deleted=restore_deleted,
+                    no_restore=no_restore and subpath not in named_files,
                 ),
             )
     local_deleted = (
@@ -1027,8 +1021,8 @@ def pull(
     if result.local_deleted_items:
         click.echo(
             f"  -> {result.local_deleted_items} file(s) this machine held are gone locally "
-            "(deleted, or moved away) and were left alone. Run `protonfs pull "
-            "--restore-deleted [PATH]` to bring them back."
+            "(deleted, or moved away) and were left alone (--no-restore). Run `protonfs "
+            "pull PATH` to bring one back."
         )
     for failure in result.failures:
         click.echo(f"  FAILED {failure['name']}: {failure['error']}")
