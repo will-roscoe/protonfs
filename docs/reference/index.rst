@@ -428,7 +428,7 @@ Configuration file and keys
    override: trashing is destructive and is chosen per repo. See
    :ref:`push --deletions <push-deletions>` for the guards.
 
-   .. versionadded:: 2.7.0
+   .. versionadded:: 3.0.0
 
 .. _reference-subcommands:
 
@@ -640,7 +640,7 @@ and then moved has different content, so it is uploaded, and its old path stays 
 Drive. Pairing needs both paths inside ``PATH``, and a push of individual files pairs
 nothing.
 
-.. versionchanged:: 2.7.0
+.. versionchanged:: 3.0.0
    Local moves and renames are applied on Drive instead of uploaded again.
 
 .. _push-deletions:
@@ -665,7 +665,7 @@ trashed and exit ``1``:
   vanished, or when the run would trash more than 500 files, or more than 10 files and
   more than 5% of the tracked files.
 
-.. versionchanged:: 2.7.0
+.. versionchanged:: 3.0.0
    Added ``--deletions`` and ``--allow-mass-delete``.
 
 Progress is saved after each upload call or folder group, so an interrupted push
@@ -736,7 +736,7 @@ the move on Drive (or, with ``--deletions trash``, the deletion). A ``PATH`` giv
 literally that names one such file is still restored; a pattern is not. A path the
 scan skipped that still exists on disk (now ignored, say) is never downloaded over.
 
-.. versionchanged:: 2.7.0
+.. versionchanged:: 3.0.0
    Added ``--no-restore``.
 
 ``--refresh`` seeds the index from a fresh remote listing before pulling (metadata
@@ -1130,7 +1130,7 @@ local deletions (no ``--no-restore``), deleted files kept on Drive (``keep`` pol
 or no ``--resolve`` (a file changed on both sides is reported and left alone every
 run).
 
-.. versionchanged:: 2.7.0
+.. versionchanged:: 3.0.0
    ``--deletions``, ``--no-restore``, and the note when adding a ``sync`` job.
 
 ``--command offload`` pushes the job's scope, then offloads it. ``--command prune``

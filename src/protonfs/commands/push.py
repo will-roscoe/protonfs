@@ -421,7 +421,7 @@ def push(
        up to ``defaults.batch_size`` files, and each remote folder is created once per
        push rather than once per folder that needs it (#185).
 
-    .. versionchanged:: 2.7.0
+    .. versionchanged:: 3.0.0
        A local move or rename is applied on Drive with ``filesystem move``/``rename``
        instead of uploading the file again at its new path; added ``manifest_forget``,
        ``deletions`` and ``allow_mass_delete`` (#197).
