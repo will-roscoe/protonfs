@@ -140,7 +140,10 @@ flag/argument name; these names, not just their presence, are frozen.
        ``--strict``, ``--min-age DURATION`` (settle window, default ``0``; added in
        2.4.0). A file held back by ``--min-age`` is counted as ``unsettled=`` and is not
        a failure. Since 3.0.0 a file moved or renamed locally is moved on Drive instead of
-       uploaded, and counted as ``moved=``.
+       uploaded, and counted as ``moved=``. ``--deletions [keep|trash]`` and
+       ``--allow-mass-delete`` (added in 3.0.0): with ``trash``, files deleted locally
+       are trashed on Drive and counted as ``trashed=``; a guard refusing the trash step
+       is a failure (exit ``1``) with nothing trashed.
      - ``0`` all transferred/skipped (including a pattern that matched nothing, which is
        reported and skipped); ``1`` one or more files failed to transfer, a pattern
        matched nothing under ``--strict``, or a Drive/lock error; ``2`` usage error.
@@ -252,12 +255,12 @@ flag/argument name; these names, not just their presence, are frozen.
      - Install/list/remove cron jobs running protonfs on a schedule. ``--add`` (with
        ``--every``/``--cron``/``--at``, ``--command [push|pull|sync|offload|prune]``,
        ``--path``, ``--resolve``, ``--strict``, ``--min-age``, ``--keep``,
-       ``--label``); ``--uninstall <id|index>`` (``-U``), ``--uninstall --all``; bare or
+       ``--deletions``, ``--label``); ``--uninstall <id|index>`` (``-U``), ``--uninstall --all``; bare or
        ``--list`` lists. Added in 1.8.0. ``--path`` accepts a glob pattern (re-expanded
        by protonfs on every run) and ``--strict`` was added in 1.11.0. The ``offload``
        and ``prune`` commands, ``--min-age``/``--keep``, the job-conflict checks and
        one-job-at-a-time per repo were added in 2.2.0; ``--min-age`` on a ``push`` job in
-       2.4.0.
+       2.4.0; ``--deletions [keep|trash]`` (push and sync jobs) in 3.0.0.
      - ``0`` success (including a job added with a conflict *warning*); ``2`` usage
        error (bad cadence, unknown id, not a repo, conflicting mode flags, an option
        the command does not take, or a job refused because it conflicts with one
@@ -335,7 +338,8 @@ Known keys for ``config get``/``config set``: :confval:`remote_root`,
 :confval:`device_id`, :confval:`defaults.on_conflict`, :confval:`defaults.low_io`,
 :confval:`defaults.event_log`, :confval:`defaults.progress_style`,
 :confval:`defaults.manifest` (added in 2.1.0), :confval:`defaults.skip_thumbnails` (added
-in 2.5.0). Each is defined in the Configuration
+in 2.5.0), :confval:`defaults.deletions` (added in 3.0.0). Each is defined in the
+Configuration
 section of :doc:`reference/index`.
 
 Config files and precedence
@@ -350,6 +354,7 @@ Layered configuration, highest precedence first:
    outright.
 #. Built-in defaults (``defaults.on_conflict=skip``, ``defaults.low_io=false``,
    ``defaults.manifest=true``, ``defaults.skip_thumbnails=false``,
+   ``defaults.deletions=keep``,
    ``defaults.event_log=false``, ``defaults.progress_style=inline``).
 
 ``config get`` always reports the fully resolved value across all four layers.
@@ -387,6 +392,9 @@ Environment variables
    * - :envvar:`PROTONFS_SKIP_THUMBNAILS`
      - Per-key override for the resolved :confval:`defaults.skip_thumbnails` config value
        (boolean: ``1``/``true``/``yes``/``on``). Added in 2.5.0.
+   * - :envvar:`PROTONFS_DELETIONS`
+     - Per-key override for the resolved :confval:`defaults.deletions` config value
+       (``keep`` or ``trash``). Added in 3.0.0.
    * - :envvar:`PROTONFS_NO_MANIFEST`
      - Set (to any truthy value) to switch every remote-manifest read and write off on
        this host, whatever :confval:`defaults.manifest` says. Added in 2.1.0.

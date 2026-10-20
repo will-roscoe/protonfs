@@ -74,3 +74,17 @@ def test_config_set_event_log_bool(tmp_path) -> None:
     init_config(tmp_path, "/my-files/test")
     config_set(tmp_path, "defaults.event_log", "on")
     assert config_get(tmp_path, "defaults.event_log") == "True"
+
+
+def test_config_set_deletions_accepts_keep_or_trash_only(tmp_path) -> None:
+    import click
+    import pytest
+
+    from protonfs.commands.config import config_get, config_set
+    from protonfs.config import init_config
+
+    init_config(tmp_path, "/my-files/test")
+    config_set(tmp_path, "defaults.deletions", "trash")
+    assert config_get(tmp_path, "defaults.deletions") == "trash"
+    with pytest.raises(click.ClickException):
+        config_set(tmp_path, "defaults.deletions", "delete")

@@ -59,6 +59,17 @@ UNDERDELIVERED_ERROR = "claimed transferred but not verified on the remote (unde
 LFS_POINTER_KIND = "lfs-pointer"
 LFS_POINTER_ERROR = "refusing to push a git-LFS pointer stub over remote content"
 
+# #197: deletions="trash" refuses a run that would trash more than MASS_DELETE_LIMIT files,
+# or more than MASS_DELETE_FRACTION of the tracked files in scope once it trashes more than
+# MASS_DELETE_FLOOR, unless allow_mass_delete is given. A mass deletion is usually an
+# accident (an unmounted disk, the wrong directory), and the trash is per account.
+MASS_DELETE_LIMIT = 500
+MASS_DELETE_FRACTION = 0.05
+MASS_DELETE_FLOOR = 10
+# Failure kinds: the whole trash step refused by a guard, and one file not trashed.
+DELETION_REFUSED_KIND = "deletion-refused"
+TRASH_KIND = "trash"
+
 # Self-heal: proton-drive refuses to overwrite an existing remote file, so a file already
 # on Drive but missing from the local index (an earlier push uploaded it but never saved
 # the index -- e.g. it was interrupted before the group's verify) fails upload with a
@@ -315,6 +326,8 @@ def push(
     now: float | None = None,
     only: set[str] | None = None,
     manifest_forget: list | None = None,
+    deletions: str | None = None,
+    allow_mass_delete: bool = False,
 ) -> TransferResult:
     """Upload local-only and locally-changed files to Drive.
 
@@ -329,6 +342,14 @@ def push(
     move that fails, or that the listing does not confirm, falls back to uploading the
     new path, and the old path stays indexed. Nothing is paired for an ``only`` push or
     across the edge of ``subpath``.
+
+    With ``deletions="trash"``, a file this device held that is gone locally, and was not
+    moved, is moved to the Drive trash after the uploads, checked against a listing, and
+    dropped from the index and the remote manifest. A path now ignored is never trashed.
+    The whole trash step is refused (one ``deletion-refused`` failure, nothing trashed)
+    when every file held in scope is gone; and, unless ``allow_mass_delete``, when a
+    top-level directory of the scope vanished or the run exceeds
+    :data:`MASS_DELETE_LIMIT` files or :data:`MASS_DELETE_FRACTION` of the tracked files.
 
     :param ctx: the loaded repo context.
     :param subpath: repo-root-relative subtree to push, or ``None`` for everything.
@@ -352,11 +373,16 @@ def push(
     :param only: push just these repo-relative files (those inside ``subpath``), in one
         pass, instead of scanning all of ``subpath``.
     :param manifest_forget: a list to collect the repo-relative paths this push moved
-        away from, for the caller to drop from the remote manifest in the same write as
-        ``manifest_updates``. ``None`` drops them at the end of this call instead.
+        away from or trashed, for the caller to drop from the remote manifest in the same
+        write as ``manifest_updates``. ``None`` drops them at the end of this call instead.
+    :param deletions: ``"keep"`` or ``"trash"``: what to do on Drive with files deleted
+        locally; ``None`` uses ``defaults.deletions``.
+    :param allow_mass_delete: lift the per-run cap and the vanished-top-level-directory
+        refusal for ``deletions="trash"``.
     :returns: a :class:`~protonfs.drive.TransferResult` of what was uploaded/skipped;
-        ``moved_items`` counts the files moved or renamed on Drive (with ``dry_run``,
-        the ones that would be).
+        ``moved_items`` counts the files moved or renamed on Drive and ``trashed`` lists
+        the files trashed (with ``dry_run``, the ones that would be).
+    :raises click.ClickException: when the deletion policy is neither keep nor trash.
     :raises protonfs.drive.DriveError: on a Drive or lock failure.
 
     .. versionchanged:: 1.11.0
@@ -394,8 +420,8 @@ def push(
 
     .. versionchanged:: 3.0.0
        A local move or rename is applied on Drive with ``filesystem move``/``rename``
-       instead of uploading the file again at its new path; added ``manifest_forget``
-       (#197).
+       instead of uploading the file again at its new path; added ``manifest_forget``,
+       ``deletions`` and ``allow_mass_delete`` (#197).
 
     .. seealso:: :func:`protonfs.commands.pull.pull` for the download direction.
     """
@@ -450,10 +476,33 @@ def push(
     moves = _plan_moves(ctx, diff_entries, local, to_push, subpath, only)
     moving = {new for _, new in moves}
     to_push = [rel for rel in to_push if rel not in moving]
-    if dry_run or not (to_push or moves):
-        return TransferResult(
+    policy = deletions or ctx.config.defaults.deletions
+    if policy not in ("keep", "trash"):
+        import click
+
+        raise click.ClickException(f"deletions must be keep or trash, not {policy!r}")
+    to_trash = (
+        _trash_candidates(
+            ctx, diff_entries, ignore, subpath, {old for old, _ in moves},
+            {(local[rel].sha256, local[rel].size) for rel in held},
+        )
+        if policy == "trash" and only is None
+        else []
+    )
+    if dry_run:
+        result = TransferResult(
             len(to_push), 0, 0, [], unsettled_items=len(held), moved_items=len(moves)
         )
+        if to_trash:
+            refusal = _deletion_refusal(ctx, to_trash, subpath, allow_mass_delete)
+            if refusal:
+                result.failed_items += 1
+                result.failures.append(refusal)
+            else:
+                result.trashed, result.trashed_items = to_trash, len(to_trash)
+        return result
+    if not (to_push or moves or to_trash):
+        return TransferResult(0, 0, 0, [], unsettled_items=len(held))
 
     # #17: make sure remote_root itself exists (and is a valid path) before uploading, so a
     # first push to a brand-new Drive location works instead of failing on every file.
@@ -464,6 +513,7 @@ def push(
     forgotten = [] if manifest_forget is None else manifest_forget
     created = {ctx.config.remote_root.rstrip("/")}
     moved = 0
+    unmoved: list[str] = []
     if moves:
         reporter.phase("moving", files=len(moves))
         moved, unmoved = _apply_moves(
@@ -545,6 +595,25 @@ def push(
             + run.file_jobs([r for r in group if r in revision_rels], REVISION_STRATEGY)
         )
 
+    if policy == "trash" and only is None:
+        # The old path of a move that was uploaded instead is a deletion like any other,
+        # once the upload put the new path on Drive.
+        unmoved_set = set(unmoved)
+        to_trash += sorted(
+            old for old, new in moves
+            if new in unmoved_set and ctx.index.get(new) is not None
+            and ctx.index.get(old) is not None
+        )
+    if to_trash:
+        refusal = _deletion_refusal(ctx, to_trash, subpath, allow_mass_delete)
+        if refusal:
+            reporter.warn(refusal["error"])
+            total.failed_items += 1
+            total.failures.append(refusal)
+        else:
+            reporter.phase("trashing", files=len(to_trash))
+            _trash_deleted(ctx, to_trash, forgotten, total, reporter)
+
     record = run.verified if manifest_updates is None else None
     forget = forgotten if manifest_forget is None else None
     if record or forget:
@@ -557,9 +626,138 @@ def push(
         transferred=total.transferred_items,
         adopted=total.adopted_items,
         moved=total.moved_items,
+        trashed=total.trashed_items,
         failed=total.failed_items,
     )
     return total
+
+
+def _trash_candidates(
+    ctx: RepoContext,
+    diff_entries: list[DiffEntry],
+    ignore: IgnoreMatcher,
+    subpath: str | None,
+    moving: set[str],
+    unsettled: set[tuple[str, int]],
+) -> list[str]:
+    """Files gone locally that ``deletions="trash"`` would trash, sorted.
+
+    Held files (``local-deleted``) inside ``subpath``, except the old paths of planned
+    moves, paths now ignored (ignoring stops syncing; it never deletes Drive's copy),
+    paths still on disk (hidden from the scan), and paths whose ``(sha256, size)`` is in
+    ``unsettled``: a file the settle window held back that may be the same file moved,
+    whose only Drive copy is still the old path.
+    """
+    candidates = []
+    for e in diff_entries:
+        if (
+            e.state == SyncState.LOCAL_DELETED
+            and within_subpath(e.rel_path, subpath)
+            and e.rel_path not in moving
+            and not ignore.matches(e.rel_path)
+            and not (ctx.root / e.rel_path).exists()
+        ):
+            entry = ctx.index.get(e.rel_path)
+            if (entry.sha256, entry.size) not in unsettled:
+                candidates.append(e.rel_path)
+    return sorted(candidates)
+
+
+def _deletion_refusal(
+    ctx: RepoContext, rels: list[str], subpath: str | None, allow_mass_delete: bool
+) -> dict | None:
+    """The failure refusing to trash ``rels``, or ``None`` when the guards pass.
+
+    Refused outright when every file held in scope is gone (an unmounted disk or the
+    wrong directory looks exactly like that). Unless ``allow_mass_delete``, also refused
+    when a top-level directory of the scope vanished entirely, or when ``rels`` exceeds
+    :data:`MASS_DELETE_LIMIT`, or exceeds :data:`MASS_DELETE_FLOOR` and
+    :data:`MASS_DELETE_FRACTION` of the tracked files in scope.
+
+    :returns: a failure dict (``name``, ``error``, ``kind`` = ``deletion-refused``).
+    """
+    in_scope = {
+        rel: entry for rel, entry in ctx.index.all().items() if within_subpath(rel, subpath)
+    }
+    held = [rel for rel, entry in in_scope.items() if entry.local_state != "metadata-only"]
+    n = len(rels)
+
+    def refused(why: str) -> dict:
+        return {"name": "(deletions)", "error": why, "kind": DELETION_REFUSED_KIND}
+
+    if held and n >= len(held):
+        return refused(
+            f"refusing to trash {n} file(s): every file this machine held under "
+            f"{subpath or 'the repo root'} is gone locally, which looks like an unmounted "
+            "disk or the wrong directory. Remove files on Drive deliberately with "
+            "`protonfs rm -r <path>`."
+        )
+    if allow_mass_delete:
+        return None
+    base = len(PurePosixPath(subpath).parts) if subpath else 0
+    vanished = sorted(
+        {
+            "/".join(PurePosixPath(rel).parts[: base + 1])
+            for rel in rels
+            if len(PurePosixPath(rel).parts) > base + 1
+            and not (ctx.root / Path(*PurePosixPath(rel).parts[: base + 1])).exists()
+        }
+    )
+    if vanished:
+        return refused(
+            f"refusing to trash {n} file(s): the whole of {', '.join(vanished)} is gone "
+            "locally. Re-run with --allow-mass-delete if that was deliberate."
+        )
+    if n > MASS_DELETE_LIMIT or (
+        n > MASS_DELETE_FLOOR and n > MASS_DELETE_FRACTION * len(in_scope)
+    ):
+        return refused(
+            f"refusing to trash {n} of {len(in_scope)} tracked file(s) in one run (the cap "
+            f"is {MASS_DELETE_LIMIT}, or {MASS_DELETE_FRACTION:.0%} once more than "
+            f"{MASS_DELETE_FLOOR}). Check with --dry-run, then re-run with "
+            "--allow-mass-delete if that was deliberate."
+        )
+    return None
+
+
+def _trash_deleted(
+    ctx: RepoContext, rels: list[str], forgotten: list, total: TransferResult, reporter
+) -> None:
+    """Trash each of ``rels`` on Drive and drop it from the index once a listing shows it
+    gone; queue it in ``forgotten`` for the manifest. A file still listed afterwards (or
+    whose folder cannot be listed) stays indexed and is added to ``total`` as a ``trash``
+    failure; a DriveError is reported, never raised."""
+    by_parent: dict[str, list[str]] = {}
+    for rel in rels:
+        parent = ctx.index.get(rel).remote_path.rpartition("/")[0]
+        by_parent.setdefault(parent, []).append(rel)
+    for parent, group in by_parent.items():
+        for batch in batches(group, ctx.config.defaults.batch_size):
+            try:
+                ctx.drive.trash([ctx.index.get(rel).remote_path for rel in batch])
+            except DriveError as exc:
+                reporter.warn(f"trashing {len(batch)} file(s) in {parent} failed: {exc}")
+        try:
+            listed = ctx.drive.remote_identities(parent)
+        except DriveError as exc:
+            reporter.warn(f"cannot list {parent} to check what was trashed ({exc})")
+            listed = None
+        for rel in group:
+            name = ctx.index.get(rel).remote_path.rpartition("/")[2]
+            if listed is not None and name not in listed:
+                ctx.index.remove(rel)
+                forgotten.append(rel)
+                total.trashed.append(rel)
+                total.trashed_items += 1
+                reporter.item("trash", rel)
+            else:
+                total.failed_items += 1
+                total.failures.append({
+                    "name": rel,
+                    "error": "still on Drive after trashing; kept in the index for the "
+                    "next push",
+                    "kind": TRASH_KIND,
+                })
 
 
 def _plan_moves(

@@ -295,6 +295,12 @@ contract (see :doc:`../stability`).
 
    .. versionadded:: 2.5.0
 
+.. envvar:: PROTONFS_DELETIONS
+
+   Per-key override for :confval:`defaults.deletions`.
+
+   .. versionadded:: 3.0.0
+
 .. envvar:: PROTONFS_NO_MANIFEST
 
    Set (to any truthy value) to switch every remote-manifest read and write off on
@@ -415,6 +421,19 @@ Configuration file and keys
    :envvar:`PROTONFS_SKIP_THUMBNAILS`.
 
    .. versionadded:: 2.5.0
+
+.. confval:: defaults.deletions
+   :type: str
+   :default: keep
+
+   What :ref:`push <cmd-push>` does on Drive with a file this machine held that is now
+   gone locally. ``keep`` leaves Drive's copy (and the index entry) alone; ``trash``
+   moves it to the Drive trash (``protonfs restore`` puts it back on Drive) and drops
+   it from the index. Overridden per run by ``push --deletions`` and per
+   scheduled job by ``schedule --deletions``, or via :envvar:`PROTONFS_DELETIONS`. See
+   :ref:`push --deletions <push-deletions>` for the guards.
+
+   .. versionadded:: 3.0.0
 
 .. _reference-subcommands:
 
@@ -628,6 +647,31 @@ nothing.
 
 .. versionchanged:: 3.0.0
    Local moves and renames are applied on Drive instead of uploaded again.
+
+.. _push-deletions:
+
+A file this machine held that is now **gone locally** and was not moved stays on
+Drive by default (:confval:`defaults.deletions` ``keep``). With ``--deletions trash``
+(or the config key set to ``trash``) push moves its Drive copy to the trash after the
+uploads, confirms with a listing that it is gone, and drops it from the index and the
+remote manifest; ``trashed=N`` counts them, and ``--dry-run`` lists each one as
+``trash <path>``. :ref:`cmd-restore` puts a trashed file back on Drive; run
+``refresh`` and ``pull`` to bring it down again. A path now
+matched by ``.protonfs/ignore`` is never trashed: ignoring stops syncing, it does not
+delete. The old path of a move push had to upload instead is trashed once the new path
+is on Drive; one whose new path the settle window (``--min-age``) held back is not.
+
+Because a mass deletion is usually an accident, the trash step is refused, with nothing
+trashed and exit ``1``:
+
+- always, when every file this machine held in scope is gone (an unmounted disk or the
+  wrong directory); remove files deliberately with :ref:`cmd-rm` instead;
+- unless ``--allow-mass-delete`` is given, when a whole top-level directory of the scope
+  vanished, or when the run would trash more than 500 files, or more than 10 files and
+  more than 5% of the tracked files.
+
+.. versionchanged:: 3.0.0
+   Added ``--deletions`` and ``--allow-mass-delete``.
 
 Progress is saved after each upload call or folder group, so an interrupted push
 resumes rather than restarting. Progress lines count files and bytes across the
@@ -1258,7 +1302,8 @@ Reads or writes protonfs's layered configuration. Known keys:
 :confval:`remote_root`, :confval:`device_id`, :confval:`defaults.on_conflict`,
 :confval:`defaults.low_io`, :confval:`defaults.event_log`,
 :confval:`defaults.progress_style`, :confval:`defaults.manifest`,
-:confval:`defaults.skip_thumbnails` (each defined in the `Configuration`_ section above).
+:confval:`defaults.skip_thumbnails`, :confval:`defaults.deletions` (each defined in the
+`Configuration`_ section above).
 
 .. _cmd-config-get:
 
