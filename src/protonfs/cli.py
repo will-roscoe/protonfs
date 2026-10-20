@@ -757,7 +757,7 @@ def push(
        File PATHs share one pass, so N files no longer cost N listings and index saves
        (#171).
 
-    .. versionchanged:: 2.7.0
+    .. versionchanged:: 3.0.0
        A file moved or renamed locally is moved or renamed on Drive instead of uploaded
        again, and counted as ``moved=`` in the summary. Added ``--deletions`` and
        ``--allow-mass-delete``: with ``trash``, files deleted locally are moved to the
@@ -963,7 +963,7 @@ def pull(
        With an empty index, the index is seeded from the remote manifest when the root
        has one, instead of stopping with "run refresh first" (#146).
 
-    .. versionchanged:: 2.7.0
+    .. versionchanged:: 3.0.0
        Added ``--no-restore`` (#197).
     """
     from protonfs import manifest
@@ -1659,7 +1659,7 @@ def schedule(
        ``offload`` and ``prune`` jobs, ``--min-age``/``--keep``, conflict checks, and one
        job at a time per repo (#158).
 
-    .. versionchanged:: 2.7.0
+    .. versionchanged:: 3.0.0
        Added ``--deletions`` for push and sync jobs and ``--no-restore`` for pull and
        sync jobs (#197).
     """

@@ -531,7 +531,7 @@ def add_job(
     .. versionchanged:: 2.6.0
        Records :envvar:`PROTONFS_DRIVE_CACHE_HOME` and exports it from the wrapper (#178).
 
-    .. versionchanged:: 2.7.0
+    .. versionchanged:: 3.0.0
        Added ``deletions`` and ``no_restore``; a ``sync`` job whose pull restores local
        deletions, or whose push keeps them on Drive, or that has no ``resolve``, is added
        with a note through ``warn`` (#197).

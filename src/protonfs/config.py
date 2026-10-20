@@ -113,7 +113,7 @@ class Defaults:
     .. versionchanged:: 2.5.0
        Added the ``skip_thumbnails`` default.
 
-    .. versionchanged:: 2.7.0
+    .. versionchanged:: 3.0.0
        Added the ``deletions`` default (#197).
     """
 

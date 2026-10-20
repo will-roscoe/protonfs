@@ -139,12 +139,12 @@ flag/argument name; these names, not just their presence, are frozen.
        ``merge|keep-both|replace|skip`` remain accepted as synonyms), ``--dry-run``,
        ``--strict``, ``--min-age DURATION`` (settle window, default ``0``; added in
        2.4.0). A file held back by ``--min-age`` is counted as ``unsettled=`` and is not
-       a failure. Since 2.7.0 a file moved or renamed locally is moved on Drive instead of
+       a failure. Since 3.0.0 a file moved or renamed locally is moved on Drive instead of
        uploaded, and counted as ``moved=``. ``--deletions [keep|trash]`` and
-       ``--allow-mass-delete`` (added in 2.7.0): with ``trash``, files deleted locally
+       ``--allow-mass-delete`` (added in 3.0.0): with ``trash``, files deleted locally
        are trashed on Drive and counted as ``trashed=``; a guard refusing the trash step
        is a failure (exit ``1``) with nothing trashed. Files deleted locally that stay on Drive are counted as
-       ``local-deleted=`` (since 2.7.0).
+       ``local-deleted=`` (since 3.0.0).
      - ``0`` all transferred/skipped (including a pattern that matched nothing, which is
        reported and skipped); ``1`` one or more files failed to transfer, a pattern
        matched nothing under ``--strict``, or a Drive/lock error; ``2`` usage error.
@@ -154,7 +154,7 @@ flag/argument name; these names, not just their presence, are frozen.
        index).
        Options: ``--resolve [remote|local|both]`` (``replace`` accepted as an alias for
        ``remote``), ``--dry-run``, ``--refresh``, ``--strict``, ``--no-restore`` (added
-       in 2.7.0: files this machine held that are gone locally are left alone and
+       in 3.0.0: files this machine held that are gone locally are left alone and
        counted as ``local-deleted=``, not a failure; a PATH given literally that names
        one is still restored).
      - ``0`` all transferred/skipped (including the "index empty, run refresh first"
@@ -262,7 +262,7 @@ flag/argument name; these names, not just their presence, are frozen.
        and ``prune`` commands, ``--min-age``/``--keep``, the job-conflict checks and
        one-job-at-a-time per repo were added in 2.2.0; ``--min-age`` on a ``push`` job in
        2.4.0; ``--deletions [keep|trash]`` (push and sync jobs) and ``--no-restore``
-       (pull and sync jobs) in 2.7.0.
+       (pull and sync jobs) in 3.0.0.
      - ``0`` success (including a job added with a conflict *warning*); ``2`` usage
        error (bad cadence, unknown id, not a repo, conflicting mode flags, an option
        the command does not take, or a job refused because it conflicts with one
@@ -340,7 +340,7 @@ Known keys for ``config get``/``config set``: :confval:`remote_root`,
 :confval:`device_id`, :confval:`defaults.on_conflict`, :confval:`defaults.low_io`,
 :confval:`defaults.event_log`, :confval:`defaults.progress_style`,
 :confval:`defaults.manifest` (added in 2.1.0), :confval:`defaults.skip_thumbnails` (added
-in 2.5.0), :confval:`defaults.deletions` (added in 2.7.0). Each is defined in the
+in 2.5.0), :confval:`defaults.deletions` (added in 3.0.0). Each is defined in the
 Configuration
 section of :doc:`reference/index`.
 

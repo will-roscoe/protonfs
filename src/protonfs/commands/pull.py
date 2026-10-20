@@ -241,7 +241,7 @@ def pull(
        locally afterward is now counted in ``failed_items`` and left unindexed for the
        next pull to retry, instead of silently vanishing from both tallies.
 
-    .. versionchanged:: 2.7.0
+    .. versionchanged:: 3.0.0
        Added ``no_restore``, so a scheduled sync can leave local deletions and moves in
        place for push to act on (#197). A path that still exists on disk but was hidden
        from the scan (now ignored, say) is never downloaded over.

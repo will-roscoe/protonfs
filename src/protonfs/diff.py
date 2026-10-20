@@ -243,7 +243,7 @@ def held_and_gone(
     :param subpath: repo-relative scope, or ``None`` for the whole repo.
     :returns: the repo-relative paths.
 
-    .. versionadded:: 2.7.0
+    .. versionadded:: 3.0.0
     """
     gone = set()
     for e in diff_entries:
@@ -279,7 +279,7 @@ def pair_moves(deleted: dict[str, tuple], added: dict[str, tuple]) -> list[tuple
     :returns: the pairs, ``old`` from ``deleted`` and ``new`` from ``added``, ordered by
         ``new``.
 
-    .. versionadded:: 2.7.0
+    .. versionadded:: 3.0.0
     """
     from pathlib import PurePosixPath
 
