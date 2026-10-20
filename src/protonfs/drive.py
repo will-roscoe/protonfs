@@ -148,9 +148,9 @@ class TransferResult:
 
     :ivar unsettled_items: files push held back because they were modified within its
         settle window (``min_age``); not part of the CLI's JSON; populated by push.
-    :ivar local_deleted_items: files pull left alone because they were deleted (or moved
-        away) locally since this machine last held them; not part of the CLI's JSON;
-        populated by pull.
+    :ivar local_deleted_items: files this machine held that are gone locally (deleted, or
+        moved away) and were left alone: by pull with ``no_restore``, or by push when it
+        neither moved nor trashed them; not part of the CLI's JSON.
     :ivar moved_items: files push moved or renamed on Drive to follow a local move,
         instead of uploading them again; not part of the CLI's JSON; populated by push.
     :ivar trashed_items: files push moved to the Drive trash because they were deleted
@@ -164,8 +164,8 @@ class TransferResult:
     .. versionchanged:: 2.4.0
        Added ``unsettled_items`` for push's settle window (#168).
 
-    .. versionchanged:: 3.0.0
-       Added ``local_deleted_items`` for the files pull no longer restores, and
+    .. versionchanged:: 2.7.0
+       Added ``local_deleted_items`` for the local deletions pull and push left alone,
        ``moved_items`` for the local moves push applies on Drive, and ``trashed_items``
        and ``trashed`` for the local deletions it sends to the Drive trash (#197).
     """
@@ -1186,7 +1186,7 @@ class DriveClient:
             rather than raised, so check a listing to learn what moved.
         :raises DriveError: when the command itself fails.
 
-        .. versionadded:: 3.0.0
+        .. versionadded:: 2.7.0
 
         .. seealso:: :meth:`rename` to change a node's name in place.
         """
@@ -1202,7 +1202,7 @@ class DriveClient:
         :raises DriveError: when the command fails or reports the node as not renamed
             (e.g. the name is taken).
 
-        .. versionadded:: 3.0.0
+        .. versionadded:: 2.7.0
         """
         result = self._run_json(["filesystem", "rename", remote_path, new_name])
         items = result if isinstance(result, list) else [result]

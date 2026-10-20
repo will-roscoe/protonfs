@@ -295,12 +295,6 @@ contract (see :doc:`../stability`).
 
    .. versionadded:: 2.5.0
 
-.. envvar:: PROTONFS_DELETIONS
-
-   Per-key override for :confval:`defaults.deletions`.
-
-   .. versionadded:: 3.0.0
-
 .. envvar:: PROTONFS_NO_MANIFEST
 
    Set (to any truthy value) to switch every remote-manifest read and write off on
@@ -430,10 +424,11 @@ Configuration file and keys
    gone locally. ``keep`` leaves Drive's copy (and the index entry) alone; ``trash``
    moves it to the Drive trash (``protonfs restore`` puts it back on Drive) and drops
    it from the index. Overridden per run by ``push --deletions`` and per
-   scheduled job by ``schedule --deletions``, or via :envvar:`PROTONFS_DELETIONS`. See
+   scheduled job by ``schedule --deletions``. There is deliberately no environment
+   override: trashing is destructive and is chosen per repo. See
    :ref:`push --deletions <push-deletions>` for the guards.
 
-   .. versionadded:: 3.0.0
+   .. versionadded:: 2.7.0
 
 .. _reference-subcommands:
 
@@ -645,7 +640,7 @@ and then moved has different content, so it is uploaded, and its old path stays 
 Drive. Pairing needs both paths inside ``PATH``, and a push of individual files pairs
 nothing.
 
-.. versionchanged:: 3.0.0
+.. versionchanged:: 2.7.0
    Local moves and renames are applied on Drive instead of uploaded again.
 
 .. _push-deletions:
@@ -670,7 +665,7 @@ trashed and exit ``1``:
   vanished, or when the run would trash more than 500 files, or more than 10 files and
   more than 5% of the tracked files.
 
-.. versionchanged:: 3.0.0
+.. versionchanged:: 2.7.0
    Added ``--deletions`` and ``--allow-mass-delete``.
 
 Progress is saved after each upload call or folder group, so an interrupted push
@@ -732,14 +727,17 @@ never silently overwritten. Choose a side with ``--resolve``:
 - ``both`` — fetch the remote copy alongside the local one under a ``.remote``
   suffix (untracked) for a manual merge.
 
-A file this machine held that is now **gone locally** (``local-deleted``: you
-deleted it, or moved it elsewhere in the tree) is left alone. ``pull`` counts it as
-``local-deleted=N`` in its summary instead of downloading it back to its old path;
-``--restore-deleted`` restores it, for the "I deleted that by accident" case.
+A file this machine held that is now **gone locally** is restored: without a
+remote listing it is ``remote-only``, its copy is on Drive, and bringing it back is
+what ``pull`` is for. Where local changes should win instead — a tree another tool
+reorganises, with ``pull`` and ``push`` both scheduled — pass ``--no-restore``: such
+files are left alone and counted as ``local-deleted=N``, so the next ``push`` can apply
+the move on Drive (or, with ``--deletions trash``, the deletion). A ``PATH`` given
+literally that names one such file is still restored; a pattern is not. A path the
+scan skipped that still exists on disk (now ignored, say) is never downloaded over.
 
-.. versionchanged:: 3.0.0
-   A bare ``pull`` no longer restores files deleted or moved away locally; added
-   ``--restore-deleted``.
+.. versionchanged:: 2.7.0
+   Added ``--no-restore``.
 
 ``--refresh`` seeds the index from a fresh remote listing before pulling (metadata
 only, no download) — useful on a machine whose index doesn't yet know everything
@@ -1120,24 +1118,27 @@ absolute ``proton-drive`` path (cron has no useful ``PATH``) and tuned list/tran
 timeouts, logging to ``.protonfs/schedule/<id>.log``. Jobs are recorded per-device in
 ``.protonfs/schedule.local.json`` (gitignored). ``--command sync`` runs pull then push.
 
-A ``sync`` job never undoes local changes made between runs: its pull leaves files
-deleted or moved away locally alone (``local-deleted=`` in the log), and its push
-applies local moves on Drive and, with ``--deletions trash``, trashes local deletions
-there (``moved=``, ``trashed=`` and the deletions it kept, ``local-deleted=``, on the
-push's summary line in the log). ``--add`` for a ``sync`` job prints a note when the
-deletion policy is ``keep`` (deleted files stay on Drive) or there is no ``--resolve``
-(a file changed on both sides is reported and left alone every run). ``--deletions``
-is accepted for push and sync jobs, and is passed to the push only.
+A ``sync`` job's pull restores files deleted or moved away locally since the last
+run, as a bare ``pull`` does, so its push never sees those changes. Add
+``--no-restore`` (pull and sync jobs; passed to the pull only) when local changes
+should win: the pull leaves them alone (``local-deleted=`` in the log) and the push
+applies local moves on Drive and, with ``--deletions trash`` (push and sync jobs;
+passed to the push only), trashes local deletions there (``moved=``, ``trashed=`` and
+the deletions it kept, ``local-deleted=``, on the push's summary line). ``--add`` for a
+``sync`` job prints a note on what its options leave implicit: a pull that restores
+local deletions (no ``--no-restore``), deleted files kept on Drive (``keep`` policy),
+or no ``--resolve`` (a file changed on both sides is reported and left alone every
+run).
 
-.. versionchanged:: 3.0.0
-   ``--deletions``, and the note when adding a ``sync`` job.
+.. versionchanged:: 2.7.0
+   ``--deletions``, ``--no-restore``, and the note when adding a ``sync`` job.
 
 ``--command offload`` pushes the job's scope, then offloads it. ``--command prune``
 runs ``protonfs prune``, which pushes first itself. Both pass ``--min-age`` through,
 and prune also ``--keep``; without them the commands' own defaults apply (``1d``,
 ``10``). An option the command would ignore (``--keep`` on a non-prune job,
 ``--min-age`` on pull/sync, ``--resolve``/``--strict`` on prune, ``--deletions`` on
-pull/offload/prune) is refused.
+pull/offload/prune, ``--no-restore`` on push/offload/prune) is refused.
 
 .. versionadded:: 1.8.0
 

@@ -63,7 +63,8 @@ _ENV_DEFAULTS_OVERRIDES = {
     "batch_size": "PROTONFS_BATCH_SIZE",
     "manifest": "PROTONFS_MANIFEST",
     "skip_thumbnails": "PROTONFS_SKIP_THUMBNAILS",
-    "deletions": "PROTONFS_DELETIONS",
+    # deletions has no environment override on purpose: trashing is destructive, and one
+    # exported variable would switch it on for every repo on the machine (#197).
 }
 
 #: Values of ``defaults.deletions``: what ``push`` does on Drive with a file this device
@@ -97,8 +98,8 @@ class Defaults:
         whose thumbnail this host cannot build is retried without one either way (#183).
     :ivar deletions: What ``push`` does with a file this device held that is gone locally:
         ``"keep"`` (the default) leaves Drive's copy, ``"trash"`` moves it to the Drive
-        trash (see :data:`DELETION_POLICIES`); overridable per-repo, per push
-        (``--deletions``) or via ``$PROTONFS_DELETIONS``.
+        trash (see :data:`DELETION_POLICIES`); overridable per-repo or per push
+        (``--deletions``), with no environment override.
 
     .. versionchanged:: 1.3.0
        Added the ``event_log`` and ``progress_style`` defaults.
@@ -112,7 +113,7 @@ class Defaults:
     .. versionchanged:: 2.5.0
        Added the ``skip_thumbnails`` default.
 
-    .. versionchanged:: 3.0.0
+    .. versionchanged:: 2.7.0
        Added the ``deletions`` default (#197).
     """
 

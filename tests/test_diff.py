@@ -146,21 +146,21 @@ def test_metadata_only_when_index_says_metadata_only_and_no_local_file(tmp_path)
     assert result[0].state == SyncState.METADATA_ONLY
 
 
-def test_local_deleted_when_index_says_present_but_local_file_missing(tmp_path) -> None:
-    # #197: `present` means this machine held the file, so its absence is a local
-    # deletion even without a listing; pull must not read it as "not here yet".
+def test_remote_only_when_index_says_present_but_local_file_missing(tmp_path) -> None:
     index = IndexStore(tmp_path)
     index.set("a", _index_entry("h1", local_state="present"))
     result = classify({}, index)
-    assert result[0].state == SyncState.LOCAL_DELETED
+    assert result[0].state == SyncState.REMOTE_ONLY
 
 
-def test_a_held_file_gone_locally_is_local_deleted_with_or_without_a_listing(
+def test_a_held_file_gone_locally_is_remote_only_without_a_listing_and_local_deleted_with_one(
     tmp_path,
 ) -> None:
+    # remote-only names where the file's copy is; a listing that still has it lets the
+    # deletion be attributed to this machine, which is local-deleted
     index = IndexStore(tmp_path)
     index.set("a", _index_entry("h1", local_state="present"))
-    assert classify({}, index)[0].state == SyncState.LOCAL_DELETED
+    assert classify({}, index)[0].state == SyncState.REMOTE_ONLY
     with_view = classify({}, index, remote={"a": _remote(claimed_size=1)})
     assert with_view[0].state == SyncState.LOCAL_DELETED
 
@@ -240,6 +240,13 @@ def test_metadata_only_preserved_when_remote_size_matches(tmp_path) -> None:
     index.set("a", _index_entry("h1", local_state="metadata-only"))
     result = classify({}, index, remote={"a": _remote(size=1)})  # matches _index_entry size=1
     assert result[0].state == SyncState.METADATA_ONLY
+
+
+def test_no_remote_view_reports_a_held_file_missing_locally_as_remote_only(tmp_path) -> None:
+    index = IndexStore(tmp_path)
+    index.set("a", _index_entry("h1", local_state="present"))
+    result = classify({}, index, remote=None)  # index says present, no local file
+    assert result[0].state == SyncState.REMOTE_ONLY
 
 
 def test_synced_is_a_deprecated_alias_of_locally_indexed() -> None:

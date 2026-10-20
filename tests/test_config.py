@@ -317,8 +317,10 @@ def test_env_batch_size_below_one_clamps_to_one(monkeypatch, tmp_path) -> None:
     assert cfg.defaults.batch_size == 1
 
 
-def test_deletions_defaults_to_keep_and_reads_from_config_and_env(monkeypatch, tmp_path) -> None:
-    # #197: what push does with a file deleted locally
+def test_deletions_defaults_to_keep_and_reads_only_from_config(monkeypatch, tmp_path) -> None:
+    # #197: what push does with a file deleted locally. Trashing is destructive, so it is
+    # chosen per repo (or per push); one exported variable must not switch it on for every
+    # repo on the machine.
     from protonfs.config import Config, Defaults, init_config, load_layered_config
 
     assert Defaults().deletions == "keep"
@@ -326,4 +328,4 @@ def test_deletions_defaults_to_keep_and_reads_from_config_and_env(monkeypatch, t
     assert cfg.defaults.deletions == "trash"
     init_config(tmp_path, "/my-files/test")
     monkeypatch.setenv("PROTONFS_DELETIONS", "trash")
-    assert load_layered_config(tmp_path).defaults.deletions == "trash"
+    assert load_layered_config(tmp_path).defaults.deletions == "keep"

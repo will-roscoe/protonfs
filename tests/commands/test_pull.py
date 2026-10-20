@@ -91,15 +91,32 @@ def _held_entry(rel: str) -> IndexEntry:
     )
 
 
-def test_pull_skips_a_file_deleted_locally_and_counts_it(tmp_path: Path, make_fake_drive) -> None:
-    # #197: the index says the file is present but it is gone on disk. That is a local
-    # deletion (or the old half of a move), so a bare pull leaves it gone and reports it.
+def test_pull_restores_a_file_deleted_locally(tmp_path: Path, make_fake_drive) -> None:
+    # The index says the file is present but it is absent on disk. With no remote view
+    # that classifies REMOTE_ONLY (#160) and a bare pull re-downloads it, as it always did.
     init_config(tmp_path, "/my-files/test")
     ctx = load_context(tmp_path)
     ctx.index.set("gone/dump_0001", _held_entry("gone/dump_0001"))
     ctx.drive = make_fake_drive()
 
     result = pull(ctx, None, resolve=None, dry_run=False)
+
+    assert result.transferred_items == 1
+    assert result.local_deleted_items == 0
+    assert (tmp_path / "gone" / "dump_0001").exists()
+    assert ctx.index.get("gone/dump_0001").local_state == "present"
+
+
+def test_pull_no_restore_leaves_a_file_deleted_locally_and_counts_it(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    # #197: a scheduled sync must not undo a local deletion or move before push sees it
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.index.set("gone/dump_0001", _held_entry("gone/dump_0001"))
+    ctx.drive = make_fake_drive()
+
+    result = pull(ctx, None, resolve=None, dry_run=False, no_restore=True)
 
     assert result.transferred_items == 0
     assert result.local_deleted_items == 1
@@ -108,59 +125,57 @@ def test_pull_skips_a_file_deleted_locally_and_counts_it(tmp_path: Path, make_fa
     assert ctx.index.get("gone/dump_0001").local_state == "present"
 
 
-def test_pull_dry_run_counts_files_deleted_locally(tmp_path: Path, make_fake_drive) -> None:
+def test_pull_no_restore_dry_run_counts_files_deleted_locally(
+    tmp_path: Path, make_fake_drive
+) -> None:
     init_config(tmp_path, "/my-files/test")
     ctx = load_context(tmp_path)
     ctx.index.set("gone/dump_0001", _held_entry("gone/dump_0001"))
     ctx.drive = make_fake_drive()
 
-    result = pull(ctx, None, resolve=None, dry_run=True)
+    result = pull(ctx, None, resolve=None, dry_run=True, no_restore=True)
 
     assert result.transferred_items == 0
     assert result.local_deleted_items == 1
 
 
-def test_pull_restore_deleted_brings_a_file_deleted_locally_back(
+def test_pull_no_restore_still_downloads_offloaded_files(
     tmp_path: Path, make_fake_drive
 ) -> None:
+    # metadata-only (offloaded, or never downloaded here) is not a local deletion
     init_config(tmp_path, "/my-files/test")
     ctx = load_context(tmp_path)
-    ctx.index.set("gone/dump_0001", _held_entry("gone/dump_0001"))
+    offloaded = _held_entry("cold/dump_0001")
+    offloaded.local_state = "metadata-only"
+    ctx.index.set("cold/dump_0001", offloaded)
+    ctx.index.set("gone/dump_0002", _held_entry("gone/dump_0002"))
     ctx.drive = make_fake_drive()
 
-    result = pull(ctx, None, resolve=None, dry_run=False, restore_deleted=True)
+    result = pull(ctx, None, resolve=None, dry_run=False, no_restore=True)
 
-    assert result.transferred_items == 1
-    assert result.local_deleted_items == 0
-    assert (tmp_path / "gone" / "dump_0001").exists()
-    assert ctx.index.get("gone/dump_0001").local_state == "present"
+    downloaded = [p for call in ctx.drive.download_calls for p in call[0]]
+    assert downloaded == ["/my-files/test/cold/dump_0001"]
+    assert result.local_deleted_items == 1
 
 
-def test_pull_restore_deleted_with_a_remote_view_restores_what_drive_still_lists(
+def test_pull_no_restore_with_a_remote_view_counts_what_it_left_alone(
     tmp_path: Path, make_fake_drive
 ) -> None:
-    # With --resolve the walk tells local-deleted (Drive still lists it) from
-    # remote-deleted (it is gone from Drive too): only the first can be restored.
+    # with --resolve the walk classifies the same file local-deleted; still left alone
     init_config(tmp_path, "/my-files/test")
     ctx = load_context(tmp_path)
     ctx.index.set("kept_remotely", _held_entry("kept_remotely"))
-    ctx.index.set("gone_remotely", _held_entry("gone_remotely"))
     ctx.drive = make_fake_drive(
         walk_entries=[RemoteEntry(rel_path="kept_remotely", is_dir=False, size=1)]
     )
 
-    skipped = pull(ctx, None, resolve="remote", dry_run=True)
-    assert skipped.local_deleted_items == 1
-    assert skipped.transferred_items == 0
+    result = pull(ctx, None, resolve="remote", dry_run=False, no_restore=True)
 
-    result = pull(ctx, None, resolve="remote", dry_run=False, restore_deleted=True)
-
-    downloaded = [p for call in ctx.drive.download_calls for p in call[0]]
-    assert downloaded == ["/my-files/test/kept_remotely"]
-    assert result.transferred_items == 1
+    assert ctx.drive.download_calls == []
+    assert result.local_deleted_items == 1
 
 
-def test_cli_pull_reports_files_deleted_locally_and_how_to_restore_them(
+def test_cli_pull_no_restore_reports_and_a_named_file_still_comes_back(
     tmp_path: Path, monkeypatch, make_fake_drive
 ) -> None:
     from click.testing import CliRunner
@@ -170,24 +185,28 @@ def test_cli_pull_reports_files_deleted_locally_and_how_to_restore_them(
     init_config(tmp_path, "/my-files/test")
     ctx = load_context(tmp_path)
     ctx.index.set("gone/dump_0001", _held_entry("gone/dump_0001"))
+    ctx.index.set("gone/dump_0002", _held_entry("gone/dump_0002"))
     ctx.index.save()
     ctx.drive = make_fake_drive()
     monkeypatch.setattr("protonfs.context.load_context", lambda *a, **k: ctx)
 
-    result = CliRunner().invoke(main, ["pull"])
+    result = CliRunner().invoke(main, ["pull", "--no-restore"])
 
     assert result.exit_code == 0, result.output
     assert "transferred=0" in result.output
-    assert "local-deleted=1" in result.output
-    assert "--restore-deleted" in result.output
+    assert "local-deleted=2" in result.output
+    assert "protonfs pull PATH" in result.output
     assert ctx.drive.download_calls == []
 
-    restored = CliRunner().invoke(main, ["pull", "--restore-deleted"])
+    globbed = CliRunner().invoke(main, ["pull", "--no-restore", "gone/*"])
+    assert "transferred=0" in globbed.output  # a pattern is not asking for one file
 
-    assert restored.exit_code == 0, restored.output
-    assert "transferred=1" in restored.output
-    assert "local-deleted=" not in restored.output
+    named = CliRunner().invoke(main, ["pull", "--no-restore", "gone/dump_0001"])
+
+    assert named.exit_code == 0, named.output
+    assert "transferred=1" in named.output
     assert (tmp_path / "gone" / "dump_0001").exists()
+    assert not (tmp_path / "gone" / "dump_0002").exists()
 
 
 def test_pull_multiple_parent_groups_downloads_all(tmp_path: Path, make_fake_drive) -> None:
@@ -452,7 +471,7 @@ def test_pull_subpath_scopes_true_remote_only_entries_too(
     tmp_path: Path, make_fake_drive
 ) -> None:
     """#96 companion: an index entry recorded `present` but missing on disk classifies
-    LOCAL_DELETED (no remote view) -- out-of-scope ones must not be re-downloaded either."""
+    REMOTE_ONLY (no remote view) -- out-of-scope ones must not be re-downloaded either."""
     init_config(tmp_path, "/my-files/test")
     ctx = load_context(tmp_path)
     ctx.index.set("wanted/dump_0001", _metadata_only_entry("/my-files/test/wanted/dump_0001"))
@@ -461,10 +480,9 @@ def test_pull_subpath_scopes_true_remote_only_entries_too(
     ctx.index.set("elsewhere/dump_0003", gone)
     ctx.drive = make_fake_drive()
 
-    result = pull(ctx, "wanted", resolve=None, dry_run=False, restore_deleted=True)
+    result = pull(ctx, "wanted", resolve=None, dry_run=False)
 
     assert result.transferred_items == 1
-    assert result.local_deleted_items == 0  # out of scope: neither restored nor counted
     assert not (tmp_path / "elsewhere" / "dump_0003").exists()
 
 
@@ -672,8 +690,8 @@ def test_interrupted_download_leaves_no_partial_file_in_the_tree(
 def test_sync_after_a_local_move_restores_nothing_at_the_old_path(
     tmp_path: Path, make_fake_drive
 ) -> None:
-    # #197: a scheduled `sync` is pull then push. A file moved locally between runs
-    # used to come back at its old path on the pull, every night.
+    # #197: a scheduled `sync` is pull then push. Without --no-restore a file moved
+    # locally between runs comes back at its old path on the pull, every night.
     from protonfs.commands.push import push
 
     init_config(tmp_path, "/my-files/test")
@@ -689,7 +707,7 @@ def test_sync_after_a_local_move_restores_nothing_at_the_old_path(
     (tmp_path / "a" / "x.jpg").rename(tmp_path / "b" / "x.jpg")  # moved
     (tmp_path / "a" / "y.jpg").unlink()  # deleted
 
-    pulled = pull(ctx, None, resolve=None, dry_run=False)
+    pulled = pull(ctx, None, resolve=None, dry_run=False, no_restore=True)
     push(ctx, None, resolve=None, dry_run=False)
 
     assert pulled.transferred_items == 0
@@ -699,7 +717,7 @@ def test_sync_after_a_local_move_restores_nothing_at_the_old_path(
     assert (tmp_path / "b" / "x.jpg").read_bytes() == b"photo"
 
 
-def test_pull_restore_deleted_never_overwrites_a_held_file_that_is_now_ignored(
+def test_pull_never_overwrites_a_held_file_that_is_now_ignored(
     tmp_path: Path, make_fake_drive
 ) -> None:
     # An ignored file is invisible to the scan, so it classifies like a deletion. It is
@@ -711,10 +729,9 @@ def test_pull_restore_deleted_never_overwrites_a_held_file_that_is_now_ignored(
     ctx.index.set("run.log", _held_entry("run.log"))
     ctx.drive = make_fake_drive()
 
-    result = pull(ctx, None, resolve=None, dry_run=False, restore_deleted=True)
+    result = pull(ctx, None, resolve=None, dry_run=False)
 
     assert result.transferred_items == 0
-    assert result.local_deleted_items == 0
     assert ctx.drive.download_calls == []
     assert (tmp_path / "run.log").read_bytes() == b"local edits"
 
@@ -733,7 +750,7 @@ def test_sync_after_a_local_move_leaves_one_copy_on_drive(tmp_path: Path, make_f
     (tmp_path / "b").mkdir()
     (tmp_path / "a" / "x.jpg").rename(tmp_path / "b" / "x.jpg")
 
-    pull(ctx, None, resolve=None, dry_run=False)
+    pull(ctx, None, resolve=None, dry_run=False, no_restore=True)
     pushed = push(ctx, None, resolve=None, dry_run=False)
 
     assert pushed.moved_items == 1

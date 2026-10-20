@@ -64,7 +64,7 @@ EXPECTED_OPTIONS: dict[str, frozenset[str]] = {
         {"--resolve", "--dry-run", "--strict", "--min-age", "--deletions", "--allow-mass-delete"}
     ),
     "pull": frozenset(
-        {"--resolve", "--dry-run", "--refresh", "--strict", "--restore-deleted"}
+        {"--resolve", "--dry-run", "--refresh", "--strict", "--no-restore"}
     ),
     "offload": frozenset({"--no-verify", "--min-age", "--dry-run", "--yes"}),
     "prune": frozenset({"--keep", "--min-age", "--no-push", "--dry-run", "--yes"}),
@@ -80,7 +80,7 @@ EXPECTED_OPTIONS: dict[str, frozenset[str]] = {
         {
             "--list", "--add", "--uninstall", "-U", "--all", "--every", "--cron",
             "--at", "--command", "--path", "--resolve", "--strict", "--min-age", "--keep",
-            "--deletions", "--label", "--json",
+            "--deletions", "--no-restore", "--label", "--json",
         }
     ),
     "auth": frozenset(),

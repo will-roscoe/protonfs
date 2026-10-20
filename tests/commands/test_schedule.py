@@ -744,23 +744,38 @@ def test_cli_schedule_add_passes_deletions(repo: Path, monkeypatch) -> None:
 # --- #197: a scheduled sync says what it does with local deletions -----------------------
 
 
-def test_add_sync_job_with_the_keep_policy_warns_what_happens_to_local_deletions(
+def test_add_sync_job_without_no_restore_warns_that_pull_undoes_local_deletions(
     repo: Path,
 ) -> None:
     warnings: list[str] = []
     sched.add_job(repo, every="daily", command="sync", runner=FakeCrontab(), warn=warnings.append)
 
     assert len(warnings) == 1
+    assert "restores" in warnings[0]
+    assert "--no-restore" in warnings[0]
+    assert "--resolve" in warnings[0]
+
+
+def test_add_sync_job_with_no_restore_and_the_keep_policy_warns_what_happens_to_deletions(
+    repo: Path,
+) -> None:
+    warnings: list[str] = []
+    sched.add_job(
+        repo, every="daily", command="sync", no_restore=True, runner=FakeCrontab(),
+        warn=warnings.append,
+    )
+
+    assert len(warnings) == 1
     assert "deleted locally" in warnings[0]
     assert "--deletions trash" in warnings[0]
-    assert "--resolve" in warnings[0]
+    assert "--no-restore" not in warnings[0]
 
 
 def test_add_sync_job_with_trash_or_resolve_set_does_not_warn_about_them(repo: Path) -> None:
     warnings: list[str] = []
     sched.add_job(
         repo, every="daily", command="sync", deletions="trash", resolve="remote",
-        runner=FakeCrontab(), warn=warnings.append,
+        no_restore=True, runner=FakeCrontab(), warn=warnings.append,
     )
     assert warnings == []
 
@@ -771,8 +786,8 @@ def test_add_sync_job_honours_the_repo_deletion_policy(repo: Path) -> None:
     config_set(repo, "defaults.deletions", "trash")
     warnings: list[str] = []
     sched.add_job(
-        repo, every="daily", command="sync", resolve="local", runner=FakeCrontab(),
-        warn=warnings.append,
+        repo, every="daily", command="sync", resolve="local", no_restore=True,
+        runner=FakeCrontab(), warn=warnings.append,
     )
     assert warnings == []
 
@@ -781,3 +796,56 @@ def test_add_push_job_does_not_warn_about_sync(repo: Path) -> None:
     warnings: list[str] = []
     sched.add_job(repo, every="daily", command="push", runner=FakeCrontab(), warn=warnings.append)
     assert warnings == []
+
+
+# --- #197: --no-restore for scheduled pulls ------------------------------------------------
+
+
+def test_add_sync_job_with_no_restore_passes_it_to_the_pull_step_only(repo: Path) -> None:
+    job = sched.add_job(repo, every="daily", command="sync", no_restore=True, runner=FakeCrontab())
+    assert job.no_restore is True
+    lines = Path(job.wrapper_path).read_text().splitlines()
+    pull_line = next(line for line in lines if "-v pull" in line)
+    push_line = next(line for line in lines if "-v push" in line)
+    assert "--no-restore" in pull_line
+    assert "--no-restore" not in push_line
+
+
+def test_add_pull_job_with_no_restore(repo: Path) -> None:
+    job = sched.add_job(repo, every="daily", command="pull", no_restore=True, runner=FakeCrontab())
+    assert "pull --no-restore" in Path(job.wrapper_path).read_text().replace(" -v", "")
+
+
+@pytest.mark.parametrize("command", ["push", "offload", "prune"])
+def test_no_restore_is_refused_for_a_job_without_a_pull(repo: Path, command) -> None:
+    with pytest.raises(sched.ScheduleError, match="--no-restore"):
+        sched.add_job(repo, every="daily", command=command, no_restore=True, runner=FakeCrontab())
+
+
+def test_a_manifest_written_before_no_restore_existed_still_loads(repo: Path) -> None:
+    import json
+
+    sched.add_job(repo, every="daily", command="sync", runner=FakeCrontab())
+    manifest_path = repo / ".protonfs" / "schedule.local.json"
+    document = json.loads(manifest_path.read_text())
+    for data in document["jobs"].values():
+        data.pop("no_restore", None)
+    manifest_path.write_text(json.dumps(document))
+
+    assert sched.list_jobs(repo)[0].no_restore is False
+
+
+def test_cli_schedule_add_passes_no_restore(repo: Path, monkeypatch) -> None:
+    from click.testing import CliRunner
+
+    from protonfs.cli import main
+
+    monkeypatch.chdir(repo)
+    monkeypatch.setattr("protonfs.commands.schedule._default_runner", FakeCrontab())
+
+    result = CliRunner().invoke(
+        main, ["schedule", "--add", "--every", "daily", "--command", "sync", "--no-restore"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert sched.list_jobs(repo)[0].no_restore is True
