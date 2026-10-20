@@ -335,13 +335,15 @@ def push(
     local-only or changed, creating any missing remote directories first. On success
     the index is updated to reflect the new synced state.
 
-    A new file with the same content as a file gone locally since this device held it
-    is treated as that file moved or renamed: its Drive node is moved or renamed to
-    match (see :func:`~protonfs.diff.pair_moves` for the pairing), checked against a
-    listing, and its index entry re-keyed to the new path with its digests kept. A
-    move that fails, or that the listing does not confirm, falls back to uploading the
-    new path, and the old path stays indexed. Nothing is paired for an ``only`` push or
-    across the edge of ``subpath``.
+    A new file with the same content and whole-second mtime as a file gone locally since
+    this device held it (:func:`~protonfs.diff.held_and_gone`) is treated as that file
+    moved or renamed: its Drive node is moved or renamed to match (see
+    :func:`~protonfs.diff.pair_moves` for the pairing), checked against a listing, and
+    its index entry re-keyed to the new path with its digests kept. A move that fails,
+    or that the listing does not confirm, falls back to uploading the new path, and the
+    old path stays indexed. Nothing is paired for an ``only`` push or across the edge of
+    ``subpath``. A file a ``pull`` would restore can only be seen here as moved or deleted
+    when that pull ran with ``no_restore`` (or not at all).
 
     With ``deletions="trash"``, a file this device held that is gone locally, and was not
     moved, is moved to the Drive trash after the uploads, checked against a listing, and
@@ -349,7 +351,7 @@ def push(
     The whole trash step is refused (one ``deletion-refused`` failure, nothing trashed)
     when every file held in scope is gone; and, unless ``allow_mass_delete``, when a
     top-level directory of the scope vanished or the run exceeds
-    :data:`MASS_DELETE_LIMIT` files or :data:`MASS_DELETE_FRACTION` of the tracked files.
+    :data:`MASS_DELETE_LIMIT` files or :data:`MASS_DELETE_FRACTION` of the files held here.
 
     :param ctx: the loaded repo context.
     :param subpath: repo-root-relative subtree to push, or ``None`` for everything.
