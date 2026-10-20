@@ -609,6 +609,26 @@ back or already indexed inside it, is uploaded whole in one ``proton-drive`` cal
 and proton-drive creates its subfolders. Every other file goes up with the other
 files of its folder. Each remote folder is created at most once per push.
 
+.. _push-moves:
+
+A file you **moved or renamed** locally is moved or renamed on Drive instead of
+uploaded again. Push pairs each new file with a file this machine held that is now
+gone locally and has the same content (sha256 and size). Pairing is one-to-one:
+among several identical files, a pair with the same name wins, then one in the same
+folder, and anything still ambiguous is uploaded as a new file. A pair in the same
+folder is renamed; a pair with the same name is moved; otherwise the file is moved,
+then renamed. Missing target folders are created first. The Drive node itself moves,
+so its version history and share links survive, and its index entry follows it with
+its checksums. Each move is checked against a listing of the target folder; one that
+fails, or that the listing does not show, falls back to an upload, and the old path
+stays indexed. Moved files are counted as ``moved=N`` in the summary. A file edited
+and then moved has different content, so it is uploaded, and its old path stays on
+Drive. Pairing needs both paths inside ``PATH``, and a push of individual files pairs
+nothing.
+
+.. versionchanged:: 3.0.0
+   Local moves and renames are applied on Drive instead of uploaded again.
+
 Progress is saved after each upload call or folder group, so an interrupted push
 resumes rather than restarting. Progress lines count files and bytes across the
 whole push.

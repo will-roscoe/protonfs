@@ -139,7 +139,8 @@ flag/argument name; these names, not just their presence, are frozen.
        ``merge|keep-both|replace|skip`` remain accepted as synonyms), ``--dry-run``,
        ``--strict``, ``--min-age DURATION`` (settle window, default ``0``; added in
        2.4.0). A file held back by ``--min-age`` is counted as ``unsettled=`` and is not
-       a failure.
+       a failure. Since 3.0.0 a file moved or renamed locally is moved on Drive instead of
+       uploaded, and counted as ``moved=``.
      - ``0`` all transferred/skipped (including a pattern that matched nothing, which is
        reported and skipped); ``1`` one or more files failed to transfer, a pattern
        matched nothing under ``--strict``, or a Drive/lock error; ``2`` usage error.

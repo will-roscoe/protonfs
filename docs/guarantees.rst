@@ -155,6 +155,13 @@ aggregate count with no per-file attribution, so each file in that batch must
 match the remote strictly (size, and sha1 where both sides have one) before it
 is indexed.
 
+A local move that push applies on Drive (``filesystem move``/``rename``, see
+:ref:`push <push-moves>`) is held to the same rule. It counts as moved only when a listing
+of the target folder taken afterwards shows a node at the new name, absent before,
+with the indexed size (and sha1 where both sides have one). Otherwise the file is
+uploaded as a new file, and the old path's index entry is left alone, or pointed at
+the node's actual location when a move landed and the rename after it did not.
+
 Stricter checks reach entries already recorded
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 Each index entry was judged by the checks of the protonfs that wrote it, and later
