@@ -502,7 +502,9 @@ def add_job(
     :param deletions: deletion policy (``keep`` | ``trash``) passed to a ``push`` or
         ``sync`` job's push as ``--deletions``; ``None`` leaves it to
         ``defaults.deletions``.
-    :param warn: called with each warning-level conflict (the job is still added).
+    :param warn: called with each warning-level conflict (the job is still added), and,
+        for a ``sync`` job with no ``resolve`` or with the ``keep`` deletion policy, with
+        a note on what each run does with diverged files and local deletions.
     :raises ScheduleError: on a non-repo, unknown command, bad cadence, missing crontab,
         an option the command does not take, or an error-level conflict with a job
         already scheduled (see :func:`check_conflicts`).
@@ -521,7 +523,8 @@ def add_job(
        Records :envvar:`PROTONFS_DRIVE_CACHE_HOME` and exports it from the wrapper (#178).
 
     .. versionchanged:: 3.0.0
-       Added ``deletions`` (#197).
+       Added ``deletions``; a ``sync`` job with no ``resolve`` or the ``keep`` deletion
+       policy is added with a note through ``warn`` (#197).
     """
     if not is_protonfs_repo(repo_root):
         raise ScheduleError(f"{repo_root} is not a protonfs repo (run `protonfs setup`).")
@@ -538,6 +541,10 @@ def add_job(
     for conflict in conflicts:
         if warn is not None:
             warn(conflict.message)
+    if command == "sync" and warn is not None:
+        note = _sync_note(repo_root, resolve, deletions)
+        if note:
+            warn(note)
     if shutil.which("crontab") is None:
         raise ScheduleError("`crontab` not found; cron scheduling is unavailable on this host.")
     cron_expr = cadence_to_cron(every, cron, at)
@@ -581,6 +588,36 @@ def add_job(
     jobs[job_id] = asdict(job)
     _save_manifest(repo_root, jobs)
     return job
+
+
+def _sync_note(repo_root: Path, resolve: str | None, deletions: str | None) -> str | None:
+    """What a new ``sync`` job will do that its options leave implicit, or ``None``.
+
+    Covers the deletion policy when it resolves to ``keep`` (the job's ``deletions``,
+    else the repo's ``defaults.deletions``) and a missing ``resolve``.
+    """
+    policy = deletions
+    if policy is None:
+        from protonfs.config import load_layered_config
+
+        try:
+            config = load_layered_config(repo_root)
+        except Exception:  # an unreadable config is reported by the job's own runs
+            config = None
+        policy = config.defaults.deletions if config is not None else "keep"
+    parts = []
+    if policy == "keep":
+        parts.append(
+            "each run leaves a file deleted locally gone locally but keeps its copy on "
+            "Drive (moves are applied on Drive); add --deletions trash to send deletions "
+            "to the Drive trash as well"
+        )
+    if resolve is None:
+        parts.append(
+            "without --resolve, a file changed both locally and on Drive is reported and "
+            "left alone on every run"
+        )
+    return "sync job: " + "; ".join(parts) + "." if parts else None
 
 
 def _check_options(

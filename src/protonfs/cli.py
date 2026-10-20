@@ -771,7 +771,8 @@ def push(
        A file moved or renamed locally is moved or renamed on Drive instead of uploaded
        again, and counted as ``moved=`` in the summary. Added ``--deletions`` and
        ``--allow-mass-delete``: with ``trash``, files deleted locally are moved to the
-       Drive trash and counted as ``trashed=`` (a dry run lists them) (#197).
+       Drive trash and counted as ``trashed=`` (a dry run lists them). Files deleted
+       locally that stay on Drive are counted as ``local-deleted=`` (#197).
     """
     from protonfs.commands.push import push as push_files
     from protonfs.context import load_context
@@ -838,8 +839,11 @@ def push(
     moved = f" moved={result.moved_items}" if result.moved_items else ""
     unsettled = f" unsettled={result.unsettled_items}" if result.unsettled_items else ""
     trashed = f" trashed={result.trashed_items}" if result.trashed_items else ""
+    kept = (
+        f" local-deleted={result.local_deleted_items}" if result.local_deleted_items else ""
+    )
     click.echo(
-        f"transferred={result.transferred_items}{adopted}{moved}{trashed} "
+        f"transferred={result.transferred_items}{adopted}{moved}{trashed}{kept} "
         f"skipped={result.skipped_items} failed={result.failed_items}{unsettled}"
     )
     if dry_run:
@@ -1122,7 +1126,8 @@ def offload(
        A file moved or renamed locally is moved or renamed on Drive instead of uploaded
        again, and counted as ``moved=`` in the summary. Added ``--deletions`` and
        ``--allow-mass-delete``: with ``trash``, files deleted locally are moved to the
-       Drive trash and counted as ``trashed=`` (a dry run lists them) (#197).
+       Drive trash and counted as ``trashed=`` (a dry run lists them). Files deleted
+       locally that stay on Drive are counted as ``local-deleted=`` (#197).
     """
     from protonfs.commands.offload import OffloadResult
     from protonfs.commands.offload import offload as offload_files
