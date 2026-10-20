@@ -21,22 +21,6 @@ Versioning follows the policy in :doc:`stability`: within ``1.x``, everything
 documented on that page keeps working; a breaking change to any of it requires a
 major-version bump.
 
-From 2.x to 3.0
-~~~~~~~~~~~~~~~
-3.0 stops ``pull`` from undoing local deletions and moves. Nothing on disk changes and
-no migration runs:
-
-- A file this machine held that is now gone locally is ``local-deleted`` in
-  ``status`` and ``ls`` with or without ``--remote``. Without ``--remote`` it used to
-  be ``remote-only``; ``remote-only`` now only comes from a Drive listing, and ``ls
-  --state remote-only`` without ``--remote`` matches nothing and says so.
-- A bare ``pull`` leaves those files gone and reports ``local-deleted=N`` in its
-  summary. It used to download them back to their old paths, so a scheduled ``sync``
-  restored every file moved or deleted locally since the previous run. Pass
-  ``pull --restore-deleted`` to restore them as before.
-- Exit codes are unchanged: both states are drift for ``status``, and a skipped
-  local deletion is not a ``pull`` failure.
-
 From 1.x to 2.0
 ~~~~~~~~~~~~~~~
 2.0 renames the sync-state vocabulary so no state claims something about Drive that

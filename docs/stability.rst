@@ -139,12 +139,12 @@ flag/argument name; these names, not just their presence, are frozen.
        ``merge|keep-both|replace|skip`` remain accepted as synonyms), ``--dry-run``,
        ``--strict``, ``--min-age DURATION`` (settle window, default ``0``; added in
        2.4.0). A file held back by ``--min-age`` is counted as ``unsettled=`` and is not
-       a failure. Since 3.0.0 a file moved or renamed locally is moved on Drive instead of
+       a failure. Since 2.7.0 a file moved or renamed locally is moved on Drive instead of
        uploaded, and counted as ``moved=``. ``--deletions [keep|trash]`` and
-       ``--allow-mass-delete`` (added in 3.0.0): with ``trash``, files deleted locally
+       ``--allow-mass-delete`` (added in 2.7.0): with ``trash``, files deleted locally
        are trashed on Drive and counted as ``trashed=``; a guard refusing the trash step
        is a failure (exit ``1``) with nothing trashed. Files deleted locally that stay on Drive are counted as
-       ``local-deleted=`` (since 3.0.0).
+       ``local-deleted=`` (since 2.7.0).
      - ``0`` all transferred/skipped (including a pattern that matched nothing, which is
        reported and skipped); ``1`` one or more files failed to transfer, a pattern
        matched nothing under ``--strict``, or a Drive/lock error; ``2`` usage error.
@@ -153,10 +153,10 @@ flag/argument name; these names, not just their presence, are frozen.
        repeatable; a shell glob, or a quoted pattern protonfs expands itself against the
        index).
        Options: ``--resolve [remote|local|both]`` (``replace`` accepted as an alias for
-       ``remote``), ``--dry-run``, ``--refresh``, ``--strict``, ``--restore-deleted``
-       (added in 3.0.0). Since 3.0.0 a file this machine held that is gone locally is
-       not downloaded unless ``--restore-deleted`` is given; it is counted as
-       ``local-deleted=`` and is not a failure.
+       ``remote``), ``--dry-run``, ``--refresh``, ``--strict``, ``--no-restore`` (added
+       in 2.7.0: files this machine held that are gone locally are left alone and
+       counted as ``local-deleted=``, not a failure; a PATH given literally that names
+       one is still restored).
      - ``0`` all transferred/skipped (including the "index empty, run refresh first"
        early-exit message -- which since 2.1.0 appears only when the remote has no
        manifest to seed the index from -- and a pattern that matched nothing, which is
@@ -256,12 +256,13 @@ flag/argument name; these names, not just their presence, are frozen.
      - Install/list/remove cron jobs running protonfs on a schedule. ``--add`` (with
        ``--every``/``--cron``/``--at``, ``--command [push|pull|sync|offload|prune]``,
        ``--path``, ``--resolve``, ``--strict``, ``--min-age``, ``--keep``,
-       ``--deletions``, ``--label``); ``--uninstall <id|index>`` (``-U``), ``--uninstall --all``; bare or
+       ``--deletions``, ``--no-restore``, ``--label``); ``--uninstall <id|index>`` (``-U``), ``--uninstall --all``; bare or
        ``--list`` lists. Added in 1.8.0. ``--path`` accepts a glob pattern (re-expanded
        by protonfs on every run) and ``--strict`` was added in 1.11.0. The ``offload``
        and ``prune`` commands, ``--min-age``/``--keep``, the job-conflict checks and
        one-job-at-a-time per repo were added in 2.2.0; ``--min-age`` on a ``push`` job in
-       2.4.0; ``--deletions [keep|trash]`` (push and sync jobs) in 3.0.0.
+       2.4.0; ``--deletions [keep|trash]`` (push and sync jobs) and ``--no-restore``
+       (pull and sync jobs) in 2.7.0.
      - ``0`` success (including a job added with a conflict *warning*); ``2`` usage
        error (bad cadence, unknown id, not a repo, conflicting mode flags, an option
        the command does not take, or a job refused because it conflicts with one
@@ -315,12 +316,12 @@ checked on Drive; the states marked *remote view* are only produced by
      - Present locally, not in the index.
      - drift (``1``)
    * - ``local-deleted``
-     - Held by this machine, now gone locally (with a remote view: still listed on
-       Drive). Reported without ``--remote`` too since 3.0.0; it was ``remote-only``
-       there before.
+     - *Remote view.* Held by this machine, now gone locally, still listed on Drive.
      - drift (``1``)
    * - ``remote-only``
-     - *Remote view.* Listed on Drive, absent locally and from the index.
+     - Absent locally, with the copy on Drive: listed on Drive and absent from the
+       index (remote view), or held by this machine and now gone locally, as the
+       index records (no remote view).
      - drift (``1``)
    * - ``local-modified`` / ``remote-modified``
      - *Remote view.* One side diverged from the index; the other did not.
@@ -339,7 +340,7 @@ Known keys for ``config get``/``config set``: :confval:`remote_root`,
 :confval:`device_id`, :confval:`defaults.on_conflict`, :confval:`defaults.low_io`,
 :confval:`defaults.event_log`, :confval:`defaults.progress_style`,
 :confval:`defaults.manifest` (added in 2.1.0), :confval:`defaults.skip_thumbnails` (added
-in 2.5.0), :confval:`defaults.deletions` (added in 3.0.0). Each is defined in the
+in 2.5.0), :confval:`defaults.deletions` (added in 2.7.0). Each is defined in the
 Configuration
 section of :doc:`reference/index`.
 

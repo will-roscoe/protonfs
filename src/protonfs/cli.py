@@ -757,7 +757,7 @@ def push(
        File PATHs share one pass, so N files no longer cost N listings and index saves
        (#171).
 
-    .. versionchanged:: 3.0.0
+    .. versionchanged:: 2.7.0
        A file moved or renamed locally is moved or renamed on Drive instead of uploaded
        again, and counted as ``moved=`` in the summary. Added ``--deletions`` and
        ``--allow-mass-delete``: with ``trash``, files deleted locally are moved to the
@@ -1116,7 +1116,7 @@ def offload(
        File PATHs share one pass, so N files no longer cost N listings and index saves
        (#171).
 
-    .. versionchanged:: 3.0.0
+    .. versionchanged:: 2.7.0
        A file moved or renamed locally is moved or renamed on Drive instead of uploaded
        again, and counted as ``moved=`` in the summary. Added ``--deletions`` and
        ``--allow-mass-delete``: with ``trash``, files deleted locally are moved to the

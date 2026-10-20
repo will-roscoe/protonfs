@@ -164,7 +164,7 @@ class TransferResult:
     .. versionchanged:: 2.4.0
        Added ``unsettled_items`` for push's settle window (#168).
 
-    .. versionchanged:: 3.0.0
+    .. versionchanged:: 2.7.0
        Added ``local_deleted_items`` for the files pull no longer restores, and
        ``moved_items`` for the local moves push applies on Drive, and ``trashed_items``
        and ``trashed`` for the local deletions it sends to the Drive trash (#197).
@@ -1186,7 +1186,7 @@ class DriveClient:
             rather than raised, so check a listing to learn what moved.
         :raises DriveError: when the command itself fails.
 
-        .. versionadded:: 3.0.0
+        .. versionadded:: 2.7.0
 
         .. seealso:: :meth:`rename` to change a node's name in place.
         """
@@ -1202,7 +1202,7 @@ class DriveClient:
         :raises DriveError: when the command fails or reports the node as not renamed
             (e.g. the name is taken).
 
-        .. versionadded:: 3.0.0
+        .. versionadded:: 2.7.0
         """
         result = self._run_json(["filesystem", "rename", remote_path, new_name])
         items = result if isinstance(result, list) else [result]
