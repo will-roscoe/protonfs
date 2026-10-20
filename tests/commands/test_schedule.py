@@ -674,3 +674,68 @@ def test_job_from_a_manifest_predating_drive_cache_home_still_loads(repo: Path) 
     manifest_path.write_text(json.dumps(document))
 
     assert sched.list_jobs(repo)[0].drive_cache_home is None
+
+
+# --- #197: deletion policy for scheduled pushes ------------------------------------------
+
+
+def test_add_sync_job_with_deletions_passes_it_to_the_push_step_only(repo: Path) -> None:
+    job = sched.add_job(
+        repo, every="daily", command="sync", deletions="trash", runner=FakeCrontab()
+    )
+    assert job.deletions == "trash"
+    lines = Path(job.wrapper_path).read_text().splitlines()
+    push_line = next(line for line in lines if "-v push" in line)
+    pull_line = next(line for line in lines if "-v pull" in line)
+    assert "--deletions=trash" in push_line
+    assert "--deletions" not in pull_line
+
+
+def test_add_push_job_with_deletions(repo: Path) -> None:
+    job = sched.add_job(
+        repo, every="daily", command="push", deletions="trash", min_age="1h",
+        runner=FakeCrontab(),
+    )
+    text = Path(job.wrapper_path).read_text()
+    assert "--deletions=trash" in text and "--min-age=1h" in text
+
+
+@pytest.mark.parametrize("command", ["pull", "offload", "prune"])
+def test_deletions_is_refused_for_a_job_without_a_push_of_its_own(repo: Path, command) -> None:
+    with pytest.raises(sched.ScheduleError, match="--deletions"):
+        sched.add_job(repo, every="daily", command=command, deletions="trash", runner=FakeCrontab())
+
+
+def test_deletions_rejects_an_unknown_policy(repo: Path) -> None:
+    with pytest.raises(sched.ScheduleError, match="keep"):
+        sched.add_job(repo, every="daily", command="push", deletions="delete", runner=FakeCrontab())
+
+
+def test_a_manifest_written_before_deletions_existed_still_loads(repo: Path) -> None:
+    job = sched.add_job(repo, every="daily", command="push", runner=FakeCrontab())
+    import json
+
+    manifest_path = repo / ".protonfs" / "schedule.local.json"
+    document = json.loads(manifest_path.read_text())
+    for data in document["jobs"].values():
+        data.pop("deletions", None)
+    manifest_path.write_text(json.dumps(document))
+
+    assert sched.list_jobs(repo)[0].deletions is None
+    assert sched.list_jobs(repo)[0].id == job.id
+
+
+def test_cli_schedule_add_passes_deletions(repo: Path, monkeypatch) -> None:
+    from click.testing import CliRunner
+
+    from protonfs.cli import main
+
+    monkeypatch.chdir(repo)
+    monkeypatch.setattr("protonfs.commands.schedule._default_runner", FakeCrontab())
+
+    result = CliRunner().invoke(
+        main, ["schedule", "--add", "--every", "daily", "--command", "sync", "--deletions", "trash"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert sched.list_jobs(repo)[0].deletions == "trash"

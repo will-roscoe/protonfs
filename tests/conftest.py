@@ -8,7 +8,8 @@ the per-file `_FakeDrive` copies. It is *configured*, never subclassed: pass an
 `version` / `authed` for the setup checks. Use the `make_fake_drive` fixture (a
 factory) so tests need no imports.
 
-`move` and `rename` relocate a landed file, keeping its revision and content (#197).
+`move` and `rename` relocate a landed file, keeping its revision and content, and
+`trash` takes it out of its folder's listing (#197); `fail_trash` makes `trash` raise.
 `fail_moves` / `fail_renames` make them raise; `ignored_moves` makes `move` report
 success without moving anything, to exercise push's check of the listing afterwards.
 
@@ -54,6 +55,7 @@ class FakeDrive:
         fail_moves: bool = False,
         fail_renames: bool = False,
         ignored_moves: bool = False,
+        fail_trash: bool = False,
     ) -> None:
         # recorded calls
         self.upload_calls: list[tuple] = []
@@ -78,6 +80,7 @@ class FakeDrive:
         self._fail_moves = fail_moves
         self._fail_renames = fail_renames
         self._ignored_moves = ignored_moves
+        self._fail_trash = fail_trash
         # configured responses
         self._walk_entries = walk_entries or []
         self._walk_by_root = walk_by_root
@@ -359,7 +362,14 @@ class FakeDrive:
         return entries
 
     def trash(self, remote_paths):
+        if self._fail_trash:
+            raise DriveError("simulated trash failure")
         self.trashed.extend(remote_paths)
+        # #197: a trashed file leaves its folder's listing
+        for path in remote_paths:
+            parent, name = path.rsplit("/", 1)
+            self._remote_files.get(parent, {}).pop(name, None)
+            self._remote_sha1.get(parent, {}).pop(name, None)
         return [{"ok": True} for _ in remote_paths]
 
     def delete(self, remote_paths):

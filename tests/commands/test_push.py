@@ -1996,3 +1996,299 @@ def test_cli_push_reports_moved_files(tmp_path: Path, monkeypatch, make_fake_dri
     assert result.exit_code == 0, result.output
     assert "moved=1" in result.output
     assert "nothing to push" not in result.output
+
+
+# --- #197: the deletion policy (keep | trash) ---------------------------------------------
+
+
+def _photos(tmp_path: Path, make_fake_drive, count: int = 20, **fake_kwargs):
+    files = {f"photos/p{i:02d}.jpg": f"photo {i}".encode() for i in range(count)}
+    files["top.txt"] = b"root file"
+    return _pushed_tree(tmp_path, make_fake_drive, files, **fake_kwargs)
+
+
+def test_push_keeps_a_file_deleted_locally_by_default(tmp_path: Path, make_fake_drive) -> None:
+    ctx = _photos(tmp_path, make_fake_drive)
+    (tmp_path / "photos" / "p00.jpg").unlink()
+
+    result = push(ctx, None, resolve=None, dry_run=False)
+
+    assert ctx.drive.trashed == []
+    assert result.trashed_items == 0
+    assert ctx.index.get("photos/p00.jpg") is not None
+
+
+def test_push_with_deletions_trash_trashes_the_remote_copy_and_drops_the_entry(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    ctx = _photos(tmp_path, make_fake_drive)
+    (tmp_path / "photos" / "p00.jpg").unlink()
+
+    result = push(ctx, None, resolve=None, dry_run=False, deletions="trash")
+
+    assert ctx.drive.trashed == [f"{ROOT}/photos/p00.jpg"]
+    assert result.trashed_items == 1
+    assert result.trashed == ["photos/p00.jpg"]
+    assert result.failed_items == 0
+    assert ctx.index.get("photos/p00.jpg") is None
+    assert not _on_drive(ctx.drive, f"{ROOT}/photos/p00.jpg")
+
+
+def test_push_takes_the_deletion_policy_from_config(tmp_path: Path, make_fake_drive) -> None:
+    ctx = _photos(tmp_path, make_fake_drive)
+    ctx.config.defaults.deletions = "trash"
+    (tmp_path / "photos" / "p00.jpg").unlink()
+
+    push(ctx, None, resolve=None, dry_run=False)
+    assert ctx.drive.trashed == [f"{ROOT}/photos/p00.jpg"]
+
+    (tmp_path / "photos" / "p01.jpg").unlink()
+    push(ctx, None, resolve=None, dry_run=False, deletions="keep")  # the flag wins
+    assert ctx.index.get("photos/p01.jpg") is not None
+
+
+def test_push_dry_run_lists_what_would_be_trashed(tmp_path: Path, make_fake_drive) -> None:
+    ctx = _photos(tmp_path, make_fake_drive)
+    (tmp_path / "photos" / "p00.jpg").unlink()
+    (tmp_path / "photos" / "p01.jpg").unlink()
+
+    result = push(ctx, None, resolve=None, dry_run=True, deletions="trash")
+
+    assert result.trashed == ["photos/p00.jpg", "photos/p01.jpg"]
+    assert result.trashed_items == 2
+    assert ctx.drive.trashed == []
+    assert ctx.index.get("photos/p00.jpg") is not None
+
+
+def test_push_never_trashes_a_path_that_is_now_ignored(tmp_path: Path, make_fake_drive) -> None:
+    # ignoring a path stops syncing it; it must not delete Drive's copy
+    ctx = _photos(tmp_path, make_fake_drive)
+    (tmp_path / ".protonfs" / "ignore").write_text("photos/p00.jpg\n")
+    (tmp_path / "photos" / "p00.jpg").unlink()
+
+    result = push(ctx, None, resolve=None, dry_run=False, deletions="trash")
+
+    assert ctx.drive.trashed == []
+    assert result.trashed_items == 0
+
+
+def test_push_refuses_to_trash_a_vanished_top_level_directory_without_the_override(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    import shutil
+
+    ctx = _photos(tmp_path, make_fake_drive)
+    shutil.rmtree(tmp_path / "photos")
+
+    refused = push(ctx, None, resolve=None, dry_run=False, deletions="trash")
+
+    assert ctx.drive.trashed == []
+    assert refused.trashed_items == 0
+    assert refused.failed_items == 1
+    assert refused.failures[0]["kind"] == "deletion-refused"
+    assert "photos" in refused.failures[0]["error"]
+    assert ctx.index.get("photos/p00.jpg") is not None
+
+    allowed = push(
+        ctx, None, resolve=None, dry_run=False, deletions="trash", allow_mass_delete=True
+    )
+
+    assert allowed.trashed_items == 20
+    assert allowed.failed_items == 0
+
+
+def test_push_refuses_to_trash_everything_this_machine_held_even_with_the_override(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    # every held file gone at once looks like an unmounted disk or the wrong directory
+    ctx = _pushed_tree(tmp_path, make_fake_drive, {"a.txt": b"a", "b.txt": b"b"})
+    (tmp_path / "a.txt").unlink()
+    (tmp_path / "b.txt").unlink()
+
+    result = push(
+        ctx, None, resolve=None, dry_run=False, deletions="trash", allow_mass_delete=True
+    )
+
+    assert ctx.drive.trashed == []
+    assert result.failures[0]["kind"] == "deletion-refused"
+    assert "protonfs rm" in result.failures[0]["error"]
+
+
+def test_push_refuses_a_mass_deletion_over_the_per_run_cap(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    ctx = _photos(tmp_path, make_fake_drive)
+    for i in range(12):  # 12 of 21 tracked files
+        (tmp_path / "photos" / f"p{i:02d}.jpg").unlink()
+
+    refused = push(ctx, None, resolve=None, dry_run=True, deletions="trash")
+
+    assert refused.failures[0]["kind"] == "deletion-refused"
+    assert "--allow-mass-delete" in refused.failures[0]["error"]
+    assert "12" in refused.failures[0]["error"]
+
+    allowed = push(
+        ctx, None, resolve=None, dry_run=False, deletions="trash", allow_mass_delete=True
+    )
+    assert allowed.trashed_items == 12
+
+
+def test_push_caps_a_run_at_the_absolute_limit(
+    tmp_path: Path, make_fake_drive, monkeypatch
+) -> None:
+    monkeypatch.setattr("protonfs.commands.push.MASS_DELETE_LIMIT", 2)
+    monkeypatch.setattr("protonfs.commands.push.MASS_DELETE_FRACTION", 1.0)
+    ctx = _photos(tmp_path, make_fake_drive)
+    for i in range(3):
+        (tmp_path / "photos" / f"p{i:02d}.jpg").unlink()
+
+    result = push(ctx, None, resolve=None, dry_run=False, deletions="trash")
+
+    assert ctx.drive.trashed == []
+    assert result.failures[0]["kind"] == "deletion-refused"
+
+
+def test_push_reports_a_trash_that_failed_and_keeps_the_entry(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    ctx = _photos(tmp_path, make_fake_drive, fail_trash=True)
+    (tmp_path / "photos" / "p00.jpg").unlink()
+
+    result = push(ctx, None, resolve=None, dry_run=False, deletions="trash")
+
+    assert result.trashed_items == 0
+    assert result.failed_items == 1
+    assert result.failures[0]["kind"] == "trash"
+    assert ctx.index.get("photos/p00.jpg") is not None
+
+
+def test_push_trashes_the_old_path_of_a_move_it_had_to_upload_instead(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    ctx = _photos(tmp_path, make_fake_drive, fail_moves=True)
+    _move(tmp_path, "photos/p00.jpg", "misc/p00.jpg")
+
+    result = push(ctx, None, resolve=None, dry_run=False, deletions="trash")
+
+    assert result.moved_items == 0
+    assert result.transferred_items == 1
+    assert result.trashed == ["photos/p00.jpg"]
+    assert ctx.index.get("photos/p00.jpg") is None
+    assert ctx.index.get("misc/p00.jpg") is not None
+
+
+def test_push_never_trashes_the_old_path_of_a_move_it_applied(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    ctx = _photos(tmp_path, make_fake_drive)
+    _move(tmp_path, "photos/p00.jpg", "misc/p00.jpg")
+
+    result = push(ctx, None, resolve=None, dry_run=False, deletions="trash")
+
+    assert result.moved_items == 1
+    assert ctx.drive.trashed == []
+    assert _on_drive(ctx.drive, f"{ROOT}/misc/p00.jpg")
+
+
+def test_push_with_a_subpath_or_named_files_trashes_nothing_outside_them(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    ctx = _pushed_tree(
+        tmp_path, make_fake_drive,
+        {"a/x": b"x", "a/keep": b"k", "b/y": b"y", "b/keep": b"k2"},
+    )
+    (tmp_path / "a" / "x").unlink()
+    (tmp_path / "b" / "y").unlink()
+
+    push(ctx, "b", resolve=None, dry_run=False, deletions="trash")
+    push(ctx, None, resolve=None, dry_run=False, deletions="trash", only={"b/keep"})
+
+    assert ctx.drive.trashed == [f"{ROOT}/b/y"]
+    assert ctx.index.get("a/x") is not None
+
+
+def test_push_drops_a_trashed_file_from_the_remote_manifest(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    from protonfs import manifest
+    from protonfs.manifest import Manifest
+
+    ctx = _photos(tmp_path, make_fake_drive)
+    ctx.config.defaults.manifest = True
+    ident = ctx.drive.remote_identities(f"{ROOT}/photos")["p00.jpg"]
+    listed = RemoteEntry(
+        "photos/p00.jpg", False, ident.claimed_size, claimed_size=ident.claimed_size,
+        sha1=ident.sha1, revision=ident.revision,
+    )
+    manifest.rebuild(ctx, {"photos/p00.jpg": listed}, None)
+    (tmp_path / "photos" / "p00.jpg").unlink()
+
+    push(ctx, None, resolve=None, dry_run=False, deletions="trash")
+
+    path = f"{ROOT}/.protonfs/manifest.json"
+    assert "photos/p00.jpg" not in Manifest.from_bytes(ctx.drive._remote_content[path]).entries
+
+
+def test_cli_push_deletions_trash_reports_and_lists_on_a_dry_run(
+    tmp_path: Path, monkeypatch, make_fake_drive
+) -> None:
+    from click.testing import CliRunner
+
+    from protonfs.cli import main
+
+    ctx = _photos(tmp_path, make_fake_drive)
+    ctx.index.save()
+    (tmp_path / "photos" / "p00.jpg").unlink()
+    _inject_ctx(monkeypatch, ctx)
+
+    preview = CliRunner().invoke(main, ["push", "--dry-run", "--deletions", "trash"])
+
+    assert preview.exit_code == 0, preview.output
+    assert "trashed=1" in preview.output
+    assert "trash photos/p00.jpg" in preview.output
+    assert ctx.drive.trashed == []
+
+    done = CliRunner().invoke(main, ["push", "--deletions", "trash"])
+
+    assert done.exit_code == 0, done.output
+    assert "trashed=1" in done.output
+    assert ctx.drive.trashed == [f"{ROOT}/photos/p00.jpg"]
+
+
+def test_cli_push_refused_deletion_exits_1_and_names_the_override(
+    tmp_path: Path, monkeypatch, make_fake_drive
+) -> None:
+    import shutil
+
+    from click.testing import CliRunner
+
+    from protonfs.cli import main
+
+    ctx = _photos(tmp_path, make_fake_drive)
+    ctx.index.save()
+    shutil.rmtree(tmp_path / "photos")
+    _inject_ctx(monkeypatch, ctx)
+
+    result = CliRunner().invoke(main, ["push", "--deletions", "trash"])
+
+    assert result.exit_code == 1, result.output
+    assert "--allow-mass-delete" in result.output
+    assert "--resolve" not in result.output  # not a remote conflict
+
+
+def test_push_never_trashes_the_old_path_of_a_move_held_by_the_settle_window(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    # a copy-then-delete move gives the new file a fresh mtime, so --min-age holds it
+    # back; until it is pushed, Drive's copy at the old path is the only one
+    ctx = _photos(tmp_path, make_fake_drive)
+    data = (tmp_path / "photos" / "p00.jpg").read_bytes()
+    (tmp_path / "photos" / "p00.jpg").unlink()
+    (tmp_path / "misc").mkdir()
+    (tmp_path / "misc" / "p00.jpg").write_bytes(data)
+
+    result = push(ctx, None, resolve=None, dry_run=False, deletions="trash", min_age=3600)
+
+    assert result.unsettled_items == 1
+    assert ctx.drive.trashed == []
+    assert ctx.index.get("photos/p00.jpg") is not None

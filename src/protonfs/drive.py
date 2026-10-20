@@ -22,7 +22,7 @@ import subprocess
 import time
 from collections import deque
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from protonfs.logs import backend_passthrough_enabled
@@ -153,6 +153,10 @@ class TransferResult:
         populated by pull.
     :ivar moved_items: files push moved or renamed on Drive to follow a local move,
         instead of uploading them again; not part of the CLI's JSON; populated by push.
+    :ivar trashed_items: files push moved to the Drive trash because they were deleted
+        locally (``deletions="trash"``); with a dry run, the ones it would. Populated by
+        push.
+    :ivar trashed: the repo-relative paths counted in ``trashed_items``.
 
     .. versionchanged:: 1.7.0
        Added ``adopted_items`` for the push self-heal-adopt path.
@@ -162,7 +166,8 @@ class TransferResult:
 
     .. versionchanged:: 3.0.0
        Added ``local_deleted_items`` for the files pull no longer restores, and
-       ``moved_items`` for the local moves push applies on Drive (#197).
+       ``moved_items`` for the local moves push applies on Drive, and ``trashed_items``
+       and ``trashed`` for the local deletions it sends to the Drive trash (#197).
     """
 
     transferred_items: int
@@ -173,6 +178,8 @@ class TransferResult:
     unsettled_items: int = 0
     local_deleted_items: int = 0
     moved_items: int = 0
+    trashed_items: int = 0
+    trashed: list[str] = field(default_factory=list)
 
     @classmethod
     def from_json(cls, data: dict) -> TransferResult:

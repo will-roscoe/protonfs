@@ -99,6 +99,9 @@ class ScheduledJob:
     # #178: PROTONFS_DRIVE_CACHE_HOME when the job was added, exported by its wrapper so
     # cron runs keep proton-drive's cache off a network home. None leaves the default.
     drive_cache_home: str | None = None
+    # #197: the deletion policy passed to a push or sync job's push as --deletions. None
+    # leaves it to defaults.deletions.
+    deletions: str | None = None
 
 
 def _default_runner(args: list[str], stdin: str | None = None) -> subprocess.CompletedProcess:
@@ -199,8 +202,10 @@ def _resolve_drive_bin() -> str:
 def _run_lines(job: ScheduledJob, protonfs_bin: str) -> str:
     """The protonfs invocations a job runs, in order."""
     exe = f'"{protonfs_bin}" -v'
+    # #197: only a push of the job's own takes the deletion policy
+    deletions = f" --deletions={job.deletions}" if job.deletions else ""
     if job.command == "sync":
-        return f"  {exe} pull{_args(job)}\n  {exe} push{_args(job)}\n"
+        return f"  {exe} pull{_args(job)}\n  {exe} push{_args(job)}{deletions}\n"
     if job.command == "offload":
         # Push first, as a prune does: offload can only reclaim what is on Drive, and it
         # re-verifies every file against the live listing before deleting anything.
@@ -212,7 +217,9 @@ def _run_lines(job: ScheduledJob, protonfs_bin: str) -> str:
         return f"  {exe} prune --yes{_args(job, transfer=True, retention=True)}\n"
     if job.command == "push" and job.min_age:
         # #168: the push's own settle window; an offload job's push step takes none
-        return f"  {exe} push{_args(job)} --min-age={job.min_age}\n"
+        return f"  {exe} push{_args(job)} --min-age={job.min_age}{deletions}\n"
+    if job.command == "push":
+        return f"  {exe} push{_args(job)}{deletions}\n"
     return f"  {exe} {job.command}{_args(job)}\n"
 
 
@@ -470,6 +477,7 @@ def add_job(
     strict: bool = False,
     min_age: str | None = None,
     keep: int | None = None,
+    deletions: str | None = None,
     list_timeout: int = DEFAULT_LIST_TIMEOUT,
     transfer_timeout: int = DEFAULT_TRANSFER_TIMEOUT,
     batch_size: int = DEFAULT_BATCH_SIZE,
@@ -491,6 +499,9 @@ def add_job(
         ``None`` uses the command's default (none for push).
     :param keep: newest files per directory a ``prune`` job keeps; ``None`` uses the
         command's default.
+    :param deletions: deletion policy (``keep`` | ``trash``) passed to a ``push`` or
+        ``sync`` job's push as ``--deletions``; ``None`` leaves it to
+        ``defaults.deletions``.
     :param warn: called with each warning-level conflict (the job is still added).
     :raises ScheduleError: on a non-repo, unknown command, bad cadence, missing crontab,
         an option the command does not take, or an error-level conflict with a job
@@ -508,12 +519,18 @@ def add_job(
 
     .. versionchanged:: 2.6.0
        Records :envvar:`PROTONFS_DRIVE_CACHE_HOME` and exports it from the wrapper (#178).
+
+    .. versionchanged:: 3.0.0
+       Added ``deletions`` (#197).
     """
     if not is_protonfs_repo(repo_root):
         raise ScheduleError(f"{repo_root} is not a protonfs repo (run `protonfs setup`).")
     if command not in COMMANDS:
         raise ScheduleError(f"unknown --command {command!r} (choose {', '.join(COMMANDS)}).")
-    _check_options(command, resolve=resolve, strict=strict, min_age=min_age, keep=keep)
+    _check_options(
+        command, resolve=resolve, strict=strict, min_age=min_age, keep=keep,
+        deletions=deletions,
+    )
     conflicts = check_conflicts(command, path, list_jobs(repo_root))
     errors = [c.message for c in conflicts if c.level == "error"]
     if errors:
@@ -546,6 +563,7 @@ def add_job(
         log_path=str(sched_dir / f"{job_id}.log"),
         wrapper_path=str(sched_dir / f"{job_id}.sh"),
         drive_cache_home=os.environ.get(CACHE_HOME_ENV) or None,
+        deletions=deletions,
     )
 
     protonfs_bin = protonfs_bin or shutil.which("protonfs") or "protonfs"
@@ -566,10 +584,25 @@ def add_job(
 
 
 def _check_options(
-    command: str, *, resolve: str | None, strict: bool, min_age: str | None, keep: int | None
+    command: str,
+    *,
+    resolve: str | None,
+    strict: bool,
+    min_age: str | None,
+    keep: int | None,
+    deletions: str | None = None,
 ) -> None:
     """Refuse options the scheduled command would silently ignore."""
+    from protonfs.config import DELETION_POLICIES
     from protonfs.retention import RetentionError, parse_duration
+
+    if deletions is not None:
+        if command not in ("push", "sync"):
+            raise ScheduleError("--deletions applies to push and sync jobs only")
+        if deletions not in DELETION_POLICIES:
+            raise ScheduleError(
+                f"--deletions must be {' or '.join(DELETION_POLICIES)}, not {deletions!r}"
+            )
 
     if (resolve or strict) and command == "prune":
         raise ScheduleError("--resolve/--strict apply to push/pull; a prune job does not take them")

@@ -342,6 +342,8 @@ def _accumulate_transfer(total, part) -> None:
     total.unsettled_items += part.unsettled_items
     total.local_deleted_items += part.local_deleted_items
     total.moved_items += part.moved_items
+    total.trashed_items += part.trashed_items
+    total.trashed += part.trashed
 
 
 def _verify_index(repair: bool) -> None:
@@ -712,9 +714,29 @@ def ls(
     help="Settle window (e.g. 30m, 2h): hold back files modified more recently than this, "
     "so a file still being written is never uploaded part-way. 0 holds nothing back.",
 )
+@click.option(
+    "--deletions",
+    type=click.Choice(["keep", "trash"]),
+    default=None,
+    help="What to do on Drive with files this machine held that are gone locally: keep "
+    "leaves Drive's copy, trash moves it to the Drive trash. Default: the repo's "
+    "defaults.deletions (keep).",
+)
+@click.option(
+    "--allow-mass-delete",
+    is_flag=True,
+    help="With --deletions trash, trash even when a top-level directory vanished or more "
+    "files than the per-run cap would go.",
+)
 @_drive_error_boundary
 def push(
-    path: tuple[str, ...], resolve: str | None, dry_run: bool, strict: bool, min_age: str
+    path: tuple[str, ...],
+    resolve: str | None,
+    dry_run: bool,
+    strict: bool,
+    min_age: str,
+    deletions: str | None,
+    allow_mass_delete: bool,
 ) -> None:
     """Upload local-only/changed files to Drive (any number of PATHs).
 
@@ -747,7 +769,9 @@ def push(
 
     .. versionchanged:: 3.0.0
        A file moved or renamed locally is moved or renamed on Drive instead of uploaded
-       again, and counted as ``moved=`` in the summary (#197).
+       again, and counted as ``moved=`` in the summary. Added ``--deletions`` and
+       ``--allow-mass-delete``: with ``trash``, files deleted locally are moved to the
+       Drive trash and counted as ``trashed=`` (a dry run lists them) (#197).
     """
     from protonfs.commands.push import push as push_files
     from protonfs.context import load_context
@@ -787,6 +811,7 @@ def push(
                     push_files(
                         ctx, subpath, resolve, dry_run, manifest_updates=manifest_updates,
                         min_age=min_age_s, only=only, manifest_forget=manifest_forget,
+                        deletions=deletions, allow_mass_delete=allow_mass_delete,
                     ),
                 )
         finally:
@@ -802,7 +827,7 @@ def push(
                     ctx.index.save()
     if (
         result.transferred_items + result.skipped_items + result.failed_items
-        + result.unsettled_items + result.moved_items == 0
+        + result.unsettled_items + result.moved_items + result.trashed_items == 0
     ):
         # An existing path that yields no candidates (nothing changed, or everything under
         # it is excluded by the ignore rules) would otherwise print only the bare zero
@@ -812,21 +837,35 @@ def push(
     adopted = f" adopted={result.adopted_items}" if result.adopted_items else ""
     moved = f" moved={result.moved_items}" if result.moved_items else ""
     unsettled = f" unsettled={result.unsettled_items}" if result.unsettled_items else ""
+    trashed = f" trashed={result.trashed_items}" if result.trashed_items else ""
     click.echo(
-        f"transferred={result.transferred_items}{adopted}{moved} "
+        f"transferred={result.transferred_items}{adopted}{moved}{trashed} "
         f"skipped={result.skipped_items} failed={result.failed_items}{unsettled}"
     )
+    if dry_run:
+        for rel in result.trashed:
+            click.echo(f"  trash {rel}")
     for failure in result.failures:
         click.echo(f"  FAILED {failure['name']}: {failure['error']}")
     if result.failed_items:
         under_delivered = [f for f in result.failures if f.get("kind") == "under-delivered"]
         unverified = [f for f in result.failures if f.get("kind") == "unverified"]
         phantoms = [f for f in result.failures if f.get("kind") == "phantom"]
+        refused = [f for f in result.failures if f.get("kind") == "deletion-refused"]
+        untrashed = [f for f in result.failures if f.get("kind") == "trash"]
         conflicts = [
             f
             for f in result.failures
-            if f.get("kind") not in ("under-delivered", "unverified", "phantom")
+            if f.get("kind")
+            not in ("under-delivered", "unverified", "phantom", "deletion-refused", "trash")
         ]
+        if refused:
+            click.echo("  -> nothing was trashed on Drive; the files stay indexed.")
+        if untrashed:
+            click.echo(
+                f"  -> {len(untrashed)} file(s) are still on Drive after trashing; they "
+                "stay indexed and are retried on the next push."
+            )
         if under_delivered:
             click.echo(
                 f"  -> {len(under_delivered)} file(s) were reported transferred but did not "
@@ -1081,7 +1120,9 @@ def offload(
 
     .. versionchanged:: 3.0.0
        A file moved or renamed locally is moved or renamed on Drive instead of uploaded
-       again, and counted as ``moved=`` in the summary (#197).
+       again, and counted as ``moved=`` in the summary. Added ``--deletions`` and
+       ``--allow-mass-delete``: with ``trash``, files deleted locally are moved to the
+       Drive trash and counted as ``trashed=`` (a dry run lists them) (#197).
     """
     from protonfs.commands.offload import OffloadResult
     from protonfs.commands.offload import offload as offload_files
@@ -1571,11 +1612,16 @@ def completions(shell: str, install: bool, uninstall: bool) -> None:
     "--keep", "sched_keep", type=click.IntRange(min=0),
     help="Newest files per directory a prune job keeps; default: prune's (10).",
 )
+@click.option(
+    "--deletions", "sched_deletions", type=click.Choice(["keep", "trash"]),
+    help="Deletion policy passed to a push or sync job's push (see push --deletions); "
+    "default: the repo's defaults.deletions.",
+)
 @click.option("--label", default="", help="Human label shown in --list.")
 @click.option("--json", "as_json", is_flag=True, help="With --list, emit JSON.")
 def schedule(
     list_, add, uninstall, all_, every, cron_expr, at, command, sched_path,
-    sched_resolve, sched_strict, sched_min_age, sched_keep, label, as_json,
+    sched_resolve, sched_strict, sched_min_age, sched_keep, sched_deletions, label, as_json,
 ) -> None:
     """Manage scheduled cron jobs (push, pull, sync, offload, prune) for this repo.
 
@@ -1614,6 +1660,9 @@ def schedule(
     .. versionchanged:: 2.2.0
        ``offload`` and ``prune`` jobs, ``--min-age``/``--keep``, conflict checks, and one
        job at a time per repo (#158).
+
+    .. versionchanged:: 3.0.0
+       Added ``--deletions`` for push and sync jobs (#197).
     """
     import json as _json
     from pathlib import Path
@@ -1631,7 +1680,8 @@ def schedule(
             job = sched.add_job(
                 repo, every=every, cron=cron_expr, at=at, command=command,
                 path=sched_path, resolve=sched_resolve, strict=sched_strict,
-                min_age=sched_min_age, keep=sched_keep, label=label,
+                min_age=sched_min_age, keep=sched_keep, deletions=sched_deletions,
+                label=label,
                 warn=lambda msg: click.echo(f"warning: {msg}", err=True),
             )
             click.echo(f"scheduled job {job.id}: {job.cron}  {job.command}")
