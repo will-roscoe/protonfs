@@ -102,6 +102,9 @@ class ScheduledJob:
     # #197: the deletion policy passed to a push or sync job's push as --deletions. None
     # leaves it to defaults.deletions.
     deletions: str | None = None
+    # #197: pass --no-restore to a pull or sync job's pull, so a run leaves local
+    # deletions and moves for push instead of restoring them.
+    no_restore: bool = False
 
 
 def _default_runner(args: list[str], stdin: str | None = None) -> subprocess.CompletedProcess:
@@ -204,8 +207,11 @@ def _run_lines(job: ScheduledJob, protonfs_bin: str) -> str:
     exe = f'"{protonfs_bin}" -v'
     # #197: only a push of the job's own takes the deletion policy
     deletions = f" --deletions={job.deletions}" if job.deletions else ""
+    no_restore = " --no-restore" if job.no_restore else ""   # and only its pull --no-restore
     if job.command == "sync":
-        return f"  {exe} pull{_args(job)}\n  {exe} push{_args(job)}{deletions}\n"
+        return f"  {exe} pull{_args(job)}{no_restore}\n  {exe} push{_args(job)}{deletions}\n"
+    if job.command == "pull":
+        return f"  {exe} pull{_args(job)}{no_restore}\n"
     if job.command == "offload":
         # Push first, as a prune does: offload can only reclaim what is on Drive, and it
         # re-verifies every file against the live listing before deleting anything.
@@ -478,6 +484,7 @@ def add_job(
     min_age: str | None = None,
     keep: int | None = None,
     deletions: str | None = None,
+    no_restore: bool = False,
     list_timeout: int = DEFAULT_LIST_TIMEOUT,
     transfer_timeout: int = DEFAULT_TRANSFER_TIMEOUT,
     batch_size: int = DEFAULT_BATCH_SIZE,
@@ -502,9 +509,11 @@ def add_job(
     :param deletions: deletion policy (``keep`` | ``trash``) passed to a ``push`` or
         ``sync`` job's push as ``--deletions``; ``None`` leaves it to
         ``defaults.deletions``.
+    :param no_restore: pass ``--no-restore`` to a ``pull`` or ``sync`` job's pull, so a
+        run leaves files deleted or moved locally for push instead of restoring them.
     :param warn: called with each warning-level conflict (the job is still added), and,
-        for a ``sync`` job with no ``resolve`` or with the ``keep`` deletion policy, with
-        a note on what each run does with diverged files and local deletions.
+        for a ``sync`` job, with a note on what each run does with local deletions and
+        diverged files when its options leave that implicit.
     :raises ScheduleError: on a non-repo, unknown command, bad cadence, missing crontab,
         an option the command does not take, or an error-level conflict with a job
         already scheduled (see :func:`check_conflicts`).
@@ -522,9 +531,10 @@ def add_job(
     .. versionchanged:: 2.6.0
        Records :envvar:`PROTONFS_DRIVE_CACHE_HOME` and exports it from the wrapper (#178).
 
-    .. versionchanged:: 3.0.0
-       Added ``deletions``; a ``sync`` job with no ``resolve`` or the ``keep`` deletion
-       policy is added with a note through ``warn`` (#197).
+    .. versionchanged:: 2.7.0
+       Added ``deletions`` and ``no_restore``; a ``sync`` job whose pull restores local
+       deletions, or whose push keeps them on Drive, or that has no ``resolve``, is added
+       with a note through ``warn`` (#197).
     """
     if not is_protonfs_repo(repo_root):
         raise ScheduleError(f"{repo_root} is not a protonfs repo (run `protonfs setup`).")
@@ -532,7 +542,7 @@ def add_job(
         raise ScheduleError(f"unknown --command {command!r} (choose {', '.join(COMMANDS)}).")
     _check_options(
         command, resolve=resolve, strict=strict, min_age=min_age, keep=keep,
-        deletions=deletions,
+        deletions=deletions, no_restore=no_restore,
     )
     conflicts = check_conflicts(command, path, list_jobs(repo_root))
     errors = [c.message for c in conflicts if c.level == "error"]
@@ -542,7 +552,7 @@ def add_job(
         if warn is not None:
             warn(conflict.message)
     if command == "sync" and warn is not None:
-        note = _sync_note(repo_root, resolve, deletions)
+        note = _sync_note(repo_root, resolve, deletions, no_restore)
         if note:
             warn(note)
     if shutil.which("crontab") is None:
@@ -571,6 +581,7 @@ def add_job(
         wrapper_path=str(sched_dir / f"{job_id}.sh"),
         drive_cache_home=os.environ.get(CACHE_HOME_ENV) or None,
         deletions=deletions,
+        no_restore=no_restore,
     )
 
     protonfs_bin = protonfs_bin or shutil.which("protonfs") or "protonfs"
@@ -590,11 +601,14 @@ def add_job(
     return job
 
 
-def _sync_note(repo_root: Path, resolve: str | None, deletions: str | None) -> str | None:
+def _sync_note(
+    repo_root: Path, resolve: str | None, deletions: str | None, no_restore: bool = False
+) -> str | None:
     """What a new ``sync`` job will do that its options leave implicit, or ``None``.
 
-    Covers the deletion policy when it resolves to ``keep`` (the job's ``deletions``,
-    else the repo's ``defaults.deletions``) and a missing ``resolve``.
+    Covers a pull that restores local deletions (no ``no_restore``), and otherwise a
+    deletion policy that resolves to ``keep`` (the job's ``deletions``, else the repo's
+    ``defaults.deletions``); and a missing ``resolve``.
     """
     policy = deletions
     if policy is None:
@@ -606,7 +620,13 @@ def _sync_note(repo_root: Path, resolve: str | None, deletions: str | None) -> s
             config = None
         policy = config.defaults.deletions if config is not None else "keep"
     parts = []
-    if policy == "keep":
+    if not no_restore:
+        parts.append(
+            "each run's pull restores a file deleted or moved locally since the last run, "
+            "so push never sees the deletion or move; add --no-restore if local changes "
+            "should win"
+        )
+    elif policy == "keep":
         parts.append(
             "each run leaves a file deleted locally gone locally but keeps its copy on "
             "Drive (moves are applied on Drive); add --deletions trash to send deletions "
@@ -628,6 +648,7 @@ def _check_options(
     min_age: str | None,
     keep: int | None,
     deletions: str | None = None,
+    no_restore: bool = False,
 ) -> None:
     """Refuse options the scheduled command would silently ignore."""
     from protonfs.config import DELETION_POLICIES
@@ -640,6 +661,9 @@ def _check_options(
             raise ScheduleError(
                 f"--deletions must be {' or '.join(DELETION_POLICIES)}, not {deletions!r}"
             )
+
+    if no_restore and command not in ("pull", "sync"):
+        raise ScheduleError("--no-restore applies to pull and sync jobs only")
 
     if (resolve or strict) and command == "prune":
         raise ScheduleError("--resolve/--strict apply to push/pull; a prune job does not take them")

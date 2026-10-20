@@ -1616,11 +1616,17 @@ def completions(shell: str, install: bool, uninstall: bool) -> None:
     help="Deletion policy passed to a push or sync job's push (see push --deletions); "
     "default: the repo's defaults.deletions.",
 )
+@click.option(
+    "--no-restore", "sched_no_restore", is_flag=True,
+    help="Pass --no-restore to a pull or sync job's pull (see pull --no-restore), so a "
+    "run leaves files deleted or moved locally for push instead of restoring them.",
+)
 @click.option("--label", default="", help="Human label shown in --list.")
 @click.option("--json", "as_json", is_flag=True, help="With --list, emit JSON.")
 def schedule(
     list_, add, uninstall, all_, every, cron_expr, at, command, sched_path,
-    sched_resolve, sched_strict, sched_min_age, sched_keep, sched_deletions, label, as_json,
+    sched_resolve, sched_strict, sched_min_age, sched_keep, sched_deletions, sched_no_restore,
+    label, as_json,
 ) -> None:
     """Manage scheduled cron jobs (push, pull, sync, offload, prune) for this repo.
 
@@ -1660,8 +1666,9 @@ def schedule(
        ``offload`` and ``prune`` jobs, ``--min-age``/``--keep``, conflict checks, and one
        job at a time per repo (#158).
 
-    .. versionchanged:: 3.0.0
-       Added ``--deletions`` for push and sync jobs (#197).
+    .. versionchanged:: 2.7.0
+       Added ``--deletions`` for push and sync jobs and ``--no-restore`` for pull and
+       sync jobs (#197).
     """
     import json as _json
     from pathlib import Path
@@ -1680,7 +1687,7 @@ def schedule(
                 repo, every=every, cron=cron_expr, at=at, command=command,
                 path=sched_path, resolve=sched_resolve, strict=sched_strict,
                 min_age=sched_min_age, keep=sched_keep, deletions=sched_deletions,
-                label=label,
+                no_restore=sched_no_restore, label=label,
                 warn=lambda msg: click.echo(f"warning: {msg}", err=True),
             )
             click.echo(f"scheduled job {job.id}: {job.cron}  {job.command}")

@@ -80,7 +80,7 @@ EXPECTED_OPTIONS: dict[str, frozenset[str]] = {
         {
             "--list", "--add", "--uninstall", "-U", "--all", "--every", "--cron",
             "--at", "--command", "--path", "--resolve", "--strict", "--min-age", "--keep",
-            "--deletions", "--label", "--json",
+            "--deletions", "--no-restore", "--label", "--json",
         }
     ),
     "auth": frozenset(),
