@@ -148,12 +148,18 @@ class TransferResult:
 
     :ivar unsettled_items: files push held back because they were modified within its
         settle window (``min_age``); not part of the CLI's JSON; populated by push.
+    :ivar local_deleted_items: files pull left alone because they were deleted (or moved
+        away) locally since this machine last held them; not part of the CLI's JSON;
+        populated by pull.
 
     .. versionchanged:: 1.7.0
        Added ``adopted_items`` for the push self-heal-adopt path.
 
     .. versionchanged:: 2.4.0
        Added ``unsettled_items`` for push's settle window (#168).
+
+    .. versionchanged:: 3.0.0
+       Added ``local_deleted_items`` for the files pull no longer restores (#197).
     """
 
     transferred_items: int
@@ -162,6 +168,7 @@ class TransferResult:
     failures: list[dict]
     adopted_items: int = 0
     unsettled_items: int = 0
+    local_deleted_items: int = 0
 
     @classmethod
     def from_json(cls, data: dict) -> TransferResult:

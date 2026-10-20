@@ -8,6 +8,10 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 
 ## [Unreleased]
 
+### Upgrade notes
+
+- **Breaking — `pull` no longer restores files deleted or moved away locally (#197)**: a file this machine held that is now gone locally is classified `local-deleted` with or without `--remote`; without `--remote` it used to be `remote-only`, and every bare `pull` downloaded it back to its old path. A scheduled `sync` (pull, then push) therefore undid each local deletion and move every run, and push then uploaded the moved file again at its new path, so both copies piled up locally and on Drive. A bare `pull` now leaves these files alone and reports them as `local-deleted=N` in its summary; `pull --restore-deleted` restores them as before, except a file now ignored but still on disk, which is never downloaded over. `remote-only` is only reported from a Drive listing, and `ls --state remote-only` without `--remote` says it matches nothing. Exit codes are unchanged
+
 ## [2.6.0] - 2026-10-15
 
 ### Features

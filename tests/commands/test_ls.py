@@ -424,7 +424,7 @@ def test_cli_ls_help_does_not_advertise_the_deprecated_alias() -> None:
     assert "synced" not in result.output
 
 
-def test_cli_ls_state_remote_only_without_remote_lists_a_file_deleted_locally(
+def test_cli_ls_state_local_deleted_without_remote_lists_a_file_deleted_locally(
     tmp_path: Path, monkeypatch
 ) -> None:
     from click.testing import CliRunner
@@ -434,7 +434,26 @@ def test_cli_ls_state_remote_only_without_remote_lists_a_file_deleted_locally(
     _indexed_repo(tmp_path, monkeypatch)
     (tmp_path / "kept").unlink()  # held, then deleted locally
 
-    result = CliRunner().invoke(main, ["ls", "--state", "remote-only", "--format", "plain"])
+    result = CliRunner().invoke(main, ["ls", "--state", "local-deleted", "--format", "plain"])
 
     assert result.exit_code == 0, result.output
     assert "kept\t" in result.output
+
+
+def test_cli_ls_state_remote_only_without_remote_says_it_needs_a_listing(
+    tmp_path: Path, monkeypatch
+) -> None:
+    # #197: a file deleted locally is local-deleted in every mode, so without a walk
+    # remote-only matches nothing; say so rather than print an empty list silently.
+    from click.testing import CliRunner
+
+    from protonfs.cli import main
+
+    _indexed_repo(tmp_path, monkeypatch)
+    (tmp_path / "kept").unlink()
+
+    result = CliRunner().invoke(main, ["ls", "--state", "remote-only", "--format", "plain"])
+
+    assert result.exit_code == 0, result.output
+    assert "kept\t" not in result.output
+    assert "--state local-deleted" in result.output

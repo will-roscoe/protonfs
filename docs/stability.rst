@@ -148,7 +148,10 @@ flag/argument name; these names, not just their presence, are frozen.
        repeatable; a shell glob, or a quoted pattern protonfs expands itself against the
        index).
        Options: ``--resolve [remote|local|both]`` (``replace`` accepted as an alias for
-       ``remote``), ``--dry-run``, ``--refresh``, ``--strict``.
+       ``remote``), ``--dry-run``, ``--refresh``, ``--strict``, ``--restore-deleted``
+       (added in 3.0.0). Since 3.0.0 a file this machine held that is gone locally is
+       not downloaded unless ``--restore-deleted`` is given; it is counted as
+       ``local-deleted=`` and is not a failure.
      - ``0`` all transferred/skipped (including the "index empty, run refresh first"
        early-exit message -- which since 2.1.0 appears only when the remote has no
        manifest to seed the index from -- and a pattern that matched nothing, which is
@@ -307,12 +310,12 @@ checked on Drive; the states marked *remote view* are only produced by
      - Present locally, not in the index.
      - drift (``1``)
    * - ``local-deleted``
-     - *Remote view.* Held by this machine, now gone locally, still listed on Drive.
+     - Held by this machine, now gone locally (with a remote view: still listed on
+       Drive). Reported without ``--remote`` too since 3.0.0; it was ``remote-only``
+       there before.
      - drift (``1``)
    * - ``remote-only``
-     - Absent locally, with the copy on Drive: listed on Drive and absent from the
-       index (remote view), or held by this machine and now gone locally, as the
-       index records (no remote view).
+     - *Remote view.* Listed on Drive, absent locally and from the index.
      - drift (``1``)
    * - ``local-modified`` / ``remote-modified``
      - *Remote view.* One side diverged from the index; the other did not.
