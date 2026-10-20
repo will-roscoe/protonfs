@@ -393,9 +393,6 @@ Environment variables
    * - :envvar:`PROTONFS_SKIP_THUMBNAILS`
      - Per-key override for the resolved :confval:`defaults.skip_thumbnails` config value
        (boolean: ``1``/``true``/``yes``/``on``). Added in 2.5.0.
-   * - :envvar:`PROTONFS_DELETIONS`
-     - Per-key override for the resolved :confval:`defaults.deletions` config value
-       (``keep`` or ``trash``). Added in 3.0.0.
    * - :envvar:`PROTONFS_NO_MANIFEST`
      - Set (to any truthy value) to switch every remote-manifest read and write off on
        this host, whatever :confval:`defaults.manifest` says. Added in 2.1.0.

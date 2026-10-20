@@ -295,12 +295,6 @@ contract (see :doc:`../stability`).
 
    .. versionadded:: 2.5.0
 
-.. envvar:: PROTONFS_DELETIONS
-
-   Per-key override for :confval:`defaults.deletions`.
-
-   .. versionadded:: 3.0.0
-
 .. envvar:: PROTONFS_NO_MANIFEST
 
    Set (to any truthy value) to switch every remote-manifest read and write off on
@@ -430,7 +424,8 @@ Configuration file and keys
    gone locally. ``keep`` leaves Drive's copy (and the index entry) alone; ``trash``
    moves it to the Drive trash (``protonfs restore`` puts it back on Drive) and drops
    it from the index. Overridden per run by ``push --deletions`` and per
-   scheduled job by ``schedule --deletions``, or via :envvar:`PROTONFS_DELETIONS`. See
+   scheduled job by ``schedule --deletions``. There is deliberately no environment
+   override: trashing is destructive and is chosen per repo. See
    :ref:`push --deletions <push-deletions>` for the guards.
 
    .. versionadded:: 3.0.0
