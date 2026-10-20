@@ -1248,3 +1248,57 @@ def test_is_thumbnail_failure_matches_proton_drive_message() -> None:
          "--skip-thumbnails to upload without thumbnails): Image: format not supported"}
     )
     assert not is_thumbnail_failure({"name": "x", "error": "Name conflict ... already exists"})
+
+
+# --- #197: move and rename ---------------------------------------------------------------
+
+
+def test_move_passes_every_source_then_the_target_parent(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = DriveClient(binary="proton-drive")
+    monkeypatch.setattr("protonfs.drive.shutil.which", lambda _: "/usr/bin/proton-drive")
+    run = _stub_run_seq([('[{"ok": true}, {"ok": false, "error": "exists"}]', 0)])
+    monkeypatch.setattr(subprocess, "run", run)
+
+    results = client.move(["/my-files/r/a/x", "/my-files/r/a/y"], "/my-files/r/b")
+
+    assert run.calls == [[
+        "proton-drive", "filesystem", "move", "/my-files/r/a/x", "/my-files/r/a/y",
+        "/my-files/r/b", "--json",
+    ]]
+    # per-node failures are returned, not raised: the caller checks the listing
+    assert results == [{"ok": True}, {"ok": False, "error": "exists"}]
+
+
+def test_move_raises_a_drive_error_when_the_command_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = DriveClient(binary="proton-drive")
+    monkeypatch.setattr("protonfs.drive.shutil.which", lambda _: "/usr/bin/proton-drive")
+    monkeypatch.setattr(subprocess, "run", _stub_run("", returncode=1, stderr="no such node"))
+
+    with pytest.raises(DriveError, match="no such node"):
+        client.move(["/my-files/r/a/x"], "/my-files/r/b")
+
+
+def test_rename_passes_the_path_and_the_new_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = DriveClient(binary="proton-drive")
+    monkeypatch.setattr("protonfs.drive.shutil.which", lambda _: "/usr/bin/proton-drive")
+    run = _stub_run_seq([('{"ok": true}', 0)])
+    monkeypatch.setattr(subprocess, "run", run)
+
+    client.rename("/my-files/r/a/x", "y")
+
+    assert run.calls == [["proton-drive", "filesystem", "rename", "/my-files/r/a/x", "y", "--json"]]
+
+
+def test_rename_raises_when_proton_drive_reports_the_node_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = DriveClient(binary="proton-drive")
+    monkeypatch.setattr("protonfs.drive.shutil.which", lambda _: "/usr/bin/proton-drive")
+    monkeypatch.setattr(
+        subprocess, "run", _stub_run('[{"ok": false, "error": "name already exists"}]')
+    )
+
+    with pytest.raises(DriveError, match="already exists"):
+        client.rename("/my-files/r/a/x", "y")

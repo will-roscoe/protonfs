@@ -151,6 +151,8 @@ class TransferResult:
     :ivar local_deleted_items: files pull left alone because they were deleted (or moved
         away) locally since this machine last held them; not part of the CLI's JSON;
         populated by pull.
+    :ivar moved_items: files push moved or renamed on Drive to follow a local move,
+        instead of uploading them again; not part of the CLI's JSON; populated by push.
 
     .. versionchanged:: 1.7.0
        Added ``adopted_items`` for the push self-heal-adopt path.
@@ -159,7 +161,8 @@ class TransferResult:
        Added ``unsettled_items`` for push's settle window (#168).
 
     .. versionchanged:: 3.0.0
-       Added ``local_deleted_items`` for the files pull no longer restores (#197).
+       Added ``local_deleted_items`` for the files pull no longer restores, and
+       ``moved_items`` for the local moves push applies on Drive (#197).
     """
 
     transferred_items: int
@@ -169,6 +172,7 @@ class TransferResult:
     adopted_items: int = 0
     unsettled_items: int = 0
     local_deleted_items: int = 0
+    moved_items: int = 0
 
     @classmethod
     def from_json(cls, data: dict) -> TransferResult:
@@ -1158,6 +1162,47 @@ class DriveClient:
         """
         result = self._run_json(["filesystem", "trash", *remote_paths])
         return result if isinstance(result, list) else []
+
+    # Like trash and create-folder, move and rename run without a timeout: killing one
+    # part-way would leave it unknown which nodes moved. Callers check the listing after.
+
+    def move(self, remote_paths: list[str], target_parent: str) -> list[dict]:
+        """Move remote nodes into the folder ``target_parent``, keeping their names.
+
+        The node itself moves, so its revision history and share links go with it.
+
+        :param remote_paths: absolute Drive paths of the nodes to move.
+        :param target_parent: absolute Drive path of the folder to move them into; it
+            must exist.
+        :returns: the raw per-node CLI results. A node that could not be moved (its name
+            is taken in the target, or it is gone) may be reported here with ``ok`` false
+            rather than raised, so check a listing to learn what moved.
+        :raises DriveError: when the command itself fails.
+
+        .. versionadded:: 3.0.0
+
+        .. seealso:: :meth:`rename` to change a node's name in place.
+        """
+        result = self._run_json(["filesystem", "move", *remote_paths, target_parent])
+        return result if isinstance(result, list) else []
+
+    def rename(self, remote_path: str, new_name: str) -> dict:
+        """Rename a remote node in place (it stays in the same folder).
+
+        :param remote_path: absolute Drive path of the node.
+        :param new_name: its new name (a name, not a path).
+        :returns: the raw CLI result.
+        :raises DriveError: when the command fails or reports the node as not renamed
+            (e.g. the name is taken).
+
+        .. versionadded:: 3.0.0
+        """
+        result = self._run_json(["filesystem", "rename", remote_path, new_name])
+        items = result if isinstance(result, list) else [result]
+        for item in items:
+            if isinstance(item, dict) and item.get("ok") is False:
+                raise DriveError(f"rename of {remote_path} failed: {json.dumps(item)}")
+        return items[0] if items and isinstance(items[0], dict) else {}
 
     def restore(self, remote_paths: list[str]) -> list[dict]:
         """Restore trashed nodes given their ORIGINAL remote paths.

@@ -341,6 +341,7 @@ def _accumulate_transfer(total, part) -> None:
     total.failures += part.failures
     total.unsettled_items += part.unsettled_items
     total.local_deleted_items += part.local_deleted_items
+    total.moved_items += part.moved_items
 
 
 def _verify_index(repair: bool) -> None:
@@ -743,6 +744,10 @@ def push(
        ``unsettled=`` in the summary, then pushed by a later run once it has settled (#168).
        File PATHs share one pass, so N files no longer cost N listings and index saves
        (#171).
+
+    .. versionchanged:: 3.0.0
+       A file moved or renamed locally is moved or renamed on Drive instead of uploaded
+       again, and counted as ``moved=`` in the summary (#197).
     """
     from protonfs.commands.push import push as push_files
     from protonfs.context import load_context
@@ -769,6 +774,7 @@ def push(
         )
     result = TransferResult(0, 0, 0, [])
     manifest_updates: dict = {}
+    manifest_forget: list = []
     with repo_lock(ctx.root), _resumable_on_interrupt(ctx, "push"):
         try:
             per_path, files = _split_file_paths(ctx.root, subpaths)
@@ -780,20 +786,23 @@ def push(
                     result,
                     push_files(
                         ctx, subpath, resolve, dry_run, manifest_updates=manifest_updates,
-                        min_age=min_age_s, only=only,
+                        min_age=min_age_s, only=only, manifest_forget=manifest_forget,
                     ),
                 )
         finally:
             # #146: one manifest write per run, not per PATH, and also after an
             # interruption: every entry collected so far was verified on Drive.
-            if manifest_updates:
+            if manifest_updates or manifest_forget:
                 from protonfs import manifest
 
-                if manifest.update(ctx, record=manifest_updates) is not None:
+                written = manifest.update(
+                    ctx, record=manifest_updates or None, forget=manifest_forget or None
+                )
+                if written is not None:
                     ctx.index.save()
     if (
         result.transferred_items + result.skipped_items + result.failed_items
-        + result.unsettled_items == 0
+        + result.unsettled_items + result.moved_items == 0
     ):
         # An existing path that yields no candidates (nothing changed, or everything under
         # it is excluded by the ignore rules) would otherwise print only the bare zero
@@ -801,9 +810,10 @@ def push(
         # cannot do (reporter.done() renders only at -v and above).
         click.echo("nothing to push")
     adopted = f" adopted={result.adopted_items}" if result.adopted_items else ""
+    moved = f" moved={result.moved_items}" if result.moved_items else ""
     unsettled = f" unsettled={result.unsettled_items}" if result.unsettled_items else ""
     click.echo(
-        f"transferred={result.transferred_items}{adopted} "
+        f"transferred={result.transferred_items}{adopted}{moved} "
         f"skipped={result.skipped_items} failed={result.failed_items}{unsettled}"
     )
     for failure in result.failures:
@@ -1068,6 +1078,10 @@ def offload(
     .. versionchanged:: 2.4.0
        File PATHs share one pass, so N files no longer cost N listings and index saves
        (#171).
+
+    .. versionchanged:: 3.0.0
+       A file moved or renamed locally is moved or renamed on Drive instead of uploaded
+       again, and counted as ``moved=`` in the summary (#197).
     """
     from protonfs.commands.offload import OffloadResult
     from protonfs.commands.offload import offload as offload_files

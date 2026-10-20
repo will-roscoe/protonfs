@@ -8,6 +8,10 @@ the per-file `_FakeDrive` copies. It is *configured*, never subclassed: pass an
 `version` / `authed` for the setup checks. Use the `make_fake_drive` fixture (a
 factory) so tests need no imports.
 
+`move` and `rename` relocate a landed file, keeping its revision and content (#197).
+`fail_moves` / `fail_renames` make them raise; `ignored_moves` makes `move` report
+success without moving anything, to exercise push's check of the listing afterwards.
+
 Uploads follow proton-drive's real conflict rules (#144): an existing name with no
 strategy fails as a name conflict, and a changed file only lands on its existing node
 as a new revision (`merge`). Before #144 the fake let any upload overwrite, which is
@@ -20,7 +24,7 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 
-from protonfs.drive import RemoteEntry, RemoteIdentity, TransferResult
+from protonfs.drive import DriveError, RemoteEntry, RemoteIdentity, TransferResult
 
 # proton-drive 0.8.0's failure for an image this host has no codec to thumbnail (#183).
 THUMBNAIL_ERROR = (
@@ -47,6 +51,9 @@ class FakeDrive:
         authed: bool = True,
         parent_names: dict[str, str | None] | None = None,
         no_thumbnail_codec: tuple[str, ...] = (),
+        fail_moves: bool = False,
+        fail_renames: bool = False,
+        ignored_moves: bool = False,
     ) -> None:
         # recorded calls
         self.upload_calls: list[tuple] = []
@@ -65,6 +72,12 @@ class FakeDrive:
         self.thumbnail_skips: list[bool] = []
         # #185: the folder_strategy of each upload call ("merge" for a whole directory).
         self.folder_strategies: list[str | None] = []
+        # #197: (sources, target_parent) per move call and (path, new_name) per rename.
+        self.move_calls: list[tuple[tuple[str, ...], str]] = []
+        self.rename_calls: list[tuple[str, str]] = []
+        self._fail_moves = fail_moves
+        self._fail_renames = fail_renames
+        self._ignored_moves = ignored_moves
         # configured responses
         self._walk_entries = walk_entries or []
         self._walk_by_root = walk_by_root
@@ -268,6 +281,52 @@ class FakeDrive:
             content = self._remote_content.get(remote_path, b"downloaded")
             (Path(local_folder) / name).write_bytes(content)
         return result
+
+    def _relocate(self, parent: str, name: str, new_parent: str, new_name: str) -> None:
+        """Move one landed file's node, keeping its revision and content."""
+        old_key, new_key = f"{parent}/{name}", f"{new_parent}/{new_name}"
+        self._remote_files.setdefault(new_parent, {})[new_name] = (
+            self._remote_files[parent].pop(name)
+        )
+        sha1 = self._remote_sha1.get(parent, {}).pop(name, None)
+        if sha1 is not None:
+            self._remote_sha1.setdefault(new_parent, {})[new_name] = sha1
+        for table in (self.revisions, self.revision_uids, self._remote_content):
+            if old_key in table:
+                table[new_key] = table.pop(old_key)
+
+    def move(self, remote_paths, target_parent):
+        """`filesystem move`: per-node results; a missing source or a name already taken
+        at the target fails that node only."""
+        self.move_calls.append((tuple(remote_paths), target_parent))
+        if self._fail_moves:
+            raise DriveError("simulated move failure")
+        results = []
+        for source in remote_paths:
+            parent, name = source.rsplit("/", 1)
+            if self._ignored_moves:
+                results.append({"ok": True})
+            elif name not in self._remote_files.get(parent, {}):
+                results.append({"ok": False, "error": f"{source} not found"})
+            elif name in self._remote_files.get(target_parent, {}):
+                results.append({"ok": False, "error": f'"{name}" already exists'})
+            else:
+                self._relocate(parent, name, target_parent, name)
+                results.append({"ok": True})
+        return results
+
+    def rename(self, remote_path, new_name):
+        self.rename_calls.append((remote_path, new_name))
+        if self._fail_renames:
+            raise DriveError("simulated rename failure")
+        parent, name = remote_path.rsplit("/", 1)
+        bucket = self._remote_files.get(parent, {})
+        if name not in bucket:
+            raise DriveError(f"{remote_path} not found")
+        if new_name in bucket:
+            raise DriveError(f'"{new_name}" already exists')
+        self._relocate(parent, name, parent, new_name)
+        return {"ok": True}
 
     def create_folder(self, parent_path, name):
         self.created_folders.append((parent_path, name))

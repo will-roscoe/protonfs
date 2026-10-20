@@ -12,6 +12,10 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 
 - **Breaking — `pull` no longer restores files deleted or moved away locally (#197)**: a file this machine held that is now gone locally is classified `local-deleted` with or without `--remote`; without `--remote` it used to be `remote-only`, and every bare `pull` downloaded it back to its old path. A scheduled `sync` (pull, then push) therefore undid each local deletion and move every run, and push then uploaded the moved file again at its new path, so both copies piled up locally and on Drive. A bare `pull` now leaves these files alone and reports them as `local-deleted=N` in its summary; `pull --restore-deleted` restores them as before, except a file now ignored but still on disk, which is never downloaded over. `remote-only` is only reported from a Drive listing, and `ls --state remote-only` without `--remote` says it matches nothing. Exit codes are unchanged
 
+### Features
+
+- **push**: a file moved or renamed locally is moved or renamed on Drive (`filesystem move`/`rename`) instead of uploaded again at its new path, so no data is re-sent and the Drive node keeps its version history and share links. Push pairs each new file with a file this machine held that is now gone locally and has the same sha256 and size, one-to-one: among identical files a pair with the same name wins, then one in the same folder, and anything still ambiguous is uploaded. Each move is checked against a listing of the target folder; one that fails or does not show there falls back to an upload, and the old path stays indexed. The index entry is re-keyed with its checksums kept, and the remote manifest drops the old path and records the new one. The summary counts them as `moved=N` (#197)
+
 ## [2.6.0] - 2026-10-15
 
 ### Features

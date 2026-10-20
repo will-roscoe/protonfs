@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import dataclasses
 import datetime
 import hashlib
 import logging
@@ -11,12 +12,12 @@ import os
 import time
 from dataclasses import dataclass
 from enum import Enum
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from protonfs import manifest
 from protonfs.batching import batches, group_by_parent
 from protonfs.context import RepoContext
-from protonfs.diff import SyncState, classify
+from protonfs.diff import DiffEntry, SyncState, classify, pair_moves, within_subpath
 from protonfs.drive import DriveError, TransferResult, is_thumbnail_failure
 from protonfs.ignore import IgnoreMatcher
 from protonfs.index import IndexEntry
@@ -313,12 +314,21 @@ def push(
     min_age: float = 0.0,
     now: float | None = None,
     only: set[str] | None = None,
+    manifest_forget: list | None = None,
 ) -> TransferResult:
     """Upload local-only and locally-changed files to Drive.
 
     Scans the tree, classifies each file against the index, and uploads everything
     local-only or changed, creating any missing remote directories first. On success
     the index is updated to reflect the new synced state.
+
+    A new file with the same content as a file gone locally since this device held it
+    is treated as that file moved or renamed: its Drive node is moved or renamed to
+    match (see :func:`~protonfs.diff.pair_moves` for the pairing), checked against a
+    listing, and its index entry re-keyed to the new path with its digests kept. A
+    move that fails, or that the listing does not confirm, falls back to uploading the
+    new path, and the old path stays indexed. Nothing is paired for an ``only`` push or
+    across the edge of ``subpath``.
 
     :param ctx: the loaded repo context.
     :param subpath: repo-root-relative subtree to push, or ``None`` for everything.
@@ -341,7 +351,12 @@ def push(
     :param now: the current time, for tests; defaults to :func:`time.time`.
     :param only: push just these repo-relative files (those inside ``subpath``), in one
         pass, instead of scanning all of ``subpath``.
-    :returns: a :class:`~protonfs.drive.TransferResult` of what was uploaded/skipped.
+    :param manifest_forget: a list to collect the repo-relative paths this push moved
+        away from, for the caller to drop from the remote manifest in the same write as
+        ``manifest_updates``. ``None`` drops them at the end of this call instead.
+    :returns: a :class:`~protonfs.drive.TransferResult` of what was uploaded/skipped;
+        ``moved_items`` counts the files moved or renamed on Drive (with ``dry_run``,
+        the ones that would be).
     :raises protonfs.drive.DriveError: on a Drive or lock failure.
 
     .. versionchanged:: 1.11.0
@@ -376,6 +391,11 @@ def push(
        pushed goes up whole in one ``filesystem upload -d merge`` call, several per call
        up to ``defaults.batch_size`` files, and each remote folder is created once per
        push rather than once per folder that needs it (#185).
+
+    .. versionchanged:: 3.0.0
+       A local move or rename is applied on Drive with ``filesystem move``/``rename``
+       instead of uploading the file again at its new path; added ``manifest_forget``
+       (#197).
 
     .. seealso:: :func:`protonfs.commands.pull.pull` for the download direction.
     """
@@ -425,14 +445,32 @@ def push(
             )
         held_set = set(held)
         to_push = [rel for rel in to_push if rel not in held_set]
-    if dry_run or not to_push:
-        return TransferResult(len(to_push), 0, 0, [], unsettled_items=len(held))
-
-    reporter.phase("uploading", files=len(to_push))
+    # #197: a new file holding exactly the content of a file gone locally is that file,
+    # moved. Moving its Drive node keeps its history and share links and sends no data.
+    moves = _plan_moves(ctx, diff_entries, local, to_push, subpath, only)
+    moving = {new for _, new in moves}
+    to_push = [rel for rel in to_push if rel not in moving]
+    if dry_run or not (to_push or moves):
+        return TransferResult(
+            len(to_push), 0, 0, [], unsettled_items=len(held), moved_items=len(moves)
+        )
 
     # #17: make sure remote_root itself exists (and is a valid path) before uploading, so a
     # first push to a brand-new Drive location works instead of failing on every file.
     ensure_remote_root(ctx)
+
+    synced_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    verified = {} if manifest_updates is None else manifest_updates
+    forgotten = [] if manifest_forget is None else manifest_forget
+    created = {ctx.config.remote_root.rstrip("/")}
+    moved = 0
+    if moves:
+        reporter.phase("moving", files=len(moves))
+        moved, unmoved = _apply_moves(
+            ctx, moves, local, created, synced_at, verified, forgotten, reporter
+        )
+        to_push += unmoved
+        ctx.index.checkpoint()
 
     # D2.1: default push applies NO conflict strategy so the CLI surfaces conflicts as
     # named per-file failures (never a silent skip that we'd falsely index). A strategy
@@ -443,14 +481,16 @@ def push(
         ctx=ctx,
         local=local,
         reporter=reporter,
-        total=TransferResult(0, 0, 0, [], unsettled_items=len(held)),
+        total=TransferResult(0, 0, 0, [], unsettled_items=len(held), moved_items=moved),
         planned=len(to_push),
         planned_bytes=sum(local[rel].size for rel in to_push),
-        synced_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
-        verified={} if manifest_updates is None else manifest_updates,
-        created={ctx.config.remote_root.rstrip("/")},
+        synced_at=synced_at,
+        verified=verified,
+        created=created,
     )
     total = run.total
+    if to_push:
+        reporter.phase("uploading", files=len(to_push))
 
     # #32 hard guard: refuse to upload any file whose bytes parse as an LFS pointer stub,
     # independent of how it got into `to_push` -- classification should already exclude
@@ -505,17 +545,169 @@ def push(
             + run.file_jobs([r for r in group if r in revision_rels], REVISION_STRATEGY)
         )
 
-    if manifest_updates is None and run.verified:
-        manifest.update(ctx, record=run.verified, reporter=reporter)
+    record = run.verified if manifest_updates is None else None
+    forget = forgotten if manifest_forget is None else None
+    if record or forget:
+        manifest.update(ctx, record=record or None, forget=forget or None, reporter=reporter)
     ctx.index.save()
-    run.finish()
+    if to_push:
+        run.finish()
     reporter.done(
         "uploaded",
         transferred=total.transferred_items,
         adopted=total.adopted_items,
+        moved=total.moved_items,
         failed=total.failed_items,
     )
     return total
+
+
+def _plan_moves(
+    ctx: RepoContext,
+    diff_entries: list[DiffEntry],
+    local: dict,
+    to_push: list[str],
+    subpath: str | None,
+    only: set[str] | None,
+) -> list[tuple[str, str]]:
+    """The ``(old, new)`` local moves to apply on Drive instead of uploading ``new``.
+
+    ``new`` comes from the local-only files about to be uploaded, ``old`` from the files
+    this device held that are gone locally, both inside ``subpath``. An ``only`` push
+    scanned too little to know what is gone, so it plans nothing; a path still on disk
+    (hidden from the scan, e.g. now ignored) is never taken for gone.
+    """
+    if only is not None:
+        return []
+    states = {e.rel_path: e.state for e in diff_entries}
+    added = {
+        rel: (local[rel].sha256, local[rel].size)
+        for rel in to_push
+        if states.get(rel) == SyncState.LOCAL_ONLY
+    }
+    if not added:
+        return []
+    deleted = {}
+    for rel, state in states.items():
+        if (
+            state == SyncState.LOCAL_DELETED
+            and within_subpath(rel, subpath)
+            and not (ctx.root / rel).exists()
+        ):
+            entry = ctx.index.get(rel)
+            deleted[rel] = (entry.sha256, entry.size)
+    return pair_moves(deleted, added) if deleted else []
+
+
+def _same_content(ident, entry: IndexEntry) -> bool:
+    """Whether a listed identity is the indexed file: same plaintext size, and same sha1
+    where both sides know it. An identity listed with no size is never accepted."""
+    if ident is None or ident.claimed_size != entry.size:
+        return False
+    return not (ident.sha1 and entry.sha1) or ident.sha1 == entry.sha1
+
+
+def _apply_moves(
+    ctx: RepoContext,
+    moves: list[tuple[str, str]],
+    local: dict,
+    created: set[str],
+    synced_at: str,
+    verified: dict,
+    forgotten: list,
+    reporter,
+) -> tuple[int, list[str]]:
+    """Move or rename each ``(old, new)`` pair's Drive node and re-key its index entry.
+
+    Per target folder: create it, list it, ``move`` the nodes that change folder (in
+    batches), ``rename`` the ones that change name, then list it again. A pair counts as
+    moved only when the second listing shows a node at the new name with the indexed
+    content that the first did not. A pair is not attempted when its new name, or the
+    name it would pass through between a move and a rename, is taken in the folder.
+
+    A moved pair's index entry moves to ``new`` with its digests kept, its manifest
+    entry is queued in ``verified`` and ``old`` is queued in ``forgotten``. When a move
+    landed but the rename after it did not, ``old``'s entry is pointed at where the node
+    now is. Every DriveError is a warning, never raised.
+
+    :returns: ``(moved, unmoved)``: the count moved, and the ``new`` paths to upload.
+    """
+    by_target: dict[str, list[tuple[str, str]]] = {}
+    for old, new in moves:
+        parent = PurePosixPath(new).parent.as_posix()
+        by_target.setdefault(_remote_dir(ctx, parent), []).append((old, new))
+
+    moved, unmoved = 0, []
+    for target, group in by_target.items():
+        _ensure_remote_dir(ctx, target, created)
+        try:
+            before = ctx.drive.remote_identities(target)
+        except DriveError as exc:
+            reporter.warn(f"cannot list {target} to move files into it ({exc}); uploading")
+            unmoved += [new for _, new in group]
+            continue
+        finals = {PurePosixPath(new).name for _, new in group}
+        passing: set[str] = set()
+        plan = []
+        for old, new in group:
+            entry = ctx.index.get(old)
+            old_parent, _, old_name = entry.remote_path.rpartition("/")
+            new_name = PurePosixPath(new).name
+            needs_move = old_parent != target
+            if new_name in before:
+                unmoved.append(new)
+                continue
+            if needs_move and old_name != new_name:
+                # Moved first, the node sits at target/old_name until its rename.
+                if old_name in before or old_name in finals or old_name in passing:
+                    unmoved.append(new)
+                    continue
+                passing.add(old_name)
+            plan.append((old, new, entry, needs_move, old_name, new_name))
+
+        sources = [entry.remote_path for _, _, entry, needs_move, _, _ in plan if needs_move]
+        for batch in batches(sources, ctx.config.defaults.batch_size):
+            try:
+                ctx.drive.move(batch, target)
+            except DriveError as exc:
+                reporter.warn(f"moving {len(batch)} file(s) into {target} failed: {exc}")
+        for _, _, entry, needs_move, old_name, new_name in plan:
+            if old_name == new_name:
+                continue
+            current = f"{target}/{old_name}" if needs_move else entry.remote_path
+            try:
+                ctx.drive.rename(current, new_name)
+            except DriveError as exc:
+                reporter.warn(f"renaming {current} to {new_name} failed: {exc}")
+        try:
+            after = ctx.drive.remote_identities(target) if plan else {}
+        except DriveError as exc:
+            reporter.warn(f"cannot list {target} to check the moves into it ({exc})")
+            after = {}
+
+        for old, new, entry, needs_move, old_name, new_name in plan:
+            ident = after.get(new_name)
+            if _same_content(ident, entry):
+                moved_entry = dataclasses.replace(
+                    entry,
+                    remote_path=f"{target}/{new_name}",
+                    mtime=local[new].mtime,
+                    local_state="present",
+                    last_synced=synced_at,
+                )
+                ctx.index.set(new, moved_entry)
+                ctx.index.remove(old)
+                verified[new] = manifest.entry_for_index(moved_entry, ident.revision, synced_at)
+                forgotten.append(old)
+                reporter.item("move", f"{old} -> {new}")
+                moved += 1
+                continue
+            if needs_move and old_name != new_name and old_name in after:
+                # The move landed and the rename did not: record where the node is now.
+                ctx.index.set(old, dataclasses.replace(entry, remote_path=f"{target}/{old_name}"))
+                forgotten.append(old)
+            unmoved.append(new)
+    return moved, unmoved
 
 
 def _remote_dir(ctx: RepoContext, parent: str) -> str:

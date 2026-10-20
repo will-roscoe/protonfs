@@ -259,3 +259,56 @@ def test_within_subpath_matches_the_subpath_itself() -> None:
     assert within_subpath("run1/dump_0001", "run1") is True
     assert within_subpath("run10/dump", "run1") is False  # prefix, not a path boundary
     assert within_subpath("anything", None) is True
+
+
+# --- #197: pairing a local move's deleted path with its new path ----------------------
+
+
+def test_pair_moves_pairs_one_deleted_with_one_added_of_the_same_content() -> None:
+    from protonfs.diff import pair_moves
+
+    pairs = pair_moves({"a/x.jpg": ("h1", 5)}, {"b/x.jpg": ("h1", 5)})
+
+    assert pairs == [("a/x.jpg", "b/x.jpg")]
+
+
+def test_pair_moves_needs_the_same_sha256_and_size() -> None:
+    from protonfs.diff import pair_moves
+
+    assert pair_moves({"a/x": ("h1", 5)}, {"b/x": ("h2", 5)}) == []
+    assert pair_moves({"a/x": ("h1", 5)}, {"b/x": ("h1", 6)}) == []
+    # an unknown digest never pairs, whatever the size
+    assert pair_moves({"a/x": ("", 5)}, {"b/x": ("", 5)}) == []
+
+
+def test_pair_moves_prefers_the_same_basename_then_the_same_parent() -> None:
+    from protonfs.diff import pair_moves
+
+    # two identical files deleted, one added: the basename decides
+    assert pair_moves(
+        {"a/x.jpg": ("h", 1), "c/z.jpg": ("h", 1)}, {"b/x.jpg": ("h", 1)}
+    ) == [("a/x.jpg", "b/x.jpg")]
+    # no basename in common: the parent decides
+    assert pair_moves(
+        {"a/p.jpg": ("h", 1), "c/q.jpg": ("h", 1)}, {"a/r.jpg": ("h", 1)}
+    ) == [("a/p.jpg", "a/r.jpg")]
+
+
+def test_pair_moves_leaves_an_ambiguous_group_unpaired() -> None:
+    from protonfs.diff import pair_moves
+
+    # neither tie-break separates the two deleted candidates
+    assert pair_moves({"a/p": ("h", 1), "c/q": ("h", 1)}, {"b/r": ("h", 1)}) == []
+    # one deleted, two added that tie the same way
+    assert pair_moves({"a/p": ("h", 1)}, {"b/p": ("h", 1), "c/p": ("h", 1)}) == []
+
+
+def test_pair_moves_pairs_what_is_left_once_the_tie_breaks_have_run() -> None:
+    from protonfs.diff import pair_moves
+
+    pairs = pair_moves(
+        {"a/x.jpg": ("h", 1), "b/y.jpg": ("h", 1)},
+        {"c/x.jpg": ("h", 1), "d/z.jpg": ("h", 1)},
+    )
+
+    assert sorted(pairs) == [("a/x.jpg", "c/x.jpg"), ("b/y.jpg", "d/z.jpg")]

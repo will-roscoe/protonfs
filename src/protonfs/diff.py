@@ -229,3 +229,67 @@ def _classify_absent(
     if _remote_diverged(remote_entry, index_entry):
         return SyncState.REMOTE_CHANGED
     return SyncState.METADATA_ONLY
+
+
+def pair_moves(
+    deleted: dict[str, tuple[str, int]], added: dict[str, tuple[str, int]]
+) -> list[tuple[str, str]]:
+    """Return ``(old, new)`` pairs that look like one file moved or renamed locally.
+
+    A deleted path and an added path pair when they hold the same content (same sha256
+    and size; an empty sha256 never pairs). Pairing is one-to-one. Within a group of
+    identical files, pairs are chosen in rounds: first a deleted and an added path that
+    are each other's only candidate with the same basename, then the same for the parent
+    directory, and finally the last deleted and added path when exactly one of each is
+    left. Anything still ambiguous stays unpaired.
+
+    :param deleted: ``{rel_path: (sha256, size)}`` for paths gone locally (from the
+        index).
+    :param added: ``{rel_path: (sha256, size)}`` for new local paths (from the scan).
+    :returns: the pairs, ``old`` from ``deleted`` and ``new`` from ``added``, ordered by
+        ``new``.
+
+    .. versionadded:: 3.0.0
+    """
+    from pathlib import PurePosixPath
+
+    def by_content(paths: dict[str, tuple[str, int]]) -> dict[tuple[str, int], list[str]]:
+        groups: dict[tuple[str, int], list[str]] = {}
+        for rel, key in paths.items():
+            if key[0]:
+                groups.setdefault(key, []).append(rel)
+        return groups
+
+    def unique_matches(olds: list[str], news: list[str], key) -> list[tuple[str, str]]:
+        """Pairs whose ``key`` is shared by exactly one old and exactly one new path."""
+        old_by: dict[str, list[str]] = {}
+        new_by: dict[str, list[str]] = {}
+        for rel in olds:
+            old_by.setdefault(key(rel), []).append(rel)
+        for rel in news:
+            new_by.setdefault(key(rel), []).append(rel)
+        return [
+            (old_by[k][0], new_by[k][0])
+            for k in old_by
+            if len(old_by[k]) == 1 and len(new_by.get(k, [])) == 1
+        ]
+
+    rules = (
+        lambda rel: PurePosixPath(rel).name,
+        lambda rel: str(PurePosixPath(rel).parent),
+    )
+    olds_by_content = by_content(deleted)
+    pairs: list[tuple[str, str]] = []
+    for content, news in by_content(added).items():
+        olds = sorted(olds_by_content.get(content, []))
+        news = sorted(news)
+        for rule in rules:
+            if not olds or not news:
+                break
+            matched = unique_matches(olds, news, rule)
+            pairs += matched
+            olds = [r for r in olds if r not in {old for old, _ in matched}]
+            news = [r for r in news if r not in {new for _, new in matched}]
+        if len(olds) == 1 and len(news) == 1:
+            pairs.append((olds[0], news[0]))
+    return sorted(pairs, key=lambda pair: pair[1])

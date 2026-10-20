@@ -717,3 +717,26 @@ def test_pull_restore_deleted_never_overwrites_a_held_file_that_is_now_ignored(
     assert result.local_deleted_items == 0
     assert ctx.drive.download_calls == []
     assert (tmp_path / "run.log").read_bytes() == b"local edits"
+
+
+def test_sync_after_a_local_move_leaves_one_copy_on_drive(tmp_path: Path, make_fake_drive) -> None:
+    # #197: push turns the local move into a Drive move, so the old path does not
+    # linger on Drive either.
+    from protonfs.commands.push import push
+
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.drive = make_fake_drive()
+    (tmp_path / "a").mkdir()
+    (tmp_path / "a" / "x.jpg").write_bytes(b"photo")
+    push(ctx, None, resolve=None, dry_run=False)
+    (tmp_path / "b").mkdir()
+    (tmp_path / "a" / "x.jpg").rename(tmp_path / "b" / "x.jpg")
+
+    pull(ctx, None, resolve=None, dry_run=False)
+    pushed = push(ctx, None, resolve=None, dry_run=False)
+
+    assert pushed.moved_items == 1
+    assert "x.jpg" not in ctx.drive.remote_identities("/my-files/test/a")
+    assert "x.jpg" in ctx.drive.remote_identities("/my-files/test/b")
+    assert not (tmp_path / "a" / "x.jpg").exists()
