@@ -739,3 +739,45 @@ def test_cli_schedule_add_passes_deletions(repo: Path, monkeypatch) -> None:
 
     assert result.exit_code == 0, result.output
     assert sched.list_jobs(repo)[0].deletions == "trash"
+
+
+# --- #197: a scheduled sync says what it does with local deletions -----------------------
+
+
+def test_add_sync_job_with_the_keep_policy_warns_what_happens_to_local_deletions(
+    repo: Path,
+) -> None:
+    warnings: list[str] = []
+    sched.add_job(repo, every="daily", command="sync", runner=FakeCrontab(), warn=warnings.append)
+
+    assert len(warnings) == 1
+    assert "deleted locally" in warnings[0]
+    assert "--deletions trash" in warnings[0]
+    assert "--resolve" in warnings[0]
+
+
+def test_add_sync_job_with_trash_or_resolve_set_does_not_warn_about_them(repo: Path) -> None:
+    warnings: list[str] = []
+    sched.add_job(
+        repo, every="daily", command="sync", deletions="trash", resolve="remote",
+        runner=FakeCrontab(), warn=warnings.append,
+    )
+    assert warnings == []
+
+
+def test_add_sync_job_honours_the_repo_deletion_policy(repo: Path) -> None:
+    from protonfs.commands.config import config_set
+
+    config_set(repo, "defaults.deletions", "trash")
+    warnings: list[str] = []
+    sched.add_job(
+        repo, every="daily", command="sync", resolve="local", runner=FakeCrontab(),
+        warn=warnings.append,
+    )
+    assert warnings == []
+
+
+def test_add_push_job_does_not_warn_about_sync(repo: Path) -> None:
+    warnings: list[str] = []
+    sched.add_job(repo, every="daily", command="push", runner=FakeCrontab(), warn=warnings.append)
+    assert warnings == []

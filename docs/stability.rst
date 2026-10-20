@@ -143,7 +143,8 @@ flag/argument name; these names, not just their presence, are frozen.
        uploaded, and counted as ``moved=``. ``--deletions [keep|trash]`` and
        ``--allow-mass-delete`` (added in 3.0.0): with ``trash``, files deleted locally
        are trashed on Drive and counted as ``trashed=``; a guard refusing the trash step
-       is a failure (exit ``1``) with nothing trashed.
+       is a failure (exit ``1``) with nothing trashed. Files deleted locally that stay on Drive are counted as
+       ``local-deleted=`` (since 3.0.0).
      - ``0`` all transferred/skipped (including a pattern that matched nothing, which is
        reported and skipped); ``1`` one or more files failed to transfer, a pattern
        matched nothing under ``--strict``, or a Drive/lock error; ``2`` usage error.

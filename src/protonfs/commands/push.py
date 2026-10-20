@@ -380,8 +380,9 @@ def push(
     :param allow_mass_delete: lift the per-run cap and the vanished-top-level-directory
         refusal for ``deletions="trash"``.
     :returns: a :class:`~protonfs.drive.TransferResult` of what was uploaded/skipped;
-        ``moved_items`` counts the files moved or renamed on Drive and ``trashed`` lists
-        the files trashed (with ``dry_run``, the ones that would be).
+        ``moved_items`` counts the files moved or renamed on Drive, ``trashed`` lists
+        the files trashed, and ``local_deleted_items`` counts the files gone locally
+        that stay on Drive (with ``dry_run``, what each would be; ``0`` for ``only``).
     :raises click.ClickException: when the deletion policy is neither keep nor trash.
     :raises protonfs.drive.DriveError: on a Drive or lock failure.
 
@@ -500,9 +501,15 @@ def push(
                 result.failures.append(refusal)
             else:
                 result.trashed, result.trashed_items = to_trash, len(to_trash)
+        if only is None:
+            gone = _still_deleted(ctx, diff_entries, subpath)
+            result.local_deleted_items = len(
+                gone - {old for old, _ in moves} - set(result.trashed)
+            )
         return result
     if not (to_push or moves or to_trash):
-        return TransferResult(0, 0, 0, [], unsettled_items=len(held))
+        kept = len(_still_deleted(ctx, diff_entries, subpath)) if only is None else 0
+        return TransferResult(0, 0, 0, [], unsettled_items=len(held), local_deleted_items=kept)
 
     # #17: make sure remote_root itself exists (and is a valid path) before uploading, so a
     # first push to a brand-new Drive location works instead of failing on every file.
@@ -614,6 +621,9 @@ def push(
             reporter.phase("trashing", files=len(to_trash))
             _trash_deleted(ctx, to_trash, forgotten, total, reporter)
 
+    if only is None:
+        total.local_deleted_items = len(_still_deleted(ctx, diff_entries, subpath))
+
     record = run.verified if manifest_updates is None else None
     forget = forgotten if manifest_forget is None else None
     if record or forget:
@@ -630,6 +640,21 @@ def push(
         failed=total.failed_items,
     )
     return total
+
+
+def _still_deleted(
+    ctx: RepoContext, diff_entries: list[DiffEntry], subpath: str | None
+) -> set[str]:
+    """Paths inside ``subpath`` classified ``local-deleted`` that are still indexed and
+    still absent from disk: the local deletions this push has left on Drive."""
+    return {
+        e.rel_path
+        for e in diff_entries
+        if e.state == SyncState.LOCAL_DELETED
+        and within_subpath(e.rel_path, subpath)
+        and ctx.index.get(e.rel_path) is not None
+        and not (ctx.root / e.rel_path).exists()
+    }
 
 
 def _trash_candidates(

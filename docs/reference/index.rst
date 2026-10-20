@@ -1120,11 +1120,24 @@ absolute ``proton-drive`` path (cron has no useful ``PATH``) and tuned list/tran
 timeouts, logging to ``.protonfs/schedule/<id>.log``. Jobs are recorded per-device in
 ``.protonfs/schedule.local.json`` (gitignored). ``--command sync`` runs pull then push.
 
+A ``sync`` job never undoes local changes made between runs: its pull leaves files
+deleted or moved away locally alone (``local-deleted=`` in the log), and its push
+applies local moves on Drive and, with ``--deletions trash``, trashes local deletions
+there (``moved=``, ``trashed=`` and the deletions it kept, ``local-deleted=``, on the
+push's summary line in the log). ``--add`` for a ``sync`` job prints a note when the
+deletion policy is ``keep`` (deleted files stay on Drive) or there is no ``--resolve``
+(a file changed on both sides is reported and left alone every run). ``--deletions``
+is accepted for push and sync jobs, and is passed to the push only.
+
+.. versionchanged:: 3.0.0
+   ``--deletions``, and the note when adding a ``sync`` job.
+
 ``--command offload`` pushes the job's scope, then offloads it. ``--command prune``
 runs ``protonfs prune``, which pushes first itself. Both pass ``--min-age`` through,
 and prune also ``--keep``; without them the commands' own defaults apply (``1d``,
 ``10``). An option the command would ignore (``--keep`` on a non-prune job,
-``--min-age`` on push/pull/sync, ``--resolve``/``--strict`` on prune) is refused.
+``--min-age`` on pull/sync, ``--resolve``/``--strict`` on prune, ``--deletions`` on
+pull/offload/prune) is refused.
 
 .. versionadded:: 1.8.0
 

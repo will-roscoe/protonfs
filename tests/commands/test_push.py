@@ -2292,3 +2292,44 @@ def test_push_never_trashes_the_old_path_of_a_move_held_by_the_settle_window(
     assert result.unsettled_items == 1
     assert ctx.drive.trashed == []
     assert ctx.index.get("photos/p00.jpg") is not None
+
+
+# --- #197: push reports the local deletions it left on Drive ------------------------------
+
+
+def test_push_counts_the_local_deletions_it_kept(tmp_path: Path, make_fake_drive) -> None:
+    ctx = _photos(tmp_path, make_fake_drive)
+    (tmp_path / "photos" / "p00.jpg").unlink()
+    (tmp_path / "photos" / "p01.jpg").unlink()
+    _move(tmp_path, "photos/p02.jpg", "misc/p02.jpg")
+
+    preview = push(ctx, None, resolve=None, dry_run=True)
+    result = push(ctx, None, resolve=None, dry_run=False)
+
+    assert preview.local_deleted_items == 2
+    assert result.local_deleted_items == 2  # the move is not a deletion
+    assert result.moved_items == 1
+
+    trashed = push(ctx, None, resolve=None, dry_run=False, deletions="trash")
+    assert trashed.local_deleted_items == 0
+    assert trashed.trashed_items == 2
+
+
+def test_cli_push_prints_every_per_run_total_on_its_summary_line(
+    tmp_path: Path, monkeypatch, make_fake_drive
+) -> None:
+    from click.testing import CliRunner
+
+    from protonfs.cli import main
+
+    ctx = _photos(tmp_path, make_fake_drive)
+    ctx.index.save()
+    (tmp_path / "photos" / "p00.jpg").unlink()
+    _move(tmp_path, "photos/p01.jpg", "misc/p01.jpg")
+    _inject_ctx(monkeypatch, ctx)
+
+    result = CliRunner().invoke(main, ["push"])
+
+    assert result.exit_code == 0, result.output
+    summary = next(line for line in result.output.splitlines() if "transferred=" in line)
+    assert "moved=1" in summary and "local-deleted=1" in summary
