@@ -8,6 +8,8 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-10-20
+
 ### Bug fixes
 
 - **pull**: a file the index records but the scan skipped while it still exists on disk (now ignored, say) is never downloaded over, so pull cannot overwrite it with Drive's copy (#197)
@@ -19,6 +21,7 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 - **push**: `--deletions trash` (or `defaults.deletions = "trash"`, or `schedule --deletions trash` for a push or sync job; deliberately no environment variable) moves the Drive copy of each file deleted locally to the Drive trash, confirms with a listing that it is gone, and drops it from the index and the remote manifest; the summary counts them as `trashed=N` and `--dry-run` lists them. The default stays `keep`. A path now ignored is never trashed. The trash step is refused, with nothing trashed and exit 1, when every file held in scope is gone, and, unless `--allow-mass-delete`, when a whole top-level directory vanished or a run would trash more than 500 files, or more than 10 and more than 5% of the files held on this machine (offloaded entries do not count) (#197)
 - **schedule**: `--add --no-restore` passes `--no-restore` to a pull or sync job's pull. `--add` for a `sync` job prints a note on what its options leave implicit: without `--no-restore` each run's pull restores files deleted or moved locally, so push never sees them; with it, a `keep` deletion policy leaves files deleted locally on Drive; and without `--resolve` a file changed on both sides is reported and left alone each run (#197)
 - **push**: the summary line also counts the files deleted locally that it left on Drive, as `local-deleted=N`, next to `moved=` and `trashed=`, so a scheduled run that touched many files shows in one line of its log (#197)
+- apply local moves on Drive, opt-in trash for local deletions, and pull --no-restore (#203)
 
 ## [2.6.0] - 2026-10-15
 
@@ -782,7 +785,8 @@ the preceding development history and its first tagged release:
   line-matching, git-mutation error wrapping, `pathspec` deprecation, subpath
   prune data-loss fix.
 
-[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v2.6.0...HEAD
+[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v3.0.0...HEAD
+[3.0.0]: https://github.com/will-roscoe/protonfs/compare/v2.6.0...v3.0.0
 [2.6.0]: https://github.com/will-roscoe/protonfs/compare/v2.5.1...v2.6.0
 [2.5.1]: https://github.com/will-roscoe/protonfs/compare/v2.5.0...v2.5.1
 [2.5.0]: https://github.com/will-roscoe/protonfs/compare/v2.4.1...v2.5.0
