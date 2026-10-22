@@ -678,6 +678,45 @@ Examples::
     protonfs push subdir/ --resolve replace
     protonfs push --dry-run
 
+.. _cmd-import:
+
+import
+------
+.. click:: protonfs.cli:import_cmd
+   :prog: protonfs import
+
+.. versionadded:: 3.1.0
+
+Moves files that git tracks in this store out of git and into the store, for example
+generated outputs that were committed and have outgrown the repository. Run it from
+inside the store; ``PATH`` may be a file, a directory (its tracked files) or a quoted
+glob, which matches tracked files only, so a pattern never picks up an untracked or
+gitignored file next to the ones you mean. Directories and patterns skip ``.protonfs/``
+and git's own ``.gitignore``/``.gitattributes`` files::
+
+    protonfs import --dry-run '**/*.reduced.fits' '**/*.mp4'
+    protonfs import '**/*.reduced.fits' '**/*.mp4'
+    git status
+    git commit -m "chore: move 130 file(s) from git into protonfs"
+
+What it changes, and only after every file is verified (see :doc:`../guarantees`):
+
+* one line per file in a block at the end of the store's own ``.gitignore``
+  (``<store>/.gitignore``, created if absent), each anchored and escaped so it
+  matches exactly that file;
+* ``git rm --cached`` for each file, then ``git add .gitignore``. Nothing is
+  committed.
+
+The location and format of that block are current behaviour, not part of the
+:doc:`../stability` contract. ``.gitignore`` is itself an ordinary file in the store,
+so protonfs syncs it like any other.
+
+The summary is push's line plus ``untracked=N``. Afterwards the files are still in
+git history; ``git filter-repo`` removes them from it (protonfs does not). On other
+clones, pulling the commit removes the files from the work tree; ``protonfs pull``
+there restores them, and ``push --deletions trash`` never trashes them. See
+:doc:`../getting-started/git-to-store` for a walkthrough.
+
 .. _cmd-pull:
 
 pull

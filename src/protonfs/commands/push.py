@@ -426,6 +426,12 @@ def push(
        instead of uploading the file again at its new path; added ``manifest_forget``,
        ``deletions`` and ``allow_mass_delete`` (#197).
 
+    .. versionchanged:: 3.1.0
+       ``deletions="trash"`` never trashes a file listed in the store's
+       ``protonfs import`` block: it was removed locally by another clone's ``git pull``
+       of an import commit, not deleted by the user. It is counted as local-deleted and
+       stays on Drive (#205).
+
     .. seealso:: :func:`protonfs.commands.pull.pull` for the download direction.
     """
     from protonfs.reporting import get_reporter
@@ -666,11 +672,17 @@ def _trash_candidates(
     ``subpath``, except the old paths of planned moves, paths now ignored (ignoring stops
     syncing; it never deletes Drive's copy), and paths whose ``(sha256, size)`` is in
     ``unsettled``: a file the settle window held back that may be the same file moved,
-    whose only Drive copy is still the old path.
+    whose only Drive copy is still the old path. Paths listed in the store's
+    ``protonfs import`` block (:mod:`protonfs.importblock`) are never candidates: such a
+    file is gone because another clone's ``git pull`` removed it, not because the user
+    deleted it (#205).
     """
+    from protonfs import importblock
+
+    spared = importblock.block_paths(ctx.root)
     candidates = []
     for rel in held_and_gone(diff_entries, ctx.index, ctx.root, subpath):
-        if rel in moving or ignore.matches(rel):
+        if rel in moving or rel in spared or ignore.matches(rel):
             continue
         entry = ctx.index.get(rel)
         if (entry.sha256, entry.size) not in unsettled:

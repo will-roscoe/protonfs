@@ -241,6 +241,44 @@ def _glob_local(root: Path, pattern: str) -> list[str]:
     return sorted(m.relative_to(root).as_posix() for m in root.glob(pattern))
 
 
+def _glob_tracked(root: Path, pattern: str, tracked: set[str]) -> list[str]:
+    """Expand `pattern` against the files git tracks under `root` (import's matcher).
+
+    Uses :func:`_glob_local`'s shell-glob semantics, then keeps only tracked files and
+    directories holding a tracked file, so a pattern never picks up an untracked or
+    gitignored file.
+    """
+    dirs = {rel.rsplit("/", 1)[0] for rel in tracked if "/" in rel}
+    prefixes = set()
+    for d in dirs:
+        parts = d.split("/")
+        prefixes.update("/".join(parts[:i]) for i in range(1, len(parts) + 1))
+    return [m for m in _glob_local(root, pattern) if m in tracked or m in prefixes]
+
+
+def _git_control(rel: str) -> bool:
+    """Whether `rel` is protonfs's or git's own control file, which import expansion skips."""
+    from protonfs.commands.gitmove import GIT_CONTROL_FILES
+
+    return rel.split("/", 1)[0] == ".protonfs" or rel.rsplit("/", 1)[-1] in GIT_CONTROL_FILES
+
+
+def _tracked_under(subpaths: list[str | None], tracked: set[str]) -> list[str]:
+    """The files to import for `subpaths`: a tracked file itself, a directory's tracked
+    files (``None`` = the whole store), and any other literal path as given, so the
+    import's preconditions can refuse it by name."""
+    files: list[str] = []
+    for sub in subpaths:
+        if sub is None:
+            under = sorted(tracked)
+        elif sub in tracked:
+            under = [sub]
+        else:
+            under = sorted(rel for rel in tracked if rel.startswith(sub + "/")) or [sub]
+        files += [rel for rel in under if rel not in files]
+    return files
+
+
 def _expand_pattern_index(index_keys: list[str] | set[str], pattern: str) -> list[str]:
     """Expand `pattern` against known index paths (pull's matcher).
 
@@ -308,6 +346,22 @@ def _report_unmatched(unmatched: list[str], strict: bool, verb: str) -> None:
     click.echo(
         f"pattern(s) matched nothing, skipped (nothing to {verb}): {listed} "
         "-- pass --strict to make this an error"
+    )
+
+
+def _transfer_summary(result) -> str:
+    """Push's ``key=value`` summary line for ``result`` (a :class:`TransferResult`);
+    optional keys appear only when non-zero (see docs/stability.rst, Output contract)."""
+    adopted = f" adopted={result.adopted_items}" if result.adopted_items else ""
+    moved = f" moved={result.moved_items}" if result.moved_items else ""
+    unsettled = f" unsettled={result.unsettled_items}" if result.unsettled_items else ""
+    trashed = f" trashed={result.trashed_items}" if result.trashed_items else ""
+    kept = (
+        f" local-deleted={result.local_deleted_items}" if result.local_deleted_items else ""
+    )
+    return (
+        f"transferred={result.transferred_items}{adopted}{moved}{trashed}{kept} "
+        f"skipped={result.skipped_items} failed={result.failed_items}{unsettled}"
     )
 
 
@@ -573,7 +627,7 @@ class _StateChoice(click.Choice):
             click.echo(
                 f"warning: --state {value} is deprecated; use --state {replacement}. It "
                 "means the file matches this machine's index, not that it was verified "
-                "on Drive. The old name will be removed in the next major release.",
+                "on Drive. The old name will be removed in 4.0.0.",
                 err=True,
             )
             return replacement
@@ -825,17 +879,7 @@ def push(
         # summary. Say so in plain language -- and at DEFAULT verbosity, which the Reporter
         # cannot do (reporter.done() renders only at -v and above).
         click.echo("nothing to push")
-    adopted = f" adopted={result.adopted_items}" if result.adopted_items else ""
-    moved = f" moved={result.moved_items}" if result.moved_items else ""
-    unsettled = f" unsettled={result.unsettled_items}" if result.unsettled_items else ""
-    trashed = f" trashed={result.trashed_items}" if result.trashed_items else ""
-    kept = (
-        f" local-deleted={result.local_deleted_items}" if result.local_deleted_items else ""
-    )
-    click.echo(
-        f"transferred={result.transferred_items}{adopted}{moved}{trashed}{kept} "
-        f"skipped={result.skipped_items} failed={result.failed_items}{unsettled}"
-    )
+    click.echo(_transfer_summary(result))
     if dry_run:
         for rel in result.trashed:
             click.echo(f"  trash {rel}")
@@ -888,6 +932,144 @@ def push(
                 "--resolve=remote|local|both to resolve them."
             )
         raise click.exceptions.Exit(1)
+
+
+@main.command("import")
+@click.argument("path", nargs=-1, required=True)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Show each path's verdict, the push plan, the .gitignore lines and the git "
+    "commands, and change nothing.",
+)
+@click.option(
+    "--strict",
+    is_flag=True,
+    help="Fail (exit 1) if a PATH pattern matches nothing, instead of skipping it.",
+)
+@_drive_error_boundary
+def import_cmd(path: tuple[str, ...], dry_run: bool, strict: bool) -> None:
+    """Move files git tracks in this store out of git and into the store (from git).
+
+    Each PATH may be a file, a directory (its tracked files) or a glob pattern; a quoted
+    pattern (``'**/*.mp4'``) matches only files git tracks, never untracked or gitignored
+    ones. The files are pushed, then each is verified from a fresh read: against Drive
+    and against the blob committed in ``HEAD``. Only when every one verifies does git
+    stop tracking them: one literal line per file goes into a block in this store's
+    ``.gitignore``, ``git rm --cached`` untracks them, and ``.gitignore`` is staged.
+
+    Nothing is committed, git history is not touched, and no imported file is changed
+    or deleted: review with ``git status`` and commit. Git is changed for every PATH or for
+    none. The files stay in git history; ``git filter-repo`` purges them (protonfs does
+    not). Other clones lose them from their work tree when they pull the commit;
+    ``protonfs pull`` there restores them from Drive, and ``push --deletions trash``
+    never trashes them.
+
+    Directories and patterns skip ``.protonfs/`` and git's own ``.gitignore`` and
+    ``.gitattributes`` files. Refused, with nothing done (exit 1): a path that is not
+    tracked, has uncommitted changes, is a symlink, is tracked by git-LFS or is an LFS
+    pointer stub, is excluded by ``.protonfs/ignore`` or ``.protonfs/include``, is a
+    ``.gitignore``/``.gitattributes``, or lies outside the store; a ``.gitignore`` with
+    uncommitted changes; a store outside a git work tree. Every refusal is listed at once.
+
+    Exit code: 0 imported (or a dry run with nothing refused); 1 a refusal, a file that
+    failed verification, a git failure (rolled back), or a Drive/lock error; 2 usage
+    error.
+
+    .. versionadded:: 3.1.0
+    """
+    from protonfs import gitops
+    from protonfs.context import load_context
+
+    ctx = load_context()
+    try:
+        _import(ctx, path, dry_run, strict)
+    except gitops.GitError as exc:
+        raise click.ClickException(f"git failed, nothing imported: {exc}") from exc
+
+
+def _import(ctx, path: tuple[str, ...], dry_run: bool, strict: bool) -> None:
+    """The body of :func:`import_cmd`, inside its ``GitError`` boundary."""
+    from protonfs import gitops
+    from protonfs.commands.gitmove import check_import, import_from_git
+    from protonfs.commands.ls import human_size
+    from protonfs.locking import repo_lock
+
+    store_wide = check_import(ctx, []) if not gitops.in_work_tree(ctx.root) else []
+    if store_wide:  # no git, or not in a work tree: refuse before expanding anything
+        for refusal in store_wide:
+            click.echo(f"  REFUSED {refusal.path}: {refusal.reason}")
+        raise click.ClickException("nothing imported")
+    tracked = {rel for rel in gitops.tracked_files(ctx.root) if not _git_control(rel)}
+    subpaths, unmatched = _resolve_pathspecs(
+        path, lambda p: _glob_tracked(ctx.root, p, tracked)
+    )
+    _report_unmatched(unmatched, strict, "import")
+    files = _tracked_under(subpaths, tracked)
+    if not files:
+        click.echo("nothing to import")
+        return
+    with repo_lock(ctx.root), _resumable_on_interrupt(ctx, "import"):
+        result = import_from_git(ctx, files, dry_run=dry_run)
+    if result.refusals:
+        if dry_run:
+            refused = {r.path for r in result.refusals}
+            for rel in files:
+                if rel not in refused:
+                    click.echo(f"[dry-run] import {rel}")
+        for refusal in result.refusals:
+            click.echo(f"  REFUSED {refusal.path}: {refusal.reason}")
+        raise click.ClickException(
+            f"nothing imported: {len(result.refusals)} path(s) refused"
+        )
+    if dry_run:
+        for rel in files:
+            click.echo(f"[dry-run] import {rel}")
+        upload = result.pushed.transferred_items
+        click.echo(
+            f"[dry-run] would push {upload} file(s), {len(files) - upload} already on "
+            f"Drive; {len(files)} file(s), {human_size(result.total_bytes)} in all"
+        )
+        click.echo(f"[dry-run] would add {len(result.gitignore_lines)} line(s) to .gitignore:")
+        for line in result.gitignore_lines:
+            click.echo(f"[dry-run] {line}")
+        for command in result.git_commands:
+            click.echo(f"[dry-run] {command}")
+        click.echo(
+            "[dry-run] each file is verified on Drive and against HEAD when run for real"
+        )
+        return
+    click.echo(f"{_transfer_summary(result.pushed)} untracked={result.untracked}")
+    for failure in [*result.pushed.failures, *result.failures]:
+        click.echo(f"  FAILED {failure['name']}: {failure['error']}")
+    if result.failures:
+        raise click.ClickException(
+            f"{len(result.failures)} problem(s); nothing changed in git. Fix them and "
+            "run import again: files already on Drive are not uploaded again."
+        )
+    click.echo(f"added {len(result.gitignore_lines)} line(s) to .gitignore")
+    from protonfs.reporting import get_reporter
+
+    for line in result.gitignore_lines:
+        get_reporter().item("ignore", line)  # rendered at -v and above
+    click.echo(
+        "staged; review with `git status`, then: "
+        f'git commit -m "chore: move {result.untracked} file(s) from git into protonfs"'
+    )
+    click.echo(
+        "other clones lose these files from their working tree when they pull this "
+        "commit; run `protonfs pull` there to restore them from Drive"
+    )
+    click.echo(
+        "these files remain in git history; `git filter-repo` purges them "
+        "(protonfs does not)"
+    )
+    if result.trash_policy_warning:
+        click.echo(
+            'WARNING: this store\'s shared config sets defaults.deletions = "trash". Push '
+            "never trashes a file import moved out of git, but on every other clone run "
+            "`protonfs pull` after pulling this commit, so the files are back on disk there."
+        )
 
 
 @main.command()

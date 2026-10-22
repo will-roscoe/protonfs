@@ -2084,6 +2084,101 @@ def test_push_never_trashes_a_path_that_is_now_ignored(tmp_path: Path, make_fake
     assert result.trashed_items == 0
 
 
+def test_push_never_trashes_a_path_listed_in_the_import_block(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    # #205: a file protonfs import moved out of git that is gone locally was removed by
+    # another clone's `git pull`, not deleted by the user; its Drive copy must survive.
+    from protonfs import importblock
+
+    ctx = _photos(tmp_path, make_fake_drive)
+    importblock.add_paths(tmp_path, ["photos/p00.jpg"])
+    (tmp_path / "photos" / "p00.jpg").unlink()
+
+    result = push(ctx, None, resolve=None, dry_run=False, deletions="trash")
+
+    assert ctx.drive.trashed == []
+    assert result.trashed_items == 0
+    assert result.failed_items == 0
+    assert result.local_deleted_items == 1
+    assert ctx.index.get("photos/p00.jpg") is not None
+
+
+def test_push_dry_run_does_not_list_import_block_paths_for_trash(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    from protonfs import importblock
+
+    ctx = _photos(tmp_path, make_fake_drive)
+    importblock.add_paths(tmp_path, ["photos/p00.jpg"])
+    (tmp_path / "photos" / "p00.jpg").unlink()
+    (tmp_path / "photos" / "p01.jpg").unlink()
+
+    result = push(ctx, None, resolve=None, dry_run=True, deletions="trash")
+
+    assert result.trashed == ["photos/p01.jpg"]
+
+
+def _git(cwd: Path, *args: str) -> None:
+    import subprocess
+
+    subprocess.run(
+        ["git", "-c", "user.email=t@example.com", "-c", "user.name=t", "-C", str(cwd), *args],
+        check=True, capture_output=True,
+    )
+
+
+def test_two_clones_import_then_git_pull_then_trash_push_keeps_drive_copies(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    # #205 data-loss guard: clone A imports two files (untracks + ignores them, commits);
+    # clone B pulls that commit, which deletes them from B's work tree; B's push with
+    # --deletions trash must leave their Drive copies alone, and pull restores them.
+    from protonfs import gitops, importblock
+    from protonfs.commands.pull import pull
+
+    files = {f"frames/f{i}.mp4": f"frame {i}".encode() for i in range(3)}
+    files["frames/keep.txt"] = b"stays in git"
+    a_repo = tmp_path / "a"
+    a_store = a_repo / "store"
+    for rel, data in files.items():
+        (a_store / rel).parent.mkdir(parents=True, exist_ok=True)
+        (a_store / rel).write_bytes(data)
+    _git(a_repo, "init", "-q")
+    _git(a_repo, "add", "-A")
+    _git(a_repo, "commit", "-q", "-m", "data in git")
+    _git(tmp_path, "clone", "-q", str(a_repo), "b")
+    b_store = tmp_path / "b" / "store"
+
+    drive = make_fake_drive()
+    init_config(a_store, ROOT)
+    a_ctx = load_context(a_store)
+    a_ctx.drive = drive
+    push(a_ctx, None, resolve=None, dry_run=False)
+    init_config(b_store, ROOT)
+    b_ctx = load_context(b_store)
+    b_ctx.drive = drive
+    push(b_ctx, None, resolve=None, dry_run=False)  # B now holds the files too
+    assert b_ctx.index.get("frames/f0.mp4") is not None
+
+    imported = ["frames/f0.mp4", "frames/f1.mp4"]
+    importblock.add_paths(a_store, imported)
+    gitops.rm_cached(a_store, imported)
+    gitops.add(a_store, [".gitignore"])
+    _git(a_repo, "commit", "-q", "-m", "import")
+    _git(tmp_path / "b", "pull", "-q")
+    assert not (b_store / "frames" / "f0.mp4").exists()  # git removed them on B
+
+    result = push(b_ctx, None, resolve=None, dry_run=False, deletions="trash")
+
+    assert drive.trashed == []
+    assert result.failed_items == 0
+    assert result.local_deleted_items == 2
+    pull(b_ctx, None, None, False)
+    assert (b_store / "frames" / "f0.mp4").read_bytes() == b"frame 0"
+    assert (b_store / "frames" / "f1.mp4").read_bytes() == b"frame 1"
+
+
 def test_push_refuses_to_trash_a_vanished_top_level_directory_without_the_override(
     tmp_path: Path, make_fake_drive
 ) -> None:

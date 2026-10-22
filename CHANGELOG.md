@@ -10,6 +10,10 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 
 ## [3.0.0] - 2026-10-20
 
+### Upgrade notes
+
+- **3.0.0 is a major release by accident.** A breaking change in #203 was withdrawn before merge, but its `BREAKING CHANGE:` footer stayed in the squash commit's message and the release tooling cut a major. Nothing breaks relative to 2.6.0; there is nothing to do when upgrading. Features documented as "added in 2.7.0" before this release shipped in 3.0.0; 2.7.0 was never released
+
 ### Bug fixes
 
 - **pull**: a file the index records but the scan skipped while it still exists on disk (now ignored, say) is never downloaded over, so pull cannot overwrite it with Drive's copy (#197)

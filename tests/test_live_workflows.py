@@ -189,3 +189,38 @@ def test_workflow_offload_then_pull_restores_content(
 
     assert pulled.failed_items == 0, pulled.failures
     assert (ctx.root / "big" / "dump").read_bytes() == payload
+
+
+def test_workflow_import_two_files_from_a_git_repo(tmp_path: Path, live_remote: str) -> None:
+    """#205: protonfs import against the real backend. Both files land on Drive and are
+    verified there, git stops tracking them, and the local copies are untouched."""
+    import subprocess
+
+    from protonfs import gitops
+    from protonfs.commands.gitmove import import_from_git
+
+    def git(*args: str) -> None:
+        subprocess.run(
+            ["git", "-c", "user.email=t@example.com", "-c", "user.name=t",
+             "-C", str(tmp_path / "repo"), *args],
+            check=True, capture_output=True,
+        )
+
+    (tmp_path / "repo").mkdir()
+    ctx = _repo(tmp_path / "repo", "store", live_remote)
+    files = {"out/a.bin": b"alpha" * 100, "out/b.bin": b"bravo" * 100}
+    _seed(ctx, files)
+    git("init", "-q")
+    git("add", "-A")
+    git("commit", "-q", "-m", "outputs")
+
+    result = _eventually(lambda: import_from_git(ctx, sorted(files)))
+
+    assert result.refusals == [] and result.failures == [], (result.refusals, result.failures)
+    assert result.untracked == 2
+    assert gitops.tracked_files(ctx.root).isdisjoint(files)
+    for rel, data in files.items():
+        assert (ctx.root / rel).read_bytes() == data
+        parent, name = f"{live_remote}/{rel}".rsplit("/", 1)
+        ident = ctx.drive.remote_identities(parent)[name]
+        assert ident.claimed_size == len(data)
