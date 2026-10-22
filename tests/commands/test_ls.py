@@ -411,6 +411,8 @@ def test_cli_ls_state_accepts_synced_as_a_deprecated_alias(tmp_path: Path, monke
     assert "kept\tlocally-indexed" in result.output
     assert "fresh" not in result.output
     assert "deprecated" in result.output and "locally-indexed" in result.output
+    # The 3.x contract pins the alias's end to a version, not "the next major".
+    assert "removed in 4.0.0" in result.output
 
 
 def test_cli_ls_help_does_not_advertise_the_deprecated_alias() -> None:

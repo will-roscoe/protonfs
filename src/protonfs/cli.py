@@ -573,7 +573,7 @@ class _StateChoice(click.Choice):
             click.echo(
                 f"warning: --state {value} is deprecated; use --state {replacement}. It "
                 "means the file matches this machine's index, not that it was verified "
-                "on Drive. The old name will be removed in the next major release.",
+                "on Drive. The old name will be removed in 4.0.0.",
                 err=True,
             )
             return replacement

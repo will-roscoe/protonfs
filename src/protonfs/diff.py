@@ -74,7 +74,7 @@ class SyncState(str, Enum):
     LFS_POINTER = "lfs-pointer"
 
     # Deprecated alias (same value, so iteration and JSON never show it): code written
-    # against 1.x keeps importing. Remove in the next major.
+    # against 1.x keeps importing. Remove in 4.0.0.
     SYNCED = "locally-indexed"
 
 
