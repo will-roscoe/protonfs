@@ -349,3 +349,115 @@ def test_import_sets_trash_policy_warning_from_shared_config(
     _git(ctx.root, "commit", "-q", "-am", "trash policy")
 
     assert import_from_git(ctx, IMPORT).trash_policy_warning
+
+
+# --- the `protonfs import` command ----------------------------------------------------------
+
+
+def _cli(ctx, monkeypatch, *args: str):
+    from click.testing import CliRunner
+
+    from protonfs.cli import main
+
+    monkeypatch.chdir(ctx.root)
+    monkeypatch.setattr("protonfs.context.load_context", lambda *a, **k: ctx)
+    return CliRunner().invoke(main, ["import", *args])
+
+
+def test_cli_import_glob_ignores_untracked_matches(tmp_path, make_fake_drive, monkeypatch) -> None:
+    ctx = _store(
+        tmp_path, make_fake_drive, {"run/a.reduced.fits": b"r", ".gitignore": b"*.grids.fits\n"}
+    )
+    (ctx.root / "run" / "a.grids.fits").write_bytes(b"g")
+
+    result = _cli(ctx, monkeypatch, "**/*.fits")
+
+    assert result.exit_code == 0, result.output
+    assert "REFUSED" not in result.output
+    assert "untracked=1" in result.output
+    assert "run/a.reduced.fits" not in gitops.tracked_files(ctx.root)
+
+
+def test_cli_import_literal_untracked_path_is_refused_exit_1(
+    tmp_path, make_fake_drive, monkeypatch
+) -> None:
+    ctx = _store(tmp_path, make_fake_drive, FILES)
+    (ctx.root / "new.mp4").write_bytes(b"n")
+
+    result = _cli(ctx, monkeypatch, "new.mp4")
+
+    assert result.exit_code == 1
+    assert "REFUSED new.mp4: not tracked by git" in result.output
+    assert ctx.drive.upload_calls == []
+
+
+def test_cli_import_a_directory_means_its_tracked_files(
+    tmp_path, make_fake_drive, monkeypatch
+) -> None:
+    ctx = _store(tmp_path, make_fake_drive, FILES)
+    (ctx.root / "frames" / "untracked.mp4").write_bytes(b"u")
+
+    result = _cli(ctx, monkeypatch, "frames")
+
+    assert result.exit_code == 0, result.output
+    assert "untracked=2" in result.output
+
+
+def test_cli_import_strict_fails_on_unmatched_glob(tmp_path, make_fake_drive, monkeypatch) -> None:
+    ctx = _store(tmp_path, make_fake_drive, FILES)
+
+    result = _cli(ctx, monkeypatch, "--strict", "*.nothing", "frames/f0.mp4")
+
+    assert result.exit_code == 1
+    assert ctx.drive.upload_calls == []
+    assert "frames/f0.mp4" in gitops.tracked_files(ctx.root)
+
+
+def test_cli_import_summary_line_has_untracked_key(tmp_path, make_fake_drive, monkeypatch) -> None:
+    ctx = _store(tmp_path, make_fake_drive, FILES)
+
+    result = _cli(ctx, monkeypatch, *IMPORT)
+
+    summary = next(line for line in result.output.splitlines() if "transferred=" in line)
+    assert summary.startswith("transferred=2 ") and summary.endswith(" untracked=2")
+
+
+def test_cli_import_prints_other_clones_and_history_notes(
+    tmp_path, make_fake_drive, monkeypatch
+) -> None:
+    ctx = _store(tmp_path, make_fake_drive, FILES)
+
+    out = _cli(ctx, monkeypatch, *IMPORT).output
+
+    assert "added 2 line(s) to .gitignore" in out
+    assert 'git commit -m "chore: move 2 file(s) from git into protonfs"' in out
+    assert "run `protonfs pull` there" in out
+    assert "git filter-repo" in out
+
+
+def test_cli_import_fails_exit_1_when_verification_fails(
+    tmp_path, make_fake_drive, monkeypatch
+) -> None:
+    ctx = _store(tmp_path, make_fake_drive, FILES)
+    ctx.drive = make_fake_drive(remote_size_overrides={"f1.mp4": 3})
+
+    result = _cli(ctx, monkeypatch, *IMPORT)
+
+    assert result.exit_code == 1
+    assert "FAILED frames/f1.mp4" in result.output
+    assert "nothing changed in git" in result.output
+
+
+@pytest.mark.parametrize(("extra", "code"), [((), 0), (("new.mp4",), 1)])
+def test_cli_import_dry_run_exit_codes(tmp_path, make_fake_drive, monkeypatch, extra, code) -> None:
+    ctx = _store(tmp_path, make_fake_drive, FILES)
+    (ctx.root / "new.mp4").write_bytes(b"n")
+
+    result = _cli(ctx, monkeypatch, "--dry-run", *IMPORT, *extra)
+
+    assert result.exit_code == code, result.output
+    if code == 0:
+        assert "[dry-run] /frames/f0.mp4" in result.output
+        assert "[dry-run] git rm --cached" in result.output
+        assert "verified on Drive and against HEAD when run for real" in result.output
+    assert _status(ctx) == ""

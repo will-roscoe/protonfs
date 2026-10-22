@@ -46,6 +46,7 @@ EXPECTED_TOP_LEVEL_COMMANDS = frozenset(
         "config",
         "trash",
         "verify",
+        "import",
     }
 )
 
@@ -56,6 +57,7 @@ EXPECTED_TRASH_SUBCOMMANDS = frozenset({"list", "empty"})
 # e.g. "-r"/"--recursive") and argument names, keyed by command name (dotted for a
 # subcommand of `config`).
 EXPECTED_OPTIONS: dict[str, frozenset[str]] = {
+    "import": frozenset({"--dry-run", "--strict"}),
     "setup": frozenset({"--dry-run", "--migrate-lfs", "--no-migrate-lfs"}),
     "deinit": frozenset({"--dry-run", "--yes"}),
     "status": frozenset({"--format", "--remote"}),
@@ -92,6 +94,7 @@ EXPECTED_OPTIONS: dict[str, frozenset[str]] = {
 }
 
 EXPECTED_ARGUMENTS: dict[str, tuple[str, ...]] = {
+    "import": ("path",),
     "setup": (),
     "deinit": (),
     "status": ("path",),
@@ -249,6 +252,10 @@ EXPECTED_SUMMARY_KEYS = {
          "skipped_unsettled"}
     ),
     "prune pushed:": frozenset({"transferred", "skipped", "failed"}),
+    "import": frozenset(
+        {"transferred", "adopted", "moved", "trashed", "local-deleted", "skipped", "failed",
+         "unsettled", "untracked"}
+    ),
 }
 
 _SUMMARY_MSG = (
@@ -395,9 +402,9 @@ def _summary_emitters() -> dict[str, int]:
 def test_no_other_command_prints_a_key_value_summary() -> None:
     """Every ``key={...}`` summary emitter in cli.py is one the tests above cover; a new
     emitter fails here, pointing at the output contract."""
-    covered = {"push", "pull", "prune", "_echo_offload_result"}
+    covered = {"push", "pull", "prune", "_echo_offload_result", "import", "_transfer_summary"}
     emitters = _summary_emitters()
-    assert {"push", "pull", "prune"} <= set(emitters), emitters  # the scan sees commands
+    assert {"_transfer_summary", "pull", "prune"} <= set(emitters), emitters  # scan works
     assert set(emitters) <= covered, (
         f"new key=value summary emitter(s) {sorted(set(emitters) - covered)} -- add them "
         "to EXPECTED_SUMMARY_KEYS and docs/stability.rst 'Output contract'"
@@ -451,3 +458,22 @@ def test_ls_json_row_keys_are_frozen(tmp_path, monkeypatch, make_fake_drive, arg
     assert rows, result.output  # every shape printed at least one row
     for row in rows:
         assert set(row) == EXPECTED_JSON_KEYS[key], _JSON_MSG
+
+
+def test_import_summary_key_set_is_frozen(tmp_path, monkeypatch) -> None:
+    from protonfs.commands.gitmove import ImportResult
+
+    _store(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "protonfs.commands.gitmove.import_from_git",
+        lambda ctx, paths, **k: ImportResult(
+            paths=list(paths), pushed=_all_counters_transfer(), untracked=9
+        ),
+    )
+    monkeypatch.setattr("protonfs.gitops.tracked_files", lambda root: {"a.bin"})
+    monkeypatch.setattr("protonfs.gitops.in_work_tree", lambda root: True)
+    (tmp_path / "a.bin").write_bytes(b"a")
+    out = CliRunner().invoke(main, ["import", "a.bin"]).output
+    assert _summary_keys(_summary_line(out, "transferred=")) == EXPECTED_SUMMARY_KEYS[
+        "import"
+    ], _SUMMARY_MSG
