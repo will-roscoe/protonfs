@@ -120,6 +120,9 @@ keys always print; optional keys print only when non-zero.
    * - ``prune``
      - ``pushed:`` line: ``transferred``, ``skipped``, ``failed``; then offload's line
      -
+   * - ``import``
+     - push's keys, plus ``untracked``
+     - push's optional keys
 
 What each key counts:
 
@@ -134,6 +137,7 @@ What each key counts:
 * ``local-deleted`` -- files this machine held that are gone locally and were left
   alone on Drive.
 * ``unsettled`` -- files held back because they were modified within ``--min-age``.
+* ``untracked`` -- files ``import`` stopped git tracking (added in 3.1.0).
 * ``offloaded`` / ``would offload`` -- local copies removed (or that would be);
   ``bytes_reclaimed`` -- their total size in bytes; ``skipped_unverified``,
   ``skipped_modified``, ``skipped_unsettled`` -- files offload refused, by reason.
@@ -177,7 +181,7 @@ see the CHANGELOG for everything else.
 **Added:**
 
 * Commands: ``completions`` (1.5.0), ``schedule`` (1.8.0), ``verify`` (2.1.0),
-  ``prune`` (2.2.0).
+  ``prune`` (2.2.0), ``import`` (3.1.0).
 * Global options: ``-v``/``--verbose``, ``--progress-inline``/``--progress-lines``,
   ``--event-log``/``--no-event-log`` (1.3.0).
 * ``PATH...``: every command that takes a ``PATH`` accepts several, e.g. from a shell
@@ -280,6 +284,19 @@ flag/argument name; these names, not just their presence, are frozen.
      - ``0`` all transferred/skipped (including a pattern that matched nothing, which is
        reported and skipped); ``1`` one or more files failed to transfer, a pattern
        matched nothing under ``--strict``, or a Drive/lock error; ``2`` usage error.
+   * - ``import``
+     - Move files git tracks in this store out of git and into the store (added in
+       3.1.0). Argument: ``PATH...`` (required; a file, a directory meaning its tracked
+       files, or a quoted glob matching tracked files only). Options: ``--dry-run``,
+       ``--strict``. Guarantees: git is changed only after every file is verified on
+       Drive and against the blob in ``HEAD``, and for every ``PATH`` or none; changes
+       are staged, never committed; git history is never touched; no local file is
+       changed or deleted; every refusal is reported before anything is done.
+     - ``0`` imported, or a dry run with nothing refused; ``1`` a refusal (untracked,
+       uncommitted changes, git-LFS pointer stub, excluded by the store, outside the
+       store, a ``.gitignore`` with uncommitted changes, no git work tree), a file that
+       failed verification, a git failure (rolled back), or a Drive/lock error; ``2``
+       usage error.
    * - ``pull``
      - Download remote-only/changed files from Drive. Argument: ``PATH...`` (optional,
        repeatable; a shell glob, or a quoted pattern protonfs expands itself against the

@@ -212,6 +212,28 @@ It is held to these rules (``src/protonfs/manifest.py``):
   manifest failure never fails the ``push``/``rm`` that triggered it: it is
   reported as a warning, and the command's own result stands.
 
+Moving files out of git keeps a copy at every step
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+``protonfs import`` (``src/protonfs/commands/gitmove.py``) stops git tracking files
+only after it has proved each one is on Drive. It pushes them, then reads every file
+once, whatever ``defaults.low_io`` says, and requires that the bytes match the index
+entry push wrote, the blob ``HEAD`` records for the file, and a fresh listing of its
+Drive directory (size, and sha1 where Drive reports one). If any file fails, git is not
+changed at all; running the command again uploads only what is missing.
+
+When every file verifies, it writes one literal, anchored line per file into a
+marked block in the store's ``.gitignore``, runs ``git rm --cached``, and stages the
+``.gitignore``. It never commits, never rewrites history and never changes or deletes
+a local file, so the bytes are still on disk, in git history and on Drive afterwards.
+A failing git command undoes every git change it made; if undoing fails too, the error
+lists the commands that finish the job by hand.
+
+Another clone that pulls the import commit loses the files from its work tree (git
+removes paths a commit untracks). Its index still lists them, so they look deleted
+locally; ``push`` never trashes a path listed in the import block, whatever
+``--deletions`` says, so those Drive copies stay, and a default ``pull`` brings the
+files back.
+
 Settle window: nothing still being written is deleted
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 A file can still be in use when no process holds it open, so ``offload`` (and
