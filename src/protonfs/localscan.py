@@ -80,6 +80,34 @@ def hash_file_digests(path: Path) -> tuple[str, str]:
     return sha256.hexdigest(), sha1.hexdigest()
 
 
+def hash_file_digests_with_blob(path: Path) -> tuple[str, str, str]:
+    """Return ``(sha256, sha1, git blob id)`` for ``path`` from one read of the file.
+
+    The git blob id is ``sha1(b"blob <size>\\0" + content)``, the id ``git hash-object``
+    gives the file, so it can be compared with the blob a commit records.
+
+    :param path: the file to hash.
+    :returns: the three hex digests.
+    :raises OSError: when the file cannot be read, or its size changed while it was read.
+
+    .. versionadded:: 3.1.0
+    """
+    size = path.stat().st_size
+    sha256 = hashlib.sha256()
+    sha1 = hashlib.sha1()
+    blob = hashlib.sha1(b"blob %d\0" % size)
+    read = 0
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            read += len(chunk)
+            sha256.update(chunk)
+            sha1.update(chunk)
+            blob.update(chunk)
+    if read != size:
+        raise OSError(f"{path} changed while hashing ({size} bytes, read {read})")
+    return sha256.hexdigest(), sha1.hexdigest(), blob.hexdigest()
+
+
 def scan(
     root: Path,
     subpath: Path,

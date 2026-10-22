@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
+import pytest
+
 from protonfs.ignore import IgnoreMatcher
 from protonfs.index import IndexEntry, IndexStore
 from protonfs.lfs import POINTER_SIGNATURE
@@ -347,3 +349,29 @@ def test_scan_ignores_hash_cache_without_low_io(tmp_path: Path) -> None:
     result = scan(tmp_path, Path("."), ignore, index, low_io=False, hash_cache=hc)
 
     assert result["dump_0001"].sha256 == hashlib.sha256(b"data").hexdigest()  # recomputed
+
+
+@pytest.mark.parametrize("size", [0, 1, 3 * 1024 * 1024 + 7])
+def test_blob_id_matches_git_hash_object(tmp_path, size) -> None:
+    # #205: import compares the file on disk with the blob committed in HEAD.
+    import subprocess
+
+    from protonfs.localscan import hash_file_digests_with_blob
+
+    path = tmp_path / "f.bin"
+    path.write_bytes(bytes(i % 251 for i in range(size)))
+    expected = subprocess.run(
+        ["git", "hash-object", "--no-filters", str(path)],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+
+    assert hash_file_digests_with_blob(path)[2] == expected
+
+
+def test_first_two_digests_match_hash_file_digests(tmp_path) -> None:
+    from protonfs.localscan import hash_file_digests, hash_file_digests_with_blob
+
+    path = tmp_path / "f.bin"
+    path.write_bytes(b"some content")
+
+    assert hash_file_digests_with_blob(path)[:2] == hash_file_digests(path)
