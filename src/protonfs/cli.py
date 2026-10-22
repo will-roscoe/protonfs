@@ -256,6 +256,13 @@ def _glob_tracked(root: Path, pattern: str, tracked: set[str]) -> list[str]:
     return [m for m in _glob_local(root, pattern) if m in tracked or m in prefixes]
 
 
+def _git_control(rel: str) -> bool:
+    """Whether `rel` is protonfs's or git's own control file, which import expansion skips."""
+    from protonfs.commands.gitmove import GIT_CONTROL_FILES
+
+    return rel.split("/", 1)[0] == ".protonfs" or rel.rsplit("/", 1)[-1] in GIT_CONTROL_FILES
+
+
 def _tracked_under(subpaths: list[str | None], tracked: set[str]) -> list[str]:
     """The files to import for `subpaths`: a tracked file itself, a directory's tracked
     files (``None`` = the whole store), and any other literal path as given, so the
@@ -951,17 +958,19 @@ def import_cmd(path: tuple[str, ...], dry_run: bool, strict: bool) -> None:
     stop tracking them: one literal line per file goes into a block in this store's
     ``.gitignore``, ``git rm --cached`` untracks them, and ``.gitignore`` is staged.
 
-    Nothing is committed, git history is not touched, and no local file is changed or
-    deleted: review with ``git status`` and commit. Git is changed for every PATH or for
+    Nothing is committed, git history is not touched, and no imported file is changed
+    or deleted: review with ``git status`` and commit. Git is changed for every PATH or for
     none. The files stay in git history; ``git filter-repo`` purges them (protonfs does
     not). Other clones lose them from their work tree when they pull the commit;
     ``protonfs pull`` there restores them from Drive, and ``push --deletions trash``
     never trashes them.
 
-    Refused, with nothing done (exit 1): a path that is not tracked, has uncommitted
-    changes, is a git-LFS pointer stub, is excluded by ``.protonfs/ignore`` or
-    ``.protonfs/include``, or lies outside the store; a ``.gitignore`` with uncommitted
-    changes; a store outside a git work tree. Every refusal is listed at once.
+    Directories and patterns skip ``.protonfs/`` and git's own ``.gitignore`` and
+    ``.gitattributes`` files. Refused, with nothing done (exit 1): a path that is not
+    tracked, has uncommitted changes, is a symlink, is tracked by git-LFS or is an LFS
+    pointer stub, is excluded by ``.protonfs/ignore`` or ``.protonfs/include``, is a
+    ``.gitignore``/``.gitattributes``, or lies outside the store; a ``.gitignore`` with
+    uncommitted changes; a store outside a git work tree. Every refusal is listed at once.
 
     Exit code: 0 imported (or a dry run with nothing refused); 1 a refusal, a file that
     failed verification, a git failure (rolled back), or a Drive/lock error; 2 usage
@@ -970,12 +979,28 @@ def import_cmd(path: tuple[str, ...], dry_run: bool, strict: bool) -> None:
     .. versionadded:: 3.1.0
     """
     from protonfs import gitops
-    from protonfs.commands.gitmove import import_from_git
     from protonfs.context import load_context
-    from protonfs.locking import repo_lock
 
     ctx = load_context()
-    tracked = gitops.tracked_files(ctx.root) if gitops.in_work_tree(ctx.root) else set()
+    try:
+        _import(ctx, path, dry_run, strict)
+    except gitops.GitError as exc:
+        raise click.ClickException(f"git failed, nothing imported: {exc}") from exc
+
+
+def _import(ctx, path: tuple[str, ...], dry_run: bool, strict: bool) -> None:
+    """The body of :func:`import_cmd`, inside its ``GitError`` boundary."""
+    from protonfs import gitops
+    from protonfs.commands.gitmove import check_import, import_from_git
+    from protonfs.commands.ls import human_size
+    from protonfs.locking import repo_lock
+
+    store_wide = check_import(ctx, []) if not gitops.in_work_tree(ctx.root) else []
+    if store_wide:  # no git, or not in a work tree: refuse before expanding anything
+        for refusal in store_wide:
+            click.echo(f"  REFUSED {refusal.path}: {refusal.reason}")
+        raise click.ClickException("nothing imported")
+    tracked = {rel for rel in gitops.tracked_files(ctx.root) if not _git_control(rel)}
     subpaths, unmatched = _resolve_pathspecs(
         path, lambda p: _glob_tracked(ctx.root, p, tracked)
     )
@@ -987,13 +1012,24 @@ def import_cmd(path: tuple[str, ...], dry_run: bool, strict: bool) -> None:
     with repo_lock(ctx.root), _resumable_on_interrupt(ctx, "import"):
         result = import_from_git(ctx, files, dry_run=dry_run)
     if result.refusals:
+        if dry_run:
+            refused = {r.path for r in result.refusals}
+            for rel in files:
+                if rel not in refused:
+                    click.echo(f"[dry-run] import {rel}")
         for refusal in result.refusals:
             click.echo(f"  REFUSED {refusal.path}: {refusal.reason}")
         raise click.ClickException(
             f"nothing imported: {len(result.refusals)} path(s) refused"
         )
     if dry_run:
-        click.echo(f"[dry-run] {_transfer_summary(result.pushed)}")
+        for rel in files:
+            click.echo(f"[dry-run] import {rel}")
+        upload = result.pushed.transferred_items
+        click.echo(
+            f"[dry-run] would push {upload} file(s), {len(files) - upload} already on "
+            f"Drive; {len(files)} file(s), {human_size(result.total_bytes)} in all"
+        )
         click.echo(f"[dry-run] would add {len(result.gitignore_lines)} line(s) to .gitignore:")
         for line in result.gitignore_lines:
             click.echo(f"[dry-run] {line}")
@@ -1030,9 +1066,9 @@ def import_cmd(path: tuple[str, ...], dry_run: bool, strict: bool) -> None:
     )
     if result.trash_policy_warning:
         click.echo(
-            'WARNING: this store\'s shared config sets defaults.deletions = "trash"; '
-            "push never trashes a file import moved out of git, but check other clones "
-            "pull before relying on their local copies"
+            'WARNING: this store\'s shared config sets defaults.deletions = "trash". Push '
+            "never trashes a file import moved out of git, but on every other clone run "
+            "`protonfs pull` after pulling this commit, so the files are back on disk there."
         )
 
 

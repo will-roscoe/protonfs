@@ -290,11 +290,12 @@ flag/argument name; these names, not just their presence, are frozen.
        files, or a quoted glob matching tracked files only). Options: ``--dry-run``,
        ``--strict``. Guarantees: git is changed only after every file is verified on
        Drive and against the blob in ``HEAD``, and for every ``PATH`` or none; changes
-       are staged, never committed; git history is never touched; no local file is
+       are staged, never committed; git history is never touched; no imported file is
        changed or deleted; every refusal is reported before anything is done.
      - ``0`` imported, or a dry run with nothing refused; ``1`` a refusal (untracked,
-       uncommitted changes, git-LFS pointer stub, excluded by the store, outside the
-       store, a ``.gitignore`` with uncommitted changes, no git work tree), a file that
+       uncommitted changes, a symlink, a git-LFS file or pointer stub, a
+       ``.gitignore``/``.gitattributes``, excluded by the store, outside the store, a
+       ``.gitignore`` with uncommitted changes, no git work tree), a file that
        failed verification, a git failure (rolled back), or a Drive/lock error; ``2``
        usage error.
    * - ``pull``

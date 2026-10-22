@@ -3,8 +3,9 @@
 Every function runs ``git -C <root>``, where ``root`` is the store root (which may be a
 subdirectory of the repository), and takes and returns POSIX paths relative to ``root``.
 Paths are literal: glob characters in a file name match only that name.
-Paths are passed through ``--pathspec-from-file`` (NUL-separated) or in batches, so an
-import of thousands of files never exceeds the argument-length limit. A git command that
+Paths are passed in batches of :data:`BATCH`, so an import of thousands of files never
+exceeds the argument-length limit, and no command needs ``--pathspec-from-file`` (which
+git only gained in 2.25, and which ``git rm`` rejects in a subdirectory). A git command that
 fails raises :class:`GitError`.
 
 .. code-block:: python
@@ -22,7 +23,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-#: Paths per git invocation for subcommands without ``--pathspec-from-file``.
+#: Paths per git invocation.
 BATCH = 1000
 
 
@@ -77,7 +78,10 @@ def _batches(paths: list[str]):
 
 
 def in_work_tree(root: Path) -> bool:
-    """Return whether ``root`` is inside a git work tree (``False`` when git is missing)."""
+    """Return whether ``root`` is inside a git work tree (``False`` when git is missing).
+
+    .. versionadded:: 3.1.0
+    """
     try:
         return _run(root, ["rev-parse", "--is-inside-work-tree"]).strip() == b"true"
     except (GitError, FileNotFoundError):
@@ -91,6 +95,8 @@ def tracked_files(root: Path) -> set[str]:
     :returns: tracked paths (the index, so staged additions count and staged removals
         do not).
     :raises GitError: when git fails.
+
+    .. versionadded:: 3.1.0
     """
     return set(_split(_run(root, ["ls-files", "-z"])))
 
@@ -102,6 +108,8 @@ def head_blobs(root: Path, paths: list[str]) -> dict[str, str]:
     :param paths: store-relative file paths.
     :returns: ``{path: blob id}``; a path that is not a file in ``HEAD`` is absent.
     :raises GitError: when git fails (including a repo with no commits).
+
+    .. versionadded:: 3.1.0
     """
     blobs: dict[str, str] = {}
     for batch in _batches(paths):
@@ -123,6 +131,8 @@ def dirty_paths(root: Path, paths: list[str]) -> set[str]:
     :param paths: store-relative file paths.
     :returns: the subset of ``paths`` with any uncommitted change.
     :raises GitError: when git fails.
+
+    .. versionadded:: 3.1.0
     """
     dirty: set[str] = set()
     for batch in _batches(paths):
@@ -140,10 +150,9 @@ def rm_cached(root: Path, paths: list[str]) -> None:
     :param root: the store root.
     :param paths: store-relative tracked file paths.
     :raises GitError: when git fails, e.g. a path is not tracked.
+
+    .. versionadded:: 3.1.0
     """
-    # Explicit batches, not --pathspec-from-file: git rm rejects that option when run in
-    # a subdirectory of the repository ("'--pathspec-from-file' and pathspec arguments
-    # cannot be used together", git 2.43), which is exactly where a store usually is.
     for batch in _batches(paths):
         _run(root, ["rm", "--cached", "-q", "--", *batch])
 
@@ -154,9 +163,11 @@ def add(root: Path, paths: list[str]) -> None:
     :param root: the store root.
     :param paths: store-relative paths.
     :raises GitError: when git fails.
+
+    .. versionadded:: 3.1.0
     """
-    if paths:
-        _run(root, ["add", "--pathspec-from-file=-", "--pathspec-file-nul"], stdin=_nul(paths))
+    for batch in _batches(paths):
+        _run(root, ["add", "--", *batch])
 
 
 def reset_paths(root: Path, paths: list[str]) -> None:
@@ -166,12 +177,11 @@ def reset_paths(root: Path, paths: list[str]) -> None:
     :param root: the store root.
     :param paths: store-relative paths.
     :raises GitError: when git fails.
+
+    .. versionadded:: 3.1.0
     """
-    if paths:
-        _run(
-            root, ["reset", "-q", "--pathspec-from-file=-", "--pathspec-file-nul"],
-            stdin=_nul(paths),
-        )
+    for batch in _batches(paths):
+        _run(root, ["reset", "-q", "--", *batch])
 
 
 def check_ignore(root: Path, paths: list[str]) -> dict[str, str]:
@@ -186,6 +196,8 @@ def check_ignore(root: Path, paths: list[str]) -> dict[str, str]:
         reports it (relative to the repository root, e.g. ``products/.gitignore``); a
         path matched only by a negation (``!pattern``) is not ignored and is absent.
     :raises GitError: when git fails.
+
+    .. versionadded:: 3.1.0
     """
     if not paths:
         return {}
@@ -207,3 +219,58 @@ def _split_keep_empty(out: bytes) -> list[str]:
     if parts and parts[-1] == b"":
         parts.pop()
     return [p.decode("utf-8", "surrogateescape") for p in parts]
+
+
+def file_modes(root: Path, paths: list[str]) -> dict[str, str]:
+    """Return the mode git's index records for each of ``paths``.
+
+    :param root: the store root.
+    :param paths: store-relative paths.
+    :returns: ``{path: mode}``, e.g. ``"100644"`` (file), ``"100755"`` (executable),
+        ``"120000"`` (symlink), ``"160000"`` (submodule); untracked paths are absent.
+    :raises GitError: when git fails.
+
+    .. versionadded:: 3.1.0
+    """
+    modes: dict[str, str] = {}
+    for batch in _batches(paths):
+        for record in _split(_run(root, ["ls-files", "-s", "-z", "--", *batch])):
+            meta, _, path = record.partition("\t")
+            modes[path] = meta.split()[0]
+    return modes
+
+
+def attribute(root: Path, paths: list[str], name: str) -> dict[str, str]:
+    """Return the value of the git attribute ``name`` for each of ``paths`` that sets it.
+
+    :param root: the store root.
+    :param paths: store-relative paths.
+    :param name: the attribute, e.g. ``"filter"`` or ``"eol"``.
+    :returns: ``{path: value}`` for paths where it is set (``set`` for a bare attribute);
+        paths where it is unspecified or unset are absent.
+    :raises GitError: when git fails.
+
+    .. versionadded:: 3.1.0
+    """
+    values: dict[str, str] = {}
+    for batch in _batches(paths):
+        fields = _split_keep_empty(_run(root, ["check-attr", "-z", name, "--", *batch]))
+        for i in range(0, len(fields) - 2, 3):
+            path, _, value = fields[i:i + 3]
+            if value not in ("unspecified", "unset"):
+                values[path] = value
+    return values
+
+
+def hash_object(root: Path, path: str) -> str:
+    """Return the blob id git would store for the file ``path`` now, applying the path's
+    attributes (end-of-line conversion, clean filters), as ``git add`` would.
+
+    :param root: the store root.
+    :param path: a store-relative file path.
+    :returns: the blob id.
+    :raises GitError: when git fails.
+
+    .. versionadded:: 3.1.0
+    """
+    return _run(root, ["hash-object", "--", path]).decode().strip()

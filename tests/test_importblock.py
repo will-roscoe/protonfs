@@ -89,3 +89,24 @@ def test_block_paths_is_empty_without_a_file_or_block(tmp_path: Path) -> None:
     assert importblock.block_paths(tmp_path) == set()
     (tmp_path / ".gitignore").write_text("/a.bin\n")
     assert importblock.block_paths(tmp_path) == set()
+
+
+def test_add_paths_keeps_crlf_line_endings_of_user_lines(tmp_path: Path) -> None:
+    (tmp_path / ".gitignore").write_bytes(b"*.tmp\r\n# mine\r\n")
+
+    importblock.add_paths(tmp_path, ["a.bin"])
+
+    data = (tmp_path / ".gitignore").read_bytes()
+    assert data.startswith(b"*.tmp\r\n# mine\r\n")
+    assert b"\n" not in data.replace(b"\r\n", b"")
+
+
+def test_a_non_utf8_gitignore_is_read_and_kept_byte_for_byte(tmp_path: Path) -> None:
+    # push --deletions trash reads the block; a latin-1 .gitignore must not crash it.
+    (tmp_path / ".gitignore").write_bytes(b"caf\xe9.tmp\n")
+
+    assert importblock.block_paths(tmp_path) == set()
+    importblock.add_paths(tmp_path, ["a.bin"])
+
+    assert (tmp_path / ".gitignore").read_bytes().startswith(b"caf\xe9.tmp\n")
+    assert importblock.block_paths(tmp_path) == {"a.bin"}

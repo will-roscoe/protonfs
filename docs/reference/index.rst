@@ -691,7 +691,8 @@ Moves files that git tracks in this store out of git and into the store, for exa
 generated outputs that were committed and have outgrown the repository. Run it from
 inside the store; ``PATH`` may be a file, a directory (its tracked files) or a quoted
 glob, which matches tracked files only, so a pattern never picks up an untracked or
-gitignored file next to the ones you mean::
+gitignored file next to the ones you mean. Directories and patterns skip ``.protonfs/``
+and git's own ``.gitignore``/``.gitattributes`` files::
 
     protonfs import --dry-run '**/*.reduced.fits' '**/*.mp4'
     protonfs import '**/*.reduced.fits' '**/*.mp4'

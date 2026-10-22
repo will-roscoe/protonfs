@@ -14,7 +14,9 @@ Module overview
    protonfs.diff
    protonfs.drive
    protonfs.drivecache
+   protonfs.gitops
    protonfs.ignore
+   protonfs.importblock
    protonfs.index
    protonfs.indexcheck
    protonfs.install

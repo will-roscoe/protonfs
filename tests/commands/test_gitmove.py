@@ -258,7 +258,7 @@ def test_import_dry_run_changes_nothing_and_lists_lines_and_commands(
     result = import_from_git(ctx, IMPORT, dry_run=True)
 
     assert result.gitignore_lines == ["/frames/f0.mp4", "/frames/f1.mp4"]
-    assert any(c.startswith("git rm --cached") for c in result.git_commands)
+    assert any(c.startswith("git --literal-pathspecs rm --cached") for c in result.git_commands)
     assert result.untracked == 0
     assert _status(ctx) == ""
     assert not (ctx.root / ".gitignore").exists()
@@ -318,7 +318,9 @@ def test_import_reports_undo_commands_when_rollback_fails(
         import_from_git(ctx, IMPORT)
 
     message = excinfo.value.format_message()
-    assert "git reset -q --" in message and "frames/f0.mp4" in message
+    assert "reset -q --pathspec-from-file=" in message
+    listed = message.split("--pathspec-from-file=")[1].split()[0]
+    assert b"frames/f0.mp4\0" in Path(listed).read_bytes()
 
 
 def test_import_never_trashes_even_with_deletions_trash(tmp_path, make_fake_drive) -> None:
@@ -458,6 +460,191 @@ def test_cli_import_dry_run_exit_codes(tmp_path, make_fake_drive, monkeypatch, e
     assert result.exit_code == code, result.output
     if code == 0:
         assert "[dry-run] /frames/f0.mp4" in result.output
-        assert "[dry-run] git rm --cached" in result.output
+        assert "[dry-run] git --literal-pathspecs rm --cached" in result.output
         assert "verified on Drive and against HEAD when run for real" in result.output
     assert _status(ctx) == ""
+
+
+# --- review fixes: refusals that save a wasted upload ----------------------------------
+
+
+@pytest.mark.parametrize("rel", [".gitignore", "d/.gitignore", "d/.gitattributes"])
+def test_check_import_refuses_git_control_files(tmp_path, make_fake_drive, rel) -> None:
+    ctx = _store(tmp_path, make_fake_drive, {rel: b"*.tmp\n", "a.mp4": b"a"})
+
+    assert "git control file" in _reasons(check_import(ctx, [rel]))[rel]
+
+
+def test_check_import_refuses_a_name_with_a_newline(tmp_path, make_fake_drive) -> None:
+    # A .gitignore line cannot match "x\nb" exactly; written as-is it would ignore "b".
+    ctx = _store(tmp_path, make_fake_drive, {"x\nb": b"1", "a.mp4": b"a"})
+
+    assert "newline" in _reasons(check_import(ctx, ["x\nb"]))["x\nb"]
+
+
+def test_check_import_refuses_a_tracked_symlink(tmp_path, make_fake_drive) -> None:
+    import os
+
+    ctx = _store(tmp_path, make_fake_drive, {"run3.mp4": b"m"})
+    os.symlink("run3.mp4", ctx.root / "latest.mp4")
+    _git(ctx.root, "add", "latest.mp4")
+    _git(ctx.root, "commit", "-q", "-m", "link")
+
+    assert "symlink" in _reasons(check_import(ctx, ["latest.mp4"]))["latest.mp4"]
+
+
+def test_check_import_refuses_a_git_lfs_file(tmp_path, make_fake_drive) -> None:
+    ctx = _store(
+        tmp_path, make_fake_drive,
+        {".gitattributes": b"*.bin filter=lfs diff=lfs merge=lfs -text\n", "a.bin": b"real"},
+    )
+
+    reason = _reasons(check_import(ctx, ["a.bin"]))["a.bin"]
+
+    assert "git-LFS" in reason and "setup --migrate-lfs" in reason
+
+
+def test_import_accepts_a_file_git_converts_on_checkout(tmp_path, make_fake_drive) -> None:
+    # *.csv eol=crlf: the work tree holds CRLF, HEAD's blob holds LF. The bytes differ
+    # only by git's own conversion, so the file verifies (Drive gets the work-tree form).
+    ctx = _store(
+        tmp_path, make_fake_drive, {".gitattributes": b"*.csv text eol=crlf\n", "t.csv": b"a\nb\n"}
+    )
+    (ctx.root / "t.csv").unlink()
+    _git(ctx.root, "checkout", "--", "t.csv")
+
+    result = import_from_git(ctx, ["t.csv"])
+
+    assert result.failures == [], result.failures
+    assert result.untracked == 1
+
+
+# --- review fixes: interrupt and rollback -----------------------------------------------
+
+
+@pytest.mark.parametrize("failing", ["add_paths", "rm_cached", "add"])
+def test_import_rolls_back_on_keyboard_interrupt(
+    tmp_path, make_fake_drive, monkeypatch, failing
+) -> None:
+    from protonfs import importblock
+
+    ctx = _store(tmp_path, make_fake_drive, FILES)
+    module = importblock if failing == "add_paths" else gitops
+    real = getattr(module, failing)
+
+    def interrupted(*args, **kwargs):
+        real(*args, **kwargs)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(module, failing, interrupted)
+
+    with pytest.raises(KeyboardInterrupt):
+        import_from_git(ctx, IMPORT)
+
+    assert _status(ctx) == ""
+    assert not (ctx.root / ".gitignore").exists()
+    assert set(IMPORT) <= gitops.tracked_files(ctx.root)
+
+
+def test_undo_instructions_work_in_a_subdirectory_store(
+    tmp_path, make_fake_drive, monkeypatch
+) -> None:
+    import click
+
+    ctx = _store(tmp_path, make_fake_drive, {**FILES, ".gitignore": b"*.tmp\n"})
+    real_rm = gitops.rm_cached
+
+    def rm_then_fail(root, paths):
+        real_rm(root, paths)
+        raise gitops.GitError(["git", "rm"], 1, "injected")
+
+    def reset_fails(root, paths):
+        raise gitops.GitError(["git", "reset"], 1, "also broken")
+
+    monkeypatch.setattr("protonfs.gitops.rm_cached", rm_then_fail)
+    monkeypatch.setattr("protonfs.gitops.reset_paths", reset_fails)
+
+    with pytest.raises(click.ClickException) as excinfo:
+        import_from_git(ctx, IMPORT)
+
+    message = excinfo.value.format_message()
+    assert f"git -C {ctx.root} checkout HEAD -- .gitignore" in message  # the store's file
+    assert "HEAD:.gitignore" not in message  # that names the repo root's .gitignore
+    assert "--literal-pathspecs" in message
+    assert "wrote the .gitignore lines" in message and "untracked" in message
+    listed = message.split("--pathspec-from-file=")[1].split()[0]
+    assert Path(listed).read_bytes().split(b"\0")[:2] == [b"frames/f0.mp4", b"frames/f1.mp4"]
+
+
+# --- review fixes: the command ----------------------------------------------------------
+
+
+def test_cli_import_dot_skips_protonfs_and_git_control_files(
+    tmp_path, make_fake_drive, monkeypatch
+) -> None:
+    ctx = _store(tmp_path, make_fake_drive, {**FILES, ".gitignore": b"*.tmp\n"})
+
+    result = _cli(ctx, monkeypatch, ".")
+
+    assert result.exit_code == 0, result.output
+    assert "untracked=3" in result.output
+    assert {".gitignore", ".protonfs/config.json"} <= gitops.tracked_files(ctx.root)
+
+
+def test_cli_import_star_glob_skips_control_files(tmp_path, make_fake_drive, monkeypatch) -> None:
+    ctx = _store(tmp_path, make_fake_drive, {**FILES, ".gitignore": b"*.tmp\n"})
+
+    result = _cli(ctx, monkeypatch, "*")
+
+    assert result.exit_code == 0, result.output
+    assert "untracked=3" in result.output  # keep.txt, plus frames/ (a directory: its files)
+    assert "REFUSED" not in result.output
+
+
+def test_cli_import_outside_a_work_tree_refuses_exit_1(
+    tmp_path, make_fake_drive, monkeypatch
+) -> None:
+    init_config(tmp_path, ROOT)
+    (tmp_path / "a.mp4").write_bytes(b"a")
+    ctx = load_context(tmp_path)
+
+    result = _cli(ctx, monkeypatch, "*.mp4")
+
+    assert result.exit_code == 1
+    assert "not inside a git work tree" in result.output
+
+
+def test_cli_import_git_error_is_a_clean_exit_1(tmp_path, make_fake_drive, monkeypatch) -> None:
+    # A repo with no commits: `git diff HEAD` fails. No traceback, exit 1.
+    repo = tmp_path / "r"
+    store = repo / "store"
+    store.mkdir(parents=True)
+    (store / "a.mp4").write_bytes(b"a")
+    init_config(store, ROOT)
+    _git(repo, "init", "-q")
+    _git(repo, "add", "-A")
+    ctx = load_context(store)
+    ctx.drive = make_fake_drive()
+
+    result = _cli(ctx, monkeypatch, "a.mp4")
+
+    assert result.exit_code == 1, result.output
+    assert "Traceback" not in result.output
+    assert "git" in result.output
+
+
+def test_cli_import_dry_run_lists_verdicts_and_the_size(
+    tmp_path, make_fake_drive, monkeypatch
+) -> None:
+    ctx = _store(tmp_path, make_fake_drive, FILES)
+    (ctx.root / "new.mp4").write_bytes(b"n")
+
+    ok = _cli(ctx, monkeypatch, "--dry-run", *IMPORT).output
+    refused = _cli(ctx, monkeypatch, "--dry-run", *IMPORT, "new.mp4")
+
+    assert "[dry-run] import frames/f0.mp4" in ok
+    assert "[dry-run] would push 2 file(s)" in ok and " B" in ok
+    assert "transferred=" not in ok
+    assert refused.exit_code == 1
+    assert "[dry-run] import frames/f0.mp4" in refused.output
+    assert "REFUSED new.mp4: not tracked by git" in refused.output

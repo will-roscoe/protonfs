@@ -137,3 +137,54 @@ def test_paths_are_literal_not_globs(tmp_path: Path) -> None:
     assert gitops.dirty_paths(store, ["st*ar.bin"]) == {"st*ar.bin"}
     gitops.reset_paths(store, ["st*ar.bin"])
     assert gitops.dirty_paths(store, ["st*ar.bin", "star.bin"]) == set()
+
+
+def test_add_and_reset_never_use_pathspec_from_file(tmp_path: Path, monkeypatch) -> None:
+    # git < 2.25 has no --pathspec-from-file; the forward step and the rollback must
+    # both work there (review finding: rollback needed a newer git than the forward step).
+    store = _repo(tmp_path, {f"f{i}.bin": b"" for i in range(1500)})
+    real = subprocess.run
+    argvs = []
+
+    def spy(cmd, *a, **k):
+        argvs.append(cmd)
+        return real(cmd, *a, **k)
+
+    monkeypatch.setattr(subprocess, "run", spy)
+    paths = sorted(f"f{i}.bin" for i in range(1500))
+    gitops.rm_cached(store, paths)
+    gitops.reset_paths(store, paths)
+    (store / "new.txt").write_text("n")
+    gitops.add(store, ["new.txt"])
+
+    assert not any("--pathspec-from-file=-" in cmd for cmd in argvs)
+    assert {f"f{i}.bin" for i in range(1500)} <= gitops.tracked_files(store)
+
+
+def test_file_modes_report_symlinks_and_regular_files(tmp_path: Path) -> None:
+    import os
+
+    store = _repo(tmp_path, {"run3.mp4": b"m"})
+    os.symlink("run3.mp4", store / "latest.mp4")
+    _git(store, "add", "latest.mp4")
+    _git(store, "commit", "-q", "-m", "link")
+
+    modes = gitops.file_modes(store, ["run3.mp4", "latest.mp4"])
+
+    assert modes == {"run3.mp4": "100644", "latest.mp4": "120000"}
+
+
+def test_attribute_reports_filter_per_path(tmp_path: Path) -> None:
+    store = _repo(tmp_path, {"a.bin": b"a", "b.txt": b"b"})
+    (store / ".gitattributes").write_text("*.bin filter=lfs\n")
+
+    assert gitops.attribute(store, ["a.bin", "b.txt"], "filter") == {"a.bin": "lfs"}
+
+
+def test_hash_object_applies_the_paths_conversions(tmp_path: Path) -> None:
+    store = _repo(tmp_path, {".gitattributes": b"*.csv text eol=crlf\n", "t.csv": b"a\nb\n"})
+    (store / "t.csv").unlink()
+    _git(store, "checkout", "--", "t.csv")  # re-checkout writes CRLF
+    assert (store / "t.csv").read_bytes() == b"a\r\nb\r\n"
+
+    assert gitops.hash_object(store, "t.csv") == gitops.head_blobs(store, ["t.csv"])["t.csv"]

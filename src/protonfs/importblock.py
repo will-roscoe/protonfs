@@ -32,7 +32,10 @@ _SPECIAL = set("*?[\\")
 
 
 def gitignore_path(store_root: Path) -> Path:
-    """Return the store root's own ``.gitignore``, where the block lives."""
+    """Return the store root's own ``.gitignore``, where the block lives.
+
+    .. versionadded:: 3.1.0
+    """
     return store_root / ".gitignore"
 
 
@@ -44,6 +47,8 @@ def escape_line(rel: str) -> str:
 
     :param rel: a store-relative POSIX file path.
     :returns: the escaped, anchored line.
+
+    .. versionadded:: 3.1.0
     """
     out = "".join("\\" + c if c in _SPECIAL else c for c in rel)
     stripped = out.rstrip(" ")
@@ -67,10 +72,17 @@ def _unescape(line: str) -> str:
 
 
 def _read(store_root: Path) -> list[str] | None:
+    # surrogateescape: a .gitignore that is not UTF-8 is read and written back byte for
+    # byte instead of raising (push reads the block on every --deletions trash run).
     path = gitignore_path(store_root)
     if not path.exists():
         return None
-    return path.read_text(encoding="utf-8").splitlines()
+    return path.read_bytes().decode("utf-8", "surrogateescape").splitlines()
+
+
+def _newline(store_root: Path) -> str:
+    path = gitignore_path(store_root)
+    return "\r\n" if path.exists() and b"\r\n" in path.read_bytes() else "\n"
 
 
 def _bounds(lines: list[str]) -> tuple[int, int] | None:
@@ -83,9 +95,9 @@ def _bounds(lines: list[str]) -> tuple[int, int] | None:
 
 
 def _write(store_root: Path, lines: list[str]) -> None:
-    gitignore_path(store_root).write_text(
-        "\n".join(lines) + ("\n" if lines else ""), encoding="utf-8"
-    )
+    newline = _newline(store_root)  # keep a CRLF file CRLF, so user lines stay unchanged
+    text = newline.join(lines) + (newline if lines else "")
+    gitignore_path(store_root).write_bytes(text.encode("utf-8", "surrogateescape"))
 
 
 def block_paths(store_root: Path) -> set[str]:
@@ -93,6 +105,8 @@ def block_paths(store_root: Path) -> set[str]:
 
     :param store_root: the store root.
     :returns: the unescaped paths; empty when there is no ``.gitignore`` or no block.
+
+    .. versionadded:: 3.1.0
     """
     lines = _read(store_root)
     bounds = _bounds(lines) if lines is not None else None
@@ -110,6 +124,8 @@ def add_paths(store_root: Path, rels: list[str]) -> list[str]:
     :param store_root: the store root.
     :param rels: store-relative file paths.
     :returns: the lines actually added, in order.
+
+    .. versionadded:: 3.1.0
     """
     lines = _read(store_root) or []
     bounds = _bounds(lines)
@@ -136,6 +152,8 @@ def remove_paths(store_root: Path, rels: list[str]) -> list[str]:
     :param store_root: the store root.
     :param rels: store-relative file paths.
     :returns: the lines actually removed.
+
+    .. versionadded:: 3.1.0
     """
     lines = _read(store_root)
     bounds = _bounds(lines) if lines is not None else None

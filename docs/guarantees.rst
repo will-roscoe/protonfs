@@ -224,7 +224,7 @@ changed at all; running the command again uploads only what is missing.
 When every file verifies, it writes one literal, anchored line per file into a
 marked block in the store's ``.gitignore``, runs ``git rm --cached``, and stages the
 ``.gitignore``. It never commits, never rewrites history and never changes or deletes
-a local file, so the bytes are still on disk, in git history and on Drive afterwards.
+an imported file, so the bytes are still on disk, in git history and on Drive afterwards.
 A failing git command undoes every git change it made; if undoing fails too, the error
 lists the commands that finish the job by hand.
 

@@ -402,7 +402,7 @@ def _summary_emitters() -> dict[str, int]:
 def test_no_other_command_prints_a_key_value_summary() -> None:
     """Every ``key={...}`` summary emitter in cli.py is one the tests above cover; a new
     emitter fails here, pointing at the output contract."""
-    covered = {"push", "pull", "prune", "_echo_offload_result", "import", "_transfer_summary"}
+    covered = {"push", "pull", "prune", "_echo_offload_result", "_import", "_transfer_summary"}
     emitters = _summary_emitters()
     assert {"_transfer_summary", "pull", "prune"} <= set(emitters), emitters  # scan works
     assert set(emitters) <= covered, (
