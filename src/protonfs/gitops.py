@@ -182,8 +182,9 @@ def check_ignore(root: Path, paths: list[str]) -> dict[str, str]:
 
     :param root: the store root.
     :param paths: store-relative paths.
-    :returns: ``{path: "source:line:pattern"}`` for each ignored path; a path matched only
-        by a negation (``!pattern``) is not ignored and is absent.
+    :returns: ``{path: "source:line:pattern"}`` for each ignored path, ``source`` as git
+        reports it (relative to the repository root, e.g. ``products/.gitignore``); a
+        path matched only by a negation (``!pattern``) is not ignored and is absent.
     :raises GitError: when git fails.
     """
     if not paths:
