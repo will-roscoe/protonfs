@@ -4,18 +4,31 @@ Stability Promise (M4.1)
 .. Page contents are rendered by furo's right-hand sidebar; an explicit
 .. `.. contents::` directive collides with it (furo TOC JS error), so it is omitted.
 
-This page freezes the ``protonfs`` command-line surface as of 1.0: every command,
-option/argument name, exit code, config file location, config key, and environment
-variable listed here is a stable public contract. A caller (human or script) that
-depends only on what is documented on this page will keep working across ``1.x``
-releases.
+This page is the ``protonfs`` contract for **3.x**, as of 3.0.0: every command,
+option/argument name, exit code, summary-line key, ``--format json`` key, sync-state
+name, config file location, config key and environment variable listed here is a
+stable public contract. A caller (human or script) that depends only on what is
+documented on this page keeps working across ``3.x`` releases; breaking any of it
+requires 4.0.0. ``tests/test_cli_surface.py`` checks the frozen sets in CI.
+
+1.0.0 set the first contract. 2.0.0 broke it deliberately (the sync-state vocabulary,
+#150; see `Changes since the 1.0 contract`_). 3.0.0 is a major release by accident: a
+withdrawn breaking change's commit message reached the release tooling. Nothing in
+3.0.0 breaks anything relative to 2.6.0.
+
+Not part of the contract: the Python API (the ``protonfs.*`` modules), console output
+at ``-v`` and above, the ``phase``/``done`` progress lines, the event log
+(``.protonfs/events.log``), and the formats of the index, hash cache and other files
+under ``.protonfs/`` that protonfs writes for itself.
 
 Versioning policy
 ------------------
-``protonfs`` computes its next version from Conventional Commits (see
-``.github/scripts/compute_next_version.py``): a ``feat`` commit bumps **minor**, a
-``fix`` bumps **patch**, and a breaking commit (``type!:`` or a ``BREAKING CHANGE:``
-footer) bumps **major** -- *once the project is at 1.0 or later*. Before 1.0, that
+``protonfs`` releases are cut by the shared `ghtools
+<https://github.com/will-roscoe/.ghtools>`_ pipeline (configured in
+``.github/ghtools.toml``), which computes the next version from Conventional Commits: a
+``feat`` commit bumps **minor**, a
+``fix``, ``perf`` or ``revert`` bumps **patch**, and a breaking commit (``type!:`` or a
+``BREAKING CHANGE:`` footer) bumps **major** -- *once the project is at 1.0 or later*. Before 1.0, that
 same breaking-change signal is demoted to a **minor** bump instead, so day-to-day 0.x
 development never jumps to 1.0.0 by accident. ``v1.0.0`` itself is therefore always a
 deliberate, manually-created tag, not something the automated release pipeline produces
@@ -26,6 +39,12 @@ removing or renaming a command/option, changing an exit code's meaning, moving a
 file, dropping an environment variable -- is a breaking change and requires that manual
 major-version bump. Additive changes (a new command, a new optional flag, a new config
 key with a backward-compatible default) remain minor/patch as normal.
+
+Only the first line of a commit is read for its type (and ``!``), but a
+``BREAKING CHANGE:`` footer line counts anywhere in the message. A squash merge's message
+carries the bodies of every commit it squashed, so a ``BREAKING CHANGE:`` footer from a
+sub-commit whose break was later withdrawn still cuts a major. Delete such lines from
+the squash message before merging. (This is how 3.0.0 happened.)
 
 Release-override directives (from 1.0.0)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -73,6 +92,119 @@ Every ``protonfs`` command follows the same top-level convention:
 
 ``status`` and ``auth status`` layer additional meaning onto exit code ``1``/``2`` for
 unattended callers, documented in the table below.
+
+Output contract
+----------------
+**Summary lines.** Each transfer command prints one summary line on stdout:
+``[<label>: ]key=value key=value ...``, space-separated, every value a non-negative
+integer. Any failures follow it, one ``  FAILED <name>: <error>`` line each. Required
+keys always print; optional keys print only when non-zero.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 22 30 48
+
+   * - Line
+     - Required keys
+     - Optional keys
+   * - ``push``
+     - ``transferred``, ``skipped``, ``failed``
+     - ``adopted``, ``moved``, ``trashed``, ``local-deleted``, ``unsettled``
+   * - ``pull``
+     - ``transferred``, ``skipped``, ``failed``
+     - ``local-deleted``
+   * - ``offload``
+     - ``offloaded`` (``would offload`` with ``--dry-run``), ``bytes_reclaimed``,
+       ``skipped_unverified``, ``skipped_modified``, ``skipped_unsettled``
+     -
+   * - ``prune``
+     - ``pushed:`` line: ``transferred``, ``skipped``, ``failed``; then offload's line
+     -
+
+What each key counts:
+
+* ``transferred`` -- files actually uploaded (push) or downloaded (pull).
+* ``skipped`` -- files proton-drive skipped: already in sync, or excluded.
+* ``failed`` -- files that failed; each has a ``FAILED`` line.
+* ``adopted`` -- files already on Drive that push verified match the local copy and
+  indexed without uploading.
+* ``moved`` -- files moved or renamed on Drive to follow a local move.
+* ``trashed`` -- Drive copies of files deleted locally, moved to the Drive trash
+  (``--deletions trash``; with ``--dry-run``, the ones that would be).
+* ``local-deleted`` -- files this machine held that are gone locally and were left
+  alone on Drive.
+* ``unsettled`` -- files held back because they were modified within ``--min-age``.
+* ``offloaded`` / ``would offload`` -- local copies removed (or that would be);
+  ``bytes_reclaimed`` -- their total size in bytes; ``skipped_unverified``,
+  ``skipped_modified``, ``skipped_unsettled`` -- files offload refused, by reason.
+
+Rules: within 3.x a key is never renamed, removed or given a different meaning. New
+keys may appear in a minor release, so a caller must ignore keys it does not know. Key
+order is not part of the contract.
+
+**The counting rule.** An exit code of ``0``, or a progress bar at 100%, is not proof
+that every file was transferred. A run delivered everything a caller asked for only when
+``failed=0`` and ``transferred``, ``skipped`` and ``adopted`` together account for every
+file the caller expected.
+
+**``--format json``.** ``status --format json`` prints one object with the keys
+``counts`` (``{<state>: n}`` over every state in `Sync states`_), ``exit_code`` and
+``remote``. ``ls --format json`` prints a list of row objects, whose keys depend on the
+view:
+
+* files (the default): ``path``, ``state``;
+* ``--dirs``: ``path``, ``files``, ``local_bytes``, ``indexed_bytes``,
+  ``apparent_bytes``, ``states``;
+* ``--trash``: ``name``, ``type``.
+
+The same rules apply: no key is renamed, removed or redefined within 3.x, and new keys
+may appear.
+
+Changes since the 1.0 contract
+-------------------------------
+What a caller written against 1.0 needs to know. Only contract changes are listed;
+see the CHANGELOG for everything else.
+
+**Broken in 2.0.0** (#150):
+
+* The ``synced`` state is now ``locally-indexed`` in ``status``, ``status --format
+  json`` keys and ``ls``. Read the new name; ``ls --state synced`` is accepted, with a
+  warning, until 4.0.0.
+* 2.0.0 also reported a file this machine held that is now gone locally as
+  ``local-deleted`` without ``--remote``; 2.2.1 restored ``remote-only`` for that case,
+  as in 1.0, so only the ``synced`` rename remains a difference from 1.0.
+
+**Added:**
+
+* Commands: ``completions`` (1.5.0), ``schedule`` (1.8.0), ``verify`` (2.1.0),
+  ``prune`` (2.2.0).
+* Global options: ``-v``/``--verbose``, ``--progress-inline``/``--progress-lines``,
+  ``--event-log``/``--no-event-log`` (1.3.0).
+* ``PATH...``: every command that takes a ``PATH`` accepts several, e.g. from a shell
+  glob (1.1.0).
+* ``ls``: ``--dirs``, ``--format``, ``--state`` (1.1.0); ``--visual`` (1.2.0).
+* ``status``: ``--format`` (1.1.0); ``--remote`` (2.0.0).
+* ``push``/``pull``: ``--strict`` (1.11.0). ``push``: ``--min-age`` (2.4.0);
+  ``--deletions``, ``--allow-mass-delete`` (3.0.0). ``pull``: ``--no-restore`` (3.0.0).
+* ``offload``: ``--min-age`` (2.2.0).
+* ``verify``: ``--repair`` (2.1.0), ``--index`` (2.4.0).
+* ``schedule``: ``--strict`` (1.11.0); ``--keep``, ``--min-age`` (2.2.0);
+  ``--deletions``, ``--no-restore`` (3.0.0).
+* Sync states: the full table in `Sync states`_ (2.0.0), including ``lfs-pointer`` and
+  the remote-view states.
+* Config keys: ``defaults.event_log``, ``defaults.progress_style`` (1.3.0);
+  ``defaults.manifest`` (2.1.0); ``defaults.batch_size``, ``defaults.skip_thumbnails``
+  (2.5.0); ``defaults.deletions`` (3.0.0).
+* Environment variables: ``PROTONFS_EVENT_LOG``, ``PROTONFS_PROGRESS_STYLE`` (1.3.0);
+  ``PROTONFS_MANIFEST``, ``PROTONFS_NO_MANIFEST`` (2.1.0); ``PROTONFS_BATCH_SIZE``,
+  ``PROTONFS_SKIP_THUMBNAILS``, ``PROTONFS_TRANSFER_MIN_RATE`` (2.5.0);
+  ``PROTONFS_DRIVE_CACHE_HOME`` (2.6.0).
+* The `Output contract`_ above (summary keys and ``--format json`` keys) is new in the
+  3.x contract; the keys themselves shipped with the options that print them.
+
+**Deprecated:** ``ls --state synced``, until 4.0.0.
+
+**Removed:** nothing.
 
 Global options (before the subcommand)
 --------------------------------------
@@ -128,7 +260,7 @@ flag/argument name; these names, not just their presence, are frozen.
      - List tracked files with their sync state. Argument: ``PATH...`` (optional, repeatable; e.g. from a shell glob).
        Options: ``--remote``, ``--trash``, ``--dirs``, ``--state`` (repeatable; any
        state name below, plus the deprecated alias ``synced`` for ``locally-indexed``,
-       accepted with a warning until the next major release),
+       accepted with a warning until 4.0.0),
        ``--format [table|plain|json]``, ``--visual [treemap|waffle]``.
      - ``0`` success; ``1`` Drive/auth error; ``2`` usage error.
    * - ``push``
@@ -455,12 +587,16 @@ cli-drive@0.5.0+73e40d90``) down to the comparable semver ``"0.5.0"``.
    * - protonfs release
      - Supported proton-drive versions
      - Notes
+   * - 3.0.x
+     - ``0.9.0`` (highest supported), ``0.8.0``, ``0.7.0``, ``0.6.0``, ``0.5.0``,
+       ``0.4.6``
+     - ``0.9.0`` is the version ``install-drive``/upgrade installs by default. The
+       older versions remain installable via ``PROTONFS_DRIVE_VERSION`` for hosts that
+       have not yet moved off them (each has pinned, verified checksums for every
+       supported platform).
    * - 1.0.x
      - ``0.5.0`` (highest supported), ``0.4.6``
-     - ``0.5.0`` is the version ``install-drive``/upgrade installs by default.
-       ``0.4.6`` remains installable via ``PROTONFS_DRIVE_VERSION`` for hosts that
-       have not yet moved off it (both have pinned, verified checksums for every
-       supported platform).
+     - The first contracted matrix.
 
 Upgrade policy
 ~~~~~~~~~~~~~~~~
