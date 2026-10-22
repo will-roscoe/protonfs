@@ -6,7 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from protonfs.commands.gitmove import Refusal, check_import
+from protonfs import gitops
+from protonfs.commands.gitmove import Refusal, check_import, import_from_git
 from protonfs.config import init_config
 from protonfs.context import load_context
 from protonfs.lfs import POINTER_SIGNATURE
@@ -161,3 +162,190 @@ def test_check_import_reports_every_problem_at_once(tmp_path, make_fake_drive) -
     reasons = _reasons(check_import(ctx, ["a.mp4", "new.mp4", "../x", "b.mp4"]))
 
     assert set(reasons) == {"a.mp4", "new.mp4", "../x"}
+
+
+# --- import_from_git ----------------------------------------------------------------------
+
+FILES = {"frames/f0.mp4": b"frame zero", "frames/f1.mp4": b"frame one", "keep.txt": b"k"}
+IMPORT = ["frames/f0.mp4", "frames/f1.mp4"]
+
+
+def _status(ctx) -> str:
+    return _git(ctx.root, "status", "--porcelain", "--untracked-files=no", ".")
+
+
+def test_import_untracks_and_ignores_after_verifying_every_path(
+    tmp_path, make_fake_drive
+) -> None:
+    ctx = _store(tmp_path, make_fake_drive, FILES)
+    head = _git(ctx.root, "rev-parse", "HEAD")
+
+    result = import_from_git(ctx, IMPORT)
+
+    assert result.failures == [] and result.refusals == []
+    assert result.untracked == 2
+    assert gitops.tracked_files(ctx.root).isdisjoint(IMPORT)
+    assert (ctx.root / "frames" / "f0.mp4").read_bytes() == b"frame zero"
+    status = _status(ctx)
+    assert "D  store/frames/f0.mp4" in status and "D  store/frames/f1.mp4" in status
+    assert "A  store/.gitignore" in status
+    assert _git(ctx.root, "rev-parse", "HEAD") == head  # never commits
+    assert set(gitops.check_ignore(ctx.root, IMPORT)) == set(IMPORT)
+    for rel in IMPORT:
+        parent, name = f"{ROOT}/{rel}".rsplit("/", 1)
+        assert name in ctx.drive.remote_identities(parent)
+
+
+def test_import_makes_no_git_change_when_one_path_fails_drive_verification(
+    tmp_path, make_fake_drive
+) -> None:
+    ctx = _store(tmp_path, make_fake_drive, FILES)
+    ctx.drive = make_fake_drive(remote_size_overrides={"f1.mp4": 3})
+
+    result = import_from_git(ctx, IMPORT)
+
+    assert [f["name"] for f in result.failures] == ["frames/f1.mp4"]
+    assert result.failures[0]["kind"] in ("unverified-drive", "push")
+    assert result.untracked == 0
+    assert _status(ctx) == ""
+    assert not (ctx.root / ".gitignore").exists()
+
+
+def test_import_detects_a_same_size_same_mtime_change_under_low_io(
+    tmp_path, make_fake_drive
+) -> None:
+    import os
+
+    from protonfs.commands.push import push
+
+    ctx = _store(tmp_path, make_fake_drive, FILES)
+    ctx.config.defaults.low_io = True
+    push(ctx, None, None, False)
+    target = ctx.root / "frames" / "f0.mp4"
+    stat = target.stat()
+    target.write_bytes(b"FRAME ZERO")  # same size, different bytes
+    os.utime(target, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+    _git(ctx.root, "add", "frames/f0.mp4")
+    _git(ctx.root, "commit", "-q", "-m", "regenerated")
+
+    result = import_from_git(ctx, IMPORT)
+
+    kinds = {f["name"]: f["kind"] for f in result.failures}
+    assert kinds == {"frames/f0.mp4": "low-io-stale"}
+    assert "PROTONFS_LOW_IO=0" in result.failures[0]["error"]
+    assert _status(ctx) == ""
+
+
+def test_import_skips_already_synced_files_and_still_imports_them(
+    tmp_path, make_fake_drive
+) -> None:
+    from protonfs.commands.push import push
+
+    ctx = _store(tmp_path, make_fake_drive, FILES)
+    push(ctx, None, None, False)
+
+    result = import_from_git(ctx, IMPORT)
+
+    assert result.pushed.transferred_items == 0
+    assert result.untracked == 2
+
+
+def test_import_dry_run_changes_nothing_and_lists_lines_and_commands(
+    tmp_path, make_fake_drive
+) -> None:
+    ctx = _store(tmp_path, make_fake_drive, FILES)
+
+    result = import_from_git(ctx, IMPORT, dry_run=True)
+
+    assert result.gitignore_lines == ["/frames/f0.mp4", "/frames/f1.mp4"]
+    assert any(c.startswith("git rm --cached") for c in result.git_commands)
+    assert result.untracked == 0
+    assert _status(ctx) == ""
+    assert not (ctx.root / ".gitignore").exists()
+    assert ctx.drive.upload_calls == []
+
+
+@pytest.mark.parametrize("failing", ["rm_cached", "add"])
+@pytest.mark.parametrize("had_gitignore", [True, False])
+def test_import_rolls_back_when_a_git_step_fails(
+    tmp_path, make_fake_drive, monkeypatch, failing, had_gitignore
+) -> None:
+    files = dict(FILES)
+    if had_gitignore:
+        files[".gitignore"] = b"*.tmp\n"
+    ctx = _store(tmp_path, make_fake_drive, files)
+    before = (ctx.root / ".gitignore").read_bytes() if had_gitignore else None
+    real = getattr(gitops, failing)
+
+    def boom(root, paths):
+        real(root, paths)  # fail after the step took effect: the worst case
+        raise gitops.GitError(["git", failing], 1, "injected")
+
+    monkeypatch.setattr(f"protonfs.gitops.{failing}", boom)
+
+    result = import_from_git(ctx, IMPORT)
+
+    assert result.rolled_back
+    assert [f["kind"] for f in result.failures] == ["git"]
+    assert result.untracked == 0
+    assert _status(ctx) == ""
+    assert set(IMPORT) <= gitops.tracked_files(ctx.root)
+    if had_gitignore:
+        assert (ctx.root / ".gitignore").read_bytes() == before
+    else:
+        assert not (ctx.root / ".gitignore").exists()
+
+
+def test_import_reports_undo_commands_when_rollback_fails(
+    tmp_path, make_fake_drive, monkeypatch
+) -> None:
+    import click
+
+    ctx = _store(tmp_path, make_fake_drive, FILES)
+    real_rm = gitops.rm_cached
+
+    def rm_then_fail(root, paths):
+        real_rm(root, paths)
+        raise gitops.GitError(["git", "rm"], 1, "injected")
+
+    def reset_fails(root, paths):
+        raise gitops.GitError(["git", "reset"], 1, "also broken")
+
+    monkeypatch.setattr("protonfs.gitops.rm_cached", rm_then_fail)
+    monkeypatch.setattr("protonfs.gitops.reset_paths", reset_fails)
+
+    with pytest.raises(click.ClickException) as excinfo:
+        import_from_git(ctx, IMPORT)
+
+    message = excinfo.value.format_message()
+    assert "git reset -q --" in message and "frames/f0.mp4" in message
+
+
+def test_import_never_trashes_even_with_deletions_trash(tmp_path, make_fake_drive) -> None:
+    from protonfs.commands.push import push
+
+    ctx = _store(tmp_path, make_fake_drive, FILES)
+    push(ctx, None, None, False)
+    ctx.config.defaults.deletions = "trash"
+    (ctx.root / "keep.txt").unlink()
+    _git(ctx.root, "rm", "-q", "keep.txt")
+    _git(ctx.root, "commit", "-q", "-m", "drop keep")
+
+    import_from_git(ctx, IMPORT)
+
+    assert ctx.drive.trashed == []
+
+
+def test_import_sets_trash_policy_warning_from_shared_config(
+    tmp_path, make_fake_drive
+) -> None:
+    import json
+
+    ctx = _store(tmp_path, make_fake_drive, FILES)
+    shared = ctx.root / ".protonfs" / "config.json"
+    data = json.loads(shared.read_text())
+    data.setdefault("defaults", {})["deletions"] = "trash"
+    shared.write_text(json.dumps(data))
+    _git(ctx.root, "commit", "-q", "-am", "trash policy")
+
+    assert import_from_git(ctx, IMPORT).trash_policy_warning
