@@ -402,3 +402,52 @@ def test_no_other_command_prints_a_key_value_summary() -> None:
         f"new key=value summary emitter(s) {sorted(set(emitters) - covered)} -- add them "
         "to EXPECTED_SUMMARY_KEYS and docs/stability.rst 'Output contract'"
     )
+
+
+# --- the output contract: --format json keys (3.x) --------------------------------------
+
+EXPECTED_JSON_KEYS = {
+    "status": frozenset({"counts", "exit_code", "remote"}),
+    "ls": frozenset({"path", "state"}),
+    "ls --dirs": frozenset(
+        {"path", "files", "local_bytes", "indexed_bytes", "apparent_bytes", "states"}
+    ),
+    "ls --trash": frozenset({"name", "type"}),
+}
+
+_JSON_MSG = (
+    "--format json keys changed -- update docs/stability.rst 'Output contract' and this "
+    "set together"
+)
+
+
+def test_status_json_keys_are_frozen(tmp_path, monkeypatch) -> None:
+    import json
+
+    _store(tmp_path, monkeypatch)
+    out = CliRunner().invoke(main, ["status", "--format", "json"]).output
+    assert set(json.loads(out)) == EXPECTED_JSON_KEYS["status"], _JSON_MSG
+
+
+@pytest.mark.parametrize(
+    ("args", "key"),
+    [
+        (["ls", "--format", "json"], "ls"),
+        (["ls", "--dirs", "--format", "json"], "ls --dirs"),
+        (["ls", "--trash", "--format", "json"], "ls --trash"),
+    ],
+)
+def test_ls_json_row_keys_are_frozen(tmp_path, monkeypatch, make_fake_drive, args, key) -> None:
+    import json
+
+    ctx = _store(tmp_path, monkeypatch)
+    ctx.drive = make_fake_drive(
+        trash_listing=[{"name": {"ok": True, "value": "old.bin"}, "type": "file"}]
+    )
+    (tmp_path / "d").mkdir()
+    (tmp_path / "d" / "a.bin").write_bytes(b"abc")
+    result = CliRunner().invoke(main, args)
+    rows = json.loads(result.output)
+    assert rows, result.output  # every shape printed at least one row
+    for row in rows:
+        assert set(row) == EXPECTED_JSON_KEYS[key], _JSON_MSG
