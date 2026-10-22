@@ -447,3 +447,27 @@ def test_verify_index_repair_exits_1_while_a_drive_only_copy_is_suspect(cli_ctx)
 
     assert result.exit_code == 1, result.output
     assert "left 1 entry untouched" in result.output
+
+
+def test_check_index_only_lists_the_directories_of_the_given_paths(ctx) -> None:
+    # #205: import verifies just the paths it is about to untrack.
+    fake = ctx.drive
+    ctx.index.set("a/x", _entry("a/x", size=4))
+    ctx.index.set("a/y", _entry("a/y", size=4))
+    ctx.index.set("b/z", _entry("b/z", size=4))
+    _remote(fake, "a/x", b"data")
+
+    check = check_index(ctx, only={"a/x"})
+
+    assert fake.identity_calls == [f"{ROOT}/a"]
+    assert _verdicts(check) == {"a/x": Verdict.OK}
+    assert not check.complete
+
+
+def test_check_index_only_with_a_path_not_in_the_index_yields_no_finding_for_it(ctx) -> None:
+    ctx.index.set("a/x", _entry("a/x", size=4))
+    _remote(ctx.drive, "a/x", b"data")
+
+    check = check_index(ctx, only={"a/x", "a/not-indexed"})
+
+    assert _verdicts(check) == {"a/x": Verdict.OK}
