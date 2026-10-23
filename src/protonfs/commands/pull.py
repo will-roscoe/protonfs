@@ -10,13 +10,12 @@ import shutil
 import tempfile
 from pathlib import Path, PurePosixPath
 
-from protonfs import importblock
 from protonfs.batching import batches, group_by_parent
 from protonfs.config import CONFIG_DIR_NAME
 from protonfs.context import RepoContext
 from protonfs.diff import SyncState, classify, held_and_gone
 from protonfs.drive import RemoteEntry, TransferResult
-from protonfs.ignore import IgnoreMatcher, is_git_path
+from protonfs.ignore import IgnoreMatcher
 from protonfs.index import IndexEntry
 from protonfs.localscan import hash_file_digests, scan
 
@@ -277,9 +276,9 @@ def pull(
 
     .. versionchanged:: 3.1.0
        Added ``only``, so the CLI pulls N named or matched files in one pass rather
-       than N. Never downloads a ``.git`` path unless ``.protonfs/include`` names ``.git``,
-       nor a path in the ``.protonfs/ignore`` export block (``protonfs export`` moved it
-       into git; its kept Drive copy must not come back).
+       than N. Never downloads a file the store's ``.protonfs/ignore``/``include`` rules
+       exclude (which covers ``.git`` and files ``protonfs export`` moved into git), and
+       counts them in ``excluded_items``.
 
     .. seealso:: :func:`protonfs.commands.push.push` for the upload direction.
     """
@@ -336,13 +335,12 @@ def pull(
     # A path still on disk was only hidden from the scan (now ignored, say): it is not
     # absent, and downloading over it would overwrite it.
     to_pull = [rel for rel in to_pull if not (ctx.root / rel).exists()]
-    # A .git path is never written from Drive unless the include file names it: an old
-    # copy of a repository's metadata must not land in the live one.
-    to_pull = [rel for rel in to_pull if not (is_git_path(rel) and ignore.matches(rel))]
-    # A file `export` moved into git is git's now; its kept Drive copy must never come
-    # back, e.g. after git moved or deleted it, or via another clone's old index entry.
-    exported = importblock.export_block_paths(ctx.root)
-    to_pull = [rel for rel in to_pull if rel not in exported]
+    # What the store's rules exclude is never downloaded: an include allowlist means
+    # "only these here", a .git path must not land in a live repository, and a file
+    # `export` moved into git (listed in .protonfs/ignore) must not come back. Their
+    # index entries stay, so bringing a path back into scope resumes where it left off.
+    excluded = [rel for rel in to_pull if ignore.matches(rel)]
+    to_pull = [rel for rel in to_pull if not ignore.matches(rel)]
     # #197: a file this machine held that is gone locally is restored by default (the
     # git-LFS reading: its copy is on Drive). With no_restore it was deleted or moved away
     # on purpose; leave it for push to act on and count it.
@@ -376,7 +374,7 @@ def pull(
         ]
         return TransferResult(
             previewed, len(resolve_local), len(unresolved), failures,
-            local_deleted_items=len(local_deleted),
+            local_deleted_items=len(local_deleted), excluded_items=len(excluded),
         )
 
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
@@ -387,6 +385,7 @@ def pull(
     else:
         total = TransferResult(0, 0, 0, [])
     total.local_deleted_items = len(local_deleted)
+    total.excluded_items = len(excluded)
     total.transferred_items += _fetch_remote_copies(ctx, resolve_both)
     total.skipped_items += len(resolve_local)  # local kept; stays queued for the next push
     for rel in unresolved:

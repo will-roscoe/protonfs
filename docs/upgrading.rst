@@ -27,6 +27,12 @@ Nothing to do for most stores. A store at a git repository's root no longer sync
 trashed by ``push``; ``protonfs rm -r .git`` moves it to the Drive trash without
 touching the local repository.
 
+The ``.protonfs/ignore`` and ``.protonfs/include`` rules now apply to downloads as well
+as uploads: ``pull`` no longer brings down a file they exclude (it reports how many it
+left on Drive), ``refresh`` no longer indexes one, and ``status`` and ``ls`` leave them
+out, so an excluded file on Drive no longer makes ``status`` exit 1. Nothing already
+on disk or on Drive is removed.
+
 From 2.x to 3.0
 ~~~~~~~~~~~~~~~
 Nothing to do. 3.0.0 is a major release by accident (a withdrawn breaking change's

@@ -63,6 +63,9 @@ def compute_status(
        the confusion this flag exists to remove, so a partial answer must not be
        presented as a verified one.
 
+    .. versionchanged:: 3.1.0
+       A file the store's ``.protonfs/ignore``/``include`` rules exclude is not counted.
+
     .. seealso:: :func:`status_exit_code` maps this summary to a process exit code.
     """
     from protonfs.reporting import get_reporter
@@ -81,7 +84,8 @@ def compute_status(
     # #96: the scan above is scoped, so classify must be too: `status SUBPATH` never
     # counts (or exits non-zero for) entries outside SUBPATH.
     entries = classify(local, ctx.index, remote_view, subpath=subpath)
-    return Counter(entry.state.value for entry in entries)
+    # What the store's rules exclude is out of scope: neither synced nor reported.
+    return Counter(e.state.value for e in entries if not ignore.matches(e.rel_path))
 
 
 def status_exit_code(counts: Counter) -> int:

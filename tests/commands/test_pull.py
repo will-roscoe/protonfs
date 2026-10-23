@@ -877,3 +877,110 @@ def test_pull_cli_no_restore_still_restores_a_named_file_among_matched_ones(
     assert "local-deleted=1" in result.output
     assert (tmp_path / "gone" / "dump_0001").exists()
     assert not (tmp_path / "gone" / "dump_0002").exists()
+
+
+# --- 3.1.0: what the store's ignore/include rules exclude stays excluded ----------------
+
+
+def _store_on_drive(tmp_path: Path, make_fake_drive, include: str):
+    """A store whose Drive copy holds run.ev and a big dump, seeded by refresh."""
+    from protonfs.commands.push import push
+
+    source = tmp_path / "hpc"
+    source.mkdir()
+    init_config(source, "/my-files/test")
+    (source / "run1").mkdir()
+    (source / "run1" / "run.ev").write_bytes(b"events")
+    (source / "run1" / "dump_00001").write_bytes(b"x" * 64)
+    hpc = load_context(source)
+    hpc.drive = make_fake_drive()
+    push(hpc, None, None, False)
+    laptop = tmp_path / "laptop"
+    laptop.mkdir()
+    init_config(laptop, "/my-files/test")
+    (laptop / ".protonfs" / "include").write_text(include)
+    ctx = load_context(laptop)
+    ctx.drive = hpc.drive
+    ctx.drive._walk_entries = [
+        RemoteEntry(rel_path=r, is_dir=False, size=n)
+        for r, n in (("run1/run.ev", 6), ("run1/dump_00001", 64))
+    ]
+    return ctx
+
+
+def test_pull_never_downloads_what_the_include_file_excludes(tmp_path, make_fake_drive) -> None:
+    ctx = _store_on_drive(tmp_path, make_fake_drive, "*.ev\n")
+
+    result = pull(ctx, None, None, False, refresh=True)
+
+    assert (ctx.root / "run1" / "run.ev").exists()
+    assert not (ctx.root / "run1" / "dump_00001").exists()
+    assert result.transferred_items == 1
+    assert ctx.index.get("run1/dump_00001") is None  # refresh never seeded it
+
+
+def test_pull_reports_excluded_files_it_left_on_drive(tmp_path, make_fake_drive) -> None:
+    ctx = _store_on_drive(tmp_path, make_fake_drive, "*.ev\n")
+    for rel in ("run1/run.ev", "run1/dump_00001"):  # indexed earlier, e.g. by an old version
+        _metadata_only(ctx, rel)
+
+    result = pull(ctx, None, None, False)
+
+    assert result.transferred_items == 1 and result.excluded_items == 1
+    assert not (ctx.root / "run1" / "dump_00001").exists()
+
+
+def test_excluding_files_already_held_never_loses_either_copy(
+    tmp_path, make_fake_drive
+) -> None:
+    # Will's question: pull the .ev files, then take *.ev out of the include file.
+    from protonfs.commands.offload import offload
+    from protonfs.commands.push import push
+    from protonfs.commands.status import compute_status
+
+    ctx = _store_on_drive(tmp_path, make_fake_drive, "*.ev\n*.sink\n")
+    pull(ctx, None, None, False, refresh=True)
+    (ctx.root / "run1" / "b.ev").write_bytes(b"second")
+    push(ctx, None, None, False)
+    ev, other = ctx.root / "run1" / "run.ev", ctx.root / "run1" / "b.ev"
+    assert ev.exists() and other.exists()
+
+    (ctx.root / ".protonfs" / "include").write_text("*.sink\n")  # *.ev excluded now
+
+    assert dict(compute_status(ctx, None)) == {}  # nothing in scope, nothing reported
+    other.write_bytes(b"edited while excluded")
+    ev.unlink()  # deleted while excluded
+    assert offload(ctx, None, min_age=0).offloaded == 0
+    pulled = pull(ctx, None, None, False)
+    pushed = push(ctx, None, None, False, deletions="trash")
+    assert not ev.exists()  # pull did not restore it
+    assert pushed.trashed_items == 0 and ctx.drive.trashed == []
+    assert pushed.transferred_items == 0  # the edit is not uploaded while excluded
+    assert other.read_bytes() == b"edited while excluded"  # never touched
+    assert pulled.transferred_items == 0
+    parent = "/my-files/test/run1"
+    assert {"run.ev", "b.ev"} <= set(ctx.drive.remote_identities(parent))  # Drive keeps both
+
+    (ctx.root / ".protonfs" / "include").write_text("*.ev\n*.sink\n")  # back in scope
+    assert pull(ctx, None, None, False).transferred_items == 1  # deleted one comes back
+    assert ev.read_bytes() == b"events"
+    assert push(ctx, None, None, False).transferred_items == 1  # the edit goes up now
+
+
+def test_pull_cli_says_how_many_excluded_files_it_left_on_drive(
+    tmp_path, make_fake_drive, monkeypatch
+) -> None:
+    from click.testing import CliRunner
+
+    from protonfs.cli import main
+
+    ctx = _store_on_drive(tmp_path, make_fake_drive, "*.ev\n")
+    for rel in ("run1/run.ev", "run1/dump_00001"):
+        _metadata_only(ctx, rel)
+    monkeypatch.setattr("protonfs.context.load_context", lambda *a, **k: ctx)
+
+    result = CliRunner().invoke(main, ["pull"])
+
+    assert result.exit_code == 0, result.output
+    assert "transferred=1" in result.output
+    assert "1 file(s) on Drive were not downloaded" in result.output

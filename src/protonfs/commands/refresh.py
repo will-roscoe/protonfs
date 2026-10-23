@@ -10,10 +10,10 @@ import datetime
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from protonfs import importblock, refreshstate
+from protonfs import refreshstate
 from protonfs.context import RepoContext
 from protonfs.diff import SyncState, classify, within_subpath
-from protonfs.ignore import IgnoreMatcher, is_git_path
+from protonfs.ignore import IgnoreMatcher
 from protonfs.index import IndexEntry
 from protonfs.localscan import ScanEntry, scan
 from protonfs.manifest import is_control_path
@@ -79,8 +79,8 @@ def refresh(
        under the remote ``.protonfs/`` control directory.
 
     .. versionchanged:: 3.1.0
-       Never seeds a ``.git`` path unless ``.protonfs/include`` names ``.git``, nor a
-       path in the ``.protonfs/ignore`` export block. Seeded
+       Never seeds a path the store's ``.protonfs/ignore``/``include`` rules exclude
+       (``.git`` and exported files included). Seeded
        entries and the walk frontier are saved together, at most once per
        :data:`~protonfs.index.CHECKPOINT_INTERVAL_S` and when the walk is interrupted,
        instead of the index after every folder.
@@ -99,7 +99,6 @@ def refresh(
     # the same tree, so we don't pay for a second recursive walk + re-hash. Scan BEFORE
     # the remote walk so the per-directory seeding callback can consult it.
     ignore = IgnoreMatcher.from_file(ctx.root)
-    exported = importblock.export_block_paths(ctx.root)
     if local is None:
         scan_root = Path(subpath) if subpath else Path(".")
         local = scan(ctx.root, scan_root, ignore, ctx.index, low_io=ctx.config.defaults.low_io)
@@ -114,10 +113,8 @@ def refresh(
             full_rel = f"{subpath}/{file_entry.rel_path}" if subpath else file_entry.rel_path
             if is_control_path(full_rel):
                 continue  # #146: the remote manifest lives here; it is not data
-            if is_git_path(full_rel) and ignore.matches(full_rel):
-                continue  # Drive's copy of a repository's .git must never land in this one
-            if full_rel in exported:
-                continue  # `export` moved it into git; its kept Drive copy is not synced
+            if ignore.matches(full_rel):
+                continue  # out of this store's scope (ignore/include, .git, exported)
             if ctx.index.get(full_rel) is None and full_rel not in local:
                 ctx.index.set(
                     full_rel,
