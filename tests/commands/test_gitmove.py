@@ -922,10 +922,13 @@ def test_export_then_push_never_uploads_or_trashes_the_files(tmp_path, make_fake
     _git(ctx.root, "commit", "-q", "-m", "export")
     uploads = len(ctx.drive.upload_calls)
 
-    result = push(load_context(ctx.root), None, None, False, deletions="trash")
+    fresh = load_context(ctx.root)  # what the next run reads from disk
+    fresh.drive = ctx.drive
+    result = push(fresh, None, None, False, deletions="trash")
 
-    assert len(ctx.drive.upload_calls) == uploads and ctx.drive.trashed == []
-    assert result.trashed_items == 0
+    sent = [p for call in ctx.drive.upload_calls[uploads:] for p in call[0]]
+    assert not any(p.endswith(("f0.mp4", "f1.mp4", "/frames")) for p in sent), sent
+    assert ctx.drive.trashed == [] and result.trashed_items == 0
 
 
 def test_import_explains_a_path_listed_in_the_export_block(tmp_path, make_fake_drive) -> None:
