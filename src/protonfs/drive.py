@@ -446,6 +446,93 @@ def _summarize_command(args: list[str]) -> str:
     return f"{parts[0]} {parts[1]} ({len(middle)} files) {parts[-1]}"
 
 
+# proton-drive hands any local path containing one of these to Node's fs.glob (cli 0.9.0,
+# cli/src/commands/fileSystem/localPath.ts), and a pattern that matches nothing aborts
+# the whole upload/download before anything moves. Node's glob runs minimatch with
+# windowsPathsNoEscape, so a backslash is a path separator and cannot escape anything;
+# a one-character class ([[], [*], ...) can. Brace lists are expanded before classes
+# are parsed, so a name holding {a,b} cannot be written as a pattern at all.
+_GLOB_TRIGGER = re.compile(r"[*?\[{]")
+_GLOB_ESCAPE = re.compile(r"[*?\[{(]")  # "(" so +(x) @(x) !(x) stay literal too
+_BRACE_LIST = re.compile(r"\{.*,.*\}", re.DOTALL)
+
+
+def _glob_literal(path: str) -> str | None:
+    """Return ``path`` as proton-drive must be given it to mean exactly that path.
+
+    :param path: an absolute local path.
+    :returns: ``path`` unchanged when proton-drive will not glob it, else the path with
+        each glob metacharacter wrapped in a one-character class; ``None`` when no
+        pattern can name it (it holds a backslash or a ``{a,b}`` brace list).
+    """
+    if not _GLOB_TRIGGER.search(path):
+        return path
+    if "\\" in path or _BRACE_LIST.search(path):
+        return None
+    return _GLOB_ESCAPE.sub(lambda m: f"[{m.group()}]", path)
+
+
+_UNNAMEABLE = (
+    "proton-drive reads this path as a glob pattern, and a name holding a backslash or "
+    "a {a,b} brace list cannot be escaped for it; rename the file to transfer it"
+)
+
+
+def _fatal_line(*outputs: str) -> str:
+    """The line of a proton-drive crash report that says what went wrong.
+
+    :param outputs: the CLI's stderr and whatever followed its summary on stdout (a
+        crash prints the summary, then the code frame and stack trace, on stdout).
+    :returns: the first line that is not a code frame, stack frame, caret, banner or
+        details block, e.g. ``No paths matched: …`` or ``ENOENT: no such file …``; the
+        joined, stripped outputs when there is no such line.
+    """
+    for line in "\n".join(outputs).splitlines():
+        text = line.strip()
+        if (
+            not text
+            or line[0].isspace()
+            or text[0] in "{}"
+            or set(text) <= {"=", "^", " "}
+            or re.match(r"\d+ \|", text)
+            or text.startswith("Error details")
+        ):
+            continue
+        return text
+    return "\n".join(o.strip() for o in outputs if o.strip())
+
+
+# proton-drive's ILLEGAL_SEGMENT_CHARS (cli 0.9.0, downloadPathValidation.ts).
+_DOWNLOAD_ILLEGAL = re.compile(r'[\x00-\x1f\x7f<>:"|?*\\/]')
+_WIN_RESERVED = re.compile(r"^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\..*)?$", re.IGNORECASE)
+
+
+def downloaded_name(name: str) -> str:
+    """Return the name proton-drive gives a Drive file it downloads called ``name``.
+
+    proton-drive replaces each control character and each of ``< > : " | ? * \\ /``
+    with ``_``, turns ``.`` and ``..`` into ``_`` and ``__``, and on Windows also
+    prefixes a reserved device name with ``_`` and replaces trailing dots and spaces.
+    Two Drive names can therefore land under one local name (``a?.dat`` and ``a*.dat``
+    both become ``a_.dat``).
+
+    :param name: the file's name on Drive.
+    :returns: the name of the file the download writes.
+
+    .. versionadded:: 3.1.1
+    """
+    segment = _DOWNLOAD_ILLEGAL.sub("_", name)
+    if segment in ("", "."):
+        return "_"
+    if segment == "..":
+        return "__"
+    if os.name == "nt":
+        if _WIN_RESERVED.match(segment):
+            segment = f"_{segment}"
+        segment = re.sub(r"[. ]+$", lambda m: "_" * len(m.group()), segment)
+    return segment
+
+
 class _TransferTimedOut(Exception):
     """One transfer attempt hit its timeout; carries the timeout that expired (#184)."""
 
@@ -761,14 +848,27 @@ class DriveClient:
         """
         result = self._invoke(args, timeout=timeout)
         stdout = result.stdout.strip()
+        # A crash prints the one-line summary, then its stack trace, on stdout.
+        summary, _, trailer = stdout.partition("\n")
         try:
             parsed = json.loads(stdout) if stdout else None
+            trailer = ""
         except json.JSONDecodeError:
-            parsed = None
+            try:
+                parsed = json.loads(summary)
+            except json.JSONDecodeError:
+                parsed = None
         if not isinstance(parsed, dict) or "transferredItems" not in parsed:
             message = result.stderr.strip() or stdout
             raise _classify(message)
-        return TransferResult.from_json(parsed)
+        transfer = TransferResult.from_json(parsed)
+        # proton-drive prints its summary even when the command died before moving
+        # anything (a path that matched nothing, a file gone since the scan), then exits
+        # 1. A non-zero exit with no item failures is that case: the summary's zeros do
+        # not mean "nothing needed sending".
+        if result.returncode != 0 and not transfer.failed_items:
+            raise _classify(_fatal_line(result.stderr, trailer))
+        return transfer
 
     def _run_transfer_with_backoff(
         self,
@@ -1102,6 +1202,18 @@ class DriveClient:
 
         .. seealso:: :meth:`download` for the reverse direction.
         """
+        sendable: list[Path] = []
+        literals: list[str] = []
+        unnameable: list[dict] = []
+        for path in local_paths:
+            literal = _glob_literal(str(path))
+            if literal is None:
+                unnameable.append({"name": path.name, "error": _UNNAMEABLE})
+            else:
+                sendable.append(path)
+                literals.append(literal)
+        if not sendable:
+            return TransferResult(0, 0, len(unnameable), unnameable)
         args = ["filesystem", "upload"]
         if file_strategy:
             args += ["-f", self._strategy("upload", "-f", file_strategy)]
@@ -1109,11 +1221,15 @@ class DriveClient:
             args += ["-d", self._strategy("upload", "-d", folder_strategy)]
         if skip_thumbnails:
             args.append("-t")
-        args += [str(p) for p in local_paths] + [remote_parent]
-        return self._run_transfer_with_backoff(
+        args += literals + [remote_parent]
+        result = self._run_transfer_with_backoff(
             args, timeout=timeout, retries=retries, base_delay=base_delay, cap=cap, sleep=sleep,
-            payload_bytes=_payload_bytes(local_paths),
+            payload_bytes=_payload_bytes(sendable),
         )
+        if unnameable:
+            result.failed_items += len(unnameable)
+            result.failures = [*result.failures, *unnameable]
+        return result
 
     def download(
         self,
@@ -1153,12 +1269,19 @@ class DriveClient:
 
         .. seealso:: :meth:`upload` for the reverse direction.
         """
+        folder = _glob_literal(str(local_folder))
+        if folder is None:
+            raise DriveError(
+                f"cannot download into {local_folder}: proton-drive reads that path as a "
+                "glob pattern, and one holding a backslash or a {a,b} brace list cannot be "
+                "escaped for it; move the store to a path without them"
+            )
         args = ["filesystem", "download"]
         if file_strategy:
             args += ["-f", self._strategy("download", "-f", file_strategy)]
         if folder_strategy:
             args += ["-d", self._strategy("download", "-d", folder_strategy)]
-        args += remote_paths + [str(local_folder)]
+        args += remote_paths + [folder]
         return self._run_transfer_with_backoff(
             args, timeout=timeout, retries=retries, base_delay=base_delay, cap=cap, sleep=sleep,
             payload_bytes=payload_bytes,

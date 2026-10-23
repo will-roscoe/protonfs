@@ -1302,3 +1302,159 @@ def test_rename_raises_when_proton_drive_reports_the_node_failed(
 
     with pytest.raises(DriveError, match="already exists"):
         client.rename("/my-files/r/a/x", "y")
+
+
+# --- #218: proton-drive glob-expands local paths --------------------------------------
+# proton-drive 0.9.0 (cli/src/commands/fileSystem/localPath.ts) passes any local path
+# containing * ? [ { to Node's fs.glob, and a pattern matching nothing aborts the whole
+# command. Measured against the real binary, 2026-10-23.
+
+
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        ("/d/plain name.mp4", "/d/plain name.mp4"),
+        ("/d/no-trigger(1)!@+}].txt", "/d/no-trigger(1)!@+}].txt"),
+        ("/d/b_[-1].txt", "/d/b_[[]-1].txt"),
+        ("/d/profiles_mload00[6e,7a2].mp4", "/d/profiles_mload00[[]6e,7a2].mp4"),
+        ("/d/s*ar.txt", "/d/s[*]ar.txt"),
+        ("/d/q?.txt", "/d/q[?].txt"),
+        ("/d/brn{x}[1].txt", "/d/brn[{]x}[[]1].txt"),
+        ("/d/seq{1..3}.txt", "/d/seq[{]1..3}.txt"),
+        ("/d/ext+(1)[2].txt", "/d/ext+[(]1)[[]2].txt"),
+        ("/run [7]/a.txt", "/run [[]7]/a.txt"),
+    ],
+)
+def test_glob_literal_escapes_what_proton_drive_would_expand(path: str, expected: str) -> None:
+    assert drive_mod._glob_literal(path) == expected
+
+
+@pytest.mark.parametrize("path", ["/d/br{x,y}.txt", "/d/back\\sl[1].txt"])
+def test_glob_literal_is_none_for_a_path_no_pattern_can_name(path: str) -> None:
+    assert drive_mod._glob_literal(path) is None
+
+
+def _capture_run(stdout: str, returncode: int = 0, stderr: str = ""):
+    calls: list[list[str]] = []
+
+    def _run(args, capture_output, text, **kwargs):
+        calls.append(list(args))
+        return subprocess.CompletedProcess(args, returncode, stdout=stdout, stderr=stderr)
+
+    return _run, calls
+
+
+_ONE_DONE = '{"transferredItems":1,"skippedItems":0,"failedItems":0,"failures":[]}'
+
+
+def test_upload_escapes_glob_metacharacters(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = DriveClient(binary="proton-drive")
+    monkeypatch.setattr("protonfs.drive.shutil.which", lambda _: "/usr/bin/proton-drive")
+    run, calls = _capture_run(_ONE_DONE)
+    monkeypatch.setattr(subprocess, "run", run)
+    client.upload([Path("/d/plain.txt"), Path("/d/b_[-1].txt")], "/my-files/test")
+    assert calls[0][-4:-1] == ["/d/plain.txt", "/d/b_[[]-1].txt", "/my-files/test"]
+
+
+def test_upload_fails_a_path_no_pattern_can_name_without_sending_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = DriveClient(binary="proton-drive")
+    monkeypatch.setattr("protonfs.drive.shutil.which", lambda _: "/usr/bin/proton-drive")
+    run, calls = _capture_run(_ONE_DONE)
+    monkeypatch.setattr(subprocess, "run", run)
+    result = client.upload([Path("/d/ok.txt"), Path("/d/br{x,y}.txt")], "/my-files/test")
+    assert "/d/br{x,y}.txt" not in calls[0]
+    assert (result.transferred_items, result.failed_items) == (1, 1)
+    assert result.failures[0]["name"] == "br{x,y}.txt"
+    assert "rename" in result.failures[0]["error"]
+
+
+def test_upload_of_only_unnameable_paths_runs_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = DriveClient(binary="proton-drive")
+    monkeypatch.setattr("protonfs.drive.shutil.which", lambda _: "/usr/bin/proton-drive")
+    run, calls = _capture_run(_ONE_DONE)
+    monkeypatch.setattr(subprocess, "run", run)
+    result = client.upload([Path("/d/back\\sl[1].txt")], "/my-files/test")
+    assert calls == []
+    assert (result.transferred_items, result.failed_items) == (0, 1)
+
+
+def test_download_escapes_the_local_folder(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = DriveClient(binary="proton-drive")
+    monkeypatch.setattr("protonfs.drive.shutil.which", lambda _: "/usr/bin/proton-drive")
+    run, calls = _capture_run(_ONE_DONE)
+    monkeypatch.setattr(subprocess, "run", run)
+    client.download(["/my-files/r [1]/a.txt"], Path("/store [1]/.protonfs/tmp"))
+    # remote paths are not globbed by proton-drive; only the local folder is
+    assert calls[0][-3:-1] == ["/my-files/r [1]/a.txt", "/store [[]1]/.protonfs/tmp"]
+
+
+def test_download_into_an_unnameable_folder_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = DriveClient(binary="proton-drive")
+    monkeypatch.setattr("protonfs.drive.shutil.which", lambda _: "/usr/bin/proton-drive")
+    run, calls = _capture_run(_ONE_DONE)
+    monkeypatch.setattr(subprocess, "run", run)
+    with pytest.raises(DriveError, match="glob"):
+        client.download(["/my-files/a.txt"], Path("/s{a,b}/tmp"))
+    assert calls == []
+
+
+_ZERO = '{"transferredItems":0,"transferredBytes":0,"skippedItems":0,"failedItems":0,"failures":[]}'
+
+
+def test_transfer_that_failed_as_a_whole_raises_despite_a_summary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """proton-drive prints its (all-zero) summary even when the command aborted before
+    transferring anything, then exits 1 with the reason on stderr."""
+    client = DriveClient(binary="proton-drive")
+    monkeypatch.setattr("protonfs.drive.shutil.which", lambda _: "/usr/bin/proton-drive")
+    stderr = "No paths matched: /d/b_[-1].txt\n"
+    monkeypatch.setattr(subprocess, "run", _stub_run(_ZERO, returncode=1, stderr=stderr))
+    with pytest.raises(DriveError, match="No paths matched: /d/b_"):
+        client.upload([Path("/d/a.txt")], "/my-files/test")
+
+
+def test_whole_transfer_failure_names_the_error_not_the_stack_trace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unexpected crash (here a file gone since the scan) puts the summary AND the
+    stack trace on stdout and only a banner on stderr (measured, cli 0.9.0)."""
+    client = DriveClient(binary="proton-drive")
+    monkeypatch.setattr("protonfs.drive.shutil.which", lambda _: "/usr/bin/proton-drive")
+    stdout = (
+        _ZERO + "\n"
+        "156 |     private async enqueueLocalPath(absolutePath: string): Promise<void> {\n"
+        "157 |         const stats = await lstat(absolutePath);\n"
+        "                                  ^\n"
+        "ENOENT: no such file or directory, lstat '/d/gone.txt'\n"
+        '    path: "/d/gone.txt",\n'
+        "\n"
+        "      at async enqueueLocalPath (src/commands/fileSystem/transferQueue.ts:157:29)\n"
+        "Error details:\n"
+        "{\n"
+        "  code: 'ENOENT',\n"
+        "}\n"
+    )
+    stderr = "===============================================\n"
+    monkeypatch.setattr(subprocess, "run", _stub_run(stdout, returncode=1, stderr=stderr))
+    with pytest.raises(DriveError) as info:
+        client.upload([Path("/d/gone.txt")], "/my-files/test")
+    assert str(info.value) == "ENOENT: no such file or directory, lstat '/d/gone.txt'"
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        ("plain [1] {x,y}.dat", "plain [1] {x,y}.dat"),
+        ("q?.dat", "q_.dat"),
+        ("t 12:00.dat", "t 12_00.dat"),
+        ('a<b>"c|d*e\\f.dat', "a_b__c_d_e_f.dat"),
+        ("bell\x07\x7f.dat", "bell__.dat"),
+        (".", "_"),
+        ("..", "__"),
+    ],
+)
+def test_downloaded_name_mirrors_proton_drives_local_renaming(name: str, expected: str) -> None:
+    assert drive_mod.downloaded_name(name) == expected

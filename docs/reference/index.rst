@@ -596,6 +596,13 @@ interactively, but only the quoted form survives into a scheduled job — see
 keeps matching as new directories appear. A pattern segment never crosses ``/``,
 matching shell semantics.
 
+A ``PATH`` holding ``*``, ``?`` or ``[`` also matches a path of exactly that name, as
+a git pathspec does: ``'run [7]'`` names the folder ``run [7]`` (and, as a pattern,
+``run 7``).
+
+.. versionchanged:: 3.1.1
+   A pattern also matches a path named exactly like it.
+
 A pattern that matches nothing is reported and skipped, and **never widens to the
 whole repo**::
 

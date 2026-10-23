@@ -1335,3 +1335,17 @@ def test_check_export_ignores_a_dirty_gitignore_it_will_not_touch(
 
     assert check_export(ctx, ["new.bin"]) == []
     assert ".gitignore" in _reasons(check_export(ctx, IMPORT))  # these would edit it
+
+
+def test_compare_by_download_finds_a_copy_proton_drive_renamed(
+    tmp_path, make_fake_drive
+) -> None:
+    # proton-drive lands "q?.mp4" as "q_.mp4"; the comparison must read that file
+    from protonfs.commands.gitmove import _compare_by_download
+    from protonfs.commands.push import push
+
+    ctx = _store(tmp_path, make_fake_drive, {"frames/q?.mp4": b"question"})
+    push(ctx, None, None, False)
+    sha256 = ctx.index.get("frames/q?.mp4").sha256
+
+    assert _compare_by_download(ctx, [("frames/q?.mp4", sha256)]) == []

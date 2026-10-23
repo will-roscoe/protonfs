@@ -759,8 +759,8 @@ def test_push_cli_under_delivery_prints_retry_hint_not_resolve(
 def test_push_cli_conflict_failure_prints_resolve_hint(
     tmp_path: Path, monkeypatch, make_fake_drive
 ) -> None:
-    # D2.1: a default push that hits conflicts (named failures) instructs the user to
-    # re-run with --resolve, and exits non-zero.
+    # D2.1: a default push that hits a real conflict (another file already holds the
+    # name on Drive) instructs the user to re-run with --resolve, and exits non-zero.
     from click.testing import CliRunner
 
     from protonfs.cli import main
@@ -768,14 +768,10 @@ def test_push_cli_conflict_failure_prints_resolve_hint(
     (tmp_path / "dump_0001").write_bytes(b"data")
     init_config(tmp_path, "/my-files/test")
     ctx = load_context(tmp_path)
-    ctx.drive = make_fake_drive(
-        upload_result=TransferResult(
-            transferred_items=0,
-            skipped_items=0,
-            failed_items=1,
-            failures=[{"name": "dump_0001", "error": "conflict"}],
-        )
-    )
+    fake = make_fake_drive()
+    fake._remote_files["/my-files/test"] = {"dump_0001": 99}
+    fake._remote_sha1["/my-files/test"] = {"dump_0001": "f" * 40}
+    ctx.drive = fake
     monkeypatch.setattr("protonfs.context.load_context", lambda *a, **k: ctx)
 
     result = CliRunner().invoke(main, ["push"])

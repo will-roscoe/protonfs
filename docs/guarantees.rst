@@ -189,6 +189,22 @@ with the indexed size (and sha1 where both sides have one). Otherwise the file i
 uploaded as a new file, and the old path's index entry is left alone, or pointed at
 the node's actual location when a move landed and the rename after it did not.
 
+``proton-drive`` also fails a call **as a whole**: it reads a local path holding
+``*``, ``?``, ``[`` or ``{`` as a glob pattern, and a pattern matching nothing (or a
+file gone since the scan) stops the whole call before anything moves, while still
+printing an all-zero summary. protonfs escapes those characters in every path it
+passes, and treats a failed call that names no failed file as an error carrying
+``proton-drive``'s own message, never as a call with nothing to do (3.1.1). A
+file whose path holds a backslash, or a ``{a,b}`` brace list, cannot be escaped
+for ``proton-drive`` at all; it is reported as a failure that asks you to rename
+it, and the rest of the batch goes ahead.
+
+On download ``proton-drive`` replaces each of ``< > : " | ? *`` and control
+characters in a file's name with ``_`` (``t 12:00.dat`` lands as ``t 12_00.dat``).
+``pull`` expects that name and moves the file into place under its real one, and
+two files that would land under the same name are fetched in separate calls, so
+one can never overwrite the other (3.1.1).
+
 Stricter checks reach entries already recorded
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 Each index entry was judged by the checks of the protonfs that wrote it, and later

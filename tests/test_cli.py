@@ -842,3 +842,35 @@ def test_install_signal_handlers_covers_sighup() -> None:
             handler(signal.SIGHUP, None)
     finally:
         signal.signal(signal.SIGHUP, previous)
+
+
+# A PATH naming a file whose name holds glob characters ("run [7]", "q?.dat") matches
+# that file literally as well as by pattern, as a git pathspec does.
+
+
+def test_glob_local_also_matches_a_bracketed_name_literally(tmp_path: Path) -> None:
+    from protonfs.cli import _glob_local
+
+    (tmp_path / "run [7]").mkdir()
+    (tmp_path / "run 7").mkdir()
+    (tmp_path / "run [7]" / "q?.dat").write_bytes(b"q")
+
+    assert _glob_local(tmp_path, "run [7]") == ["run 7", "run [7]"]
+    assert _glob_local(tmp_path, "run [7]/q?.dat") == ["run [7]/q?.dat"]
+
+
+def test_glob_tracked_also_matches_a_bracketed_name_literally(tmp_path: Path) -> None:
+    from protonfs.cli import _glob_tracked
+
+    (tmp_path / "a [1].mp4").write_bytes(b"a")
+
+    assert _glob_tracked(tmp_path, "a [1].mp4", {"a [1].mp4"}) == ["a [1].mp4"]
+
+
+def test_index_pattern_also_matches_a_bracketed_name_literally() -> None:
+    from protonfs.cli import _expand_pattern_index
+
+    keys = ["run [7]/c.dat", "run [7]/q?.dat", "run 7/d.dat"]
+
+    assert _expand_pattern_index(keys, "run [7]") == ["run 7", "run [7]"]
+    assert _expand_pattern_index(keys, "run [7]/q?.dat") == ["run [7]/q?.dat"]

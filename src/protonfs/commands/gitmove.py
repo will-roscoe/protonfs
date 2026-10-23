@@ -342,7 +342,7 @@ def _compare_by_download(ctx: RepoContext, files: list[tuple[str, str]]) -> list
     import tempfile
 
     from protonfs.commands.pull import _staging_dir
-    from protonfs.drive import DriveError
+    from protonfs.drive import DriveError, downloaded_name
     from protonfs.localscan import hash_file_digests
 
     staging = _staging_dir(ctx)
@@ -355,7 +355,7 @@ def _compare_by_download(ctx: RepoContext, files: list[tuple[str, str]]) -> list
                 [entry.remote_path], tmp, file_strategy="replace",
                 payload_bytes=entry.size or None,
             )
-            landed = Path(tmp) / posixpath.basename(rel)
+            landed = Path(tmp) / downloaded_name(posixpath.basename(entry.remote_path))
             if not landed.is_file():
                 failures.append(_fail(
                     rel, "unverified-drive", "Drive reports no checksum for it, and it "

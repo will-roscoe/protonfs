@@ -240,10 +240,14 @@ def _glob_local(root: Path, pattern: str) -> list[str]:
 
     Uses :meth:`Path.glob`, so semantics match a shell glob exactly: a pattern segment
     never crosses ``/`` (``mload*`` matches top-level entries only; ``**`` would recurse,
-    but is not needed by any case this issue asks for). Returns sorted repo-relative
-    POSIX paths.
+    but is not needed by any case this issue asks for). A path that exists under the
+    pattern's own name also matches, so ``run [7]`` names the folder called that, as a
+    git pathspec would. Returns sorted repo-relative POSIX paths.
     """
-    return sorted(m.relative_to(root).as_posix() for m in root.glob(pattern))
+    matches = {m.relative_to(root).as_posix() for m in root.glob(pattern)}
+    if (root / pattern).exists():
+        matches.add(Path(pattern).as_posix())
+    return sorted(matches)
 
 
 def _with_parent_dirs(tracked: set[str]) -> set[str]:
@@ -311,6 +315,9 @@ def _expand_pattern_index(index_keys: list[str] | set[str], pattern: str) -> lis
     depth -- one result per matched top-level family, not one per file -- so it feeds into
     the existing subtree-pull logic (:func:`~protonfs.diff.within_subpath`) exactly the way
     a shell-expanded literal directory name already does today.
+
+    A segment equal to the pattern's segment also matches, so ``run [7]`` names the
+    folder called that, as :func:`_glob_local` does.
     """
     pattern_parts = pattern.split("/")
     depth = len(pattern_parts)
@@ -320,7 +327,9 @@ def _expand_pattern_index(index_keys: list[str] | set[str], pattern: str) -> lis
         if len(parts) < depth:
             continue
         prefix = parts[:depth]
-        if all(fnmatch.fnmatchcase(c, p) for c, p in zip(prefix, pattern_parts)):
+        if prefix == pattern_parts or all(
+            fnmatch.fnmatchcase(c, p) for c, p in zip(prefix, pattern_parts)
+        ):
             matched.add("/".join(prefix))
     return sorted(matched)
 
@@ -913,12 +922,10 @@ def push(
         phantoms = [f for f in result.failures if f.get("kind") == "phantom"]
         refused = [f for f in result.failures if f.get("kind") == "deletion-refused"]
         untrashed = [f for f in result.failures if f.get("kind") == "trash"]
-        conflicts = [
-            f
-            for f in result.failures
-            if f.get("kind")
-            not in ("under-delivered", "unverified", "phantom", "deletion-refused", "trash")
-        ]
+        # Only a failure push tagged as a conflict is one; an untagged failure is
+        # proton-drive's own per-file error (permissions, quota, an unnameable path),
+        # which --resolve cannot fix.
+        conflicts = [f for f in result.failures if f.get("kind") == "conflict"]
         if refused:
             click.echo("  -> nothing was trashed on Drive; the files stay indexed.")
         if untrashed:
