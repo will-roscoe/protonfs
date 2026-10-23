@@ -646,7 +646,7 @@ def _stub_setup_guards(monkeypatch: pytest.MonkeyPatch, config) -> None:
     monkeypatch.setattr(setup_mod, "ensure_cli_present", lambda drive: "v0.5.0")
     monkeypatch.setattr(setup_mod, "ensure_secrets", lambda drive: None)
     monkeypatch.setattr(setup_mod, "ensure_authenticated", lambda drive: None)
-    monkeypatch.setattr(setup_mod, "ensure_config", lambda root: config)
+    monkeypatch.setattr(setup_mod, "ensure_config", lambda root, remote_root=None: config)
     monkeypatch.setattr(setup_mod, "init_ignore", lambda root: None)
     monkeypatch.setattr(setup_mod, "init_include", lambda root: None)
     monkeypatch.setattr(setup_mod, "write_git_control_files", lambda root: None)
@@ -790,3 +790,74 @@ def test_git_control_files_ignore_event_log(tmp_path: Path) -> None:
     ignore = (tmp_path / ".protonfs" / ".gitignore").read_text()
     assert "events.log" in ignore
     assert "events.log.1" in ignore
+
+
+# --- setup --remote-root (#217) ------------------------------------------------------
+
+
+def _cli_setup(tmp_path, monkeypatch, make_fake_drive, *args):
+    """Run `protonfs setup ARGS` in ``tmp_path`` with a fake Drive and the real
+    ensure_config/ensure_remote_root; returns (result, fake drive)."""
+    from click.testing import CliRunner
+
+    from protonfs.cli import main
+
+    fake = make_fake_drive()
+    monkeypatch.setattr(setup_mod, "ensure_cli_present", lambda drive: "v0.9.0")
+    monkeypatch.setattr(setup_mod, "ensure_secrets", lambda drive: None)
+    monkeypatch.setattr(setup_mod, "ensure_authenticated", lambda drive: None)
+    monkeypatch.setattr(setup_mod, "DriveClient", lambda: fake)
+    monkeypatch.chdir(tmp_path)
+    return CliRunner().invoke(main, ["setup", "--no-migrate-lfs", *args]), fake
+
+
+def test_cli_setup_remote_root_sets_up_a_new_store_without_a_terminal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, make_fake_drive
+) -> None:
+    result, fake = _cli_setup(
+        tmp_path, monkeypatch, make_fake_drive, "--remote-root", "/my-files/sph-dev/products"
+    )
+
+    assert result.exit_code == 0, result.output
+    assert load_config(tmp_path).remote_root == "/my-files/sph-dev/products"
+    assert ("/my-files/sph-dev", "products") in fake.created_folders
+
+
+def test_cli_setup_remote_root_refuses_to_repoint_a_store(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, make_fake_drive
+) -> None:
+    from protonfs.config import init_config
+
+    init_config(tmp_path, "/my-files/existing")
+    result, fake = _cli_setup(
+        tmp_path, monkeypatch, make_fake_drive, "--remote-root", "/my-files/other"
+    )
+
+    assert result.exit_code == 1
+    assert "/my-files/existing" in result.output and "/my-files/other" in result.output
+    assert load_config(tmp_path).remote_root == "/my-files/existing"
+    assert fake.created_folders == []
+
+
+def test_cli_setup_remote_root_matching_the_store_is_accepted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, make_fake_drive
+) -> None:
+    from protonfs.config import init_config
+
+    init_config(tmp_path, "/my-files/existing")
+    result, _ = _cli_setup(
+        tmp_path, monkeypatch, make_fake_drive, "--remote-root", "/my-files/existing"
+    )
+
+    assert result.exit_code == 0, result.output
+
+
+def test_cli_setup_new_store_without_remote_root_or_terminal_fails_fast(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, make_fake_drive
+) -> None:
+    result, fake = _cli_setup(tmp_path, monkeypatch, make_fake_drive)
+
+    assert result.exit_code == 1
+    assert "--remote-root" in result.output
+    assert load_config(tmp_path) is None
+    assert fake.created_folders == []

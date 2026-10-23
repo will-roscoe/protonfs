@@ -530,14 +530,31 @@ def main(verbose: int, progress_inline: bool | None, event_log: bool | None) -> 
         "enclosing repo off LFS."
     ),
 )
+@click.option(
+    "--remote-root",
+    metavar="PATH",
+    default=None,
+    help=(
+        "The Drive folder a new store syncs to (e.g. /my-files/myproject), instead of "
+        "being asked. For an existing store it must be the store's own root: setup "
+        "never repoints a store."
+    ),
+)
 @_drive_error_boundary
-def setup(dry_run: bool, migrate_lfs: bool | None) -> None:
-    """Install/verify the proton-drive CLI, init .protonfs/, migrate off git-lfs if present."""
+def setup(dry_run: bool, migrate_lfs: bool | None, remote_root: str | None) -> None:
+    """Install/verify the proton-drive CLI, init .protonfs/, migrate off git-lfs if present.
+
+    A new store asks for its Drive remote root, or takes it from --remote-root; without
+    a terminal to ask on, --remote-root is required.
+
+    .. versionchanged:: 3.2.0
+       Added ``--remote-root``.
+    """
     from pathlib import Path
 
     from protonfs.commands.setup import run_setup
 
-    run_setup(Path.cwd(), dry_run=dry_run, migrate=migrate_lfs)
+    run_setup(Path.cwd(), dry_run=dry_run, migrate=migrate_lfs, remote_root=remote_root)
 
 
 @main.command()

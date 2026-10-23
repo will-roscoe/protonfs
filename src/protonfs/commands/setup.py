@@ -384,7 +384,11 @@ def maybe_uninstall_lfs_filters(root: Path) -> None:
 
 
 def run_setup(
-    root: Path, dry_run: bool = False, migrate: bool | None = None, reporter=None
+    root: Path,
+    dry_run: bool = False,
+    migrate: bool | None = None,
+    reporter=None,
+    remote_root: str | None = None,
 ) -> None:
     """Run the full ``protonfs setup`` flow for ``root``.
 
@@ -398,8 +402,14 @@ def run_setup(
         ``None`` migrates only when ``root`` is the git toplevel.
     :param reporter: Reporter to narrate progress through; defaults to the process
         reporter.
+    :param remote_root: a new store's Drive root, passed to :func:`ensure_config`
+        (``--remote-root``); ``None`` asks for it on a terminal.
     :raises click.ClickException: on any failed precondition (binary, keyring, auth,
-        Drive error, failed LFS upload, declined confirmation).
+        Drive error, failed LFS upload, declined confirmation), or a ``remote_root``
+        that cannot be used (see :func:`ensure_config`).
+
+    .. versionchanged:: 3.2.0
+       Added ``remote_root``.
 
     .. seealso:: :func:`migrate_lfs` for the LFS migration this may invoke.
     """
@@ -419,7 +429,7 @@ def run_setup(
     click.echo("Authenticated with Proton Drive.")
 
     reporter.phase("writing config + control files")
-    config = ensure_config(root)
+    config = ensure_config(root, remote_root=remote_root)
     init_ignore(root)
     init_include(root)
     write_git_control_files(root)
