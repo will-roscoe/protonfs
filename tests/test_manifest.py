@@ -716,6 +716,19 @@ def test_seed_index_skips_git_metadata(tmp_path, make_fake_drive) -> None:
     assert ctx.index.get(".git/config") is None
 
 
+def test_seed_index_skips_what_the_include_file_excludes(tmp_path, make_fake_drive) -> None:
+    ctx = _ctx(tmp_path, make_fake_drive)
+    (tmp_path / ".protonfs" / "include").write_text("*.ev\n")
+    handle = _create(ctx)
+    handle.record("run.ev", ManifestEntry(1, "", "", "", "t"))
+    handle.record("dump_00001", ManifestEntry(1, "", "", "", "t"))
+    handle.save()
+
+    seeded, _generation = manifest.seed_index(ctx)
+
+    assert seeded == 1 and ctx.index.get("dump_00001") is None
+
+
 def test_staleness_note_is_silent_when_the_check_fails(tmp_path, make_fake_drive) -> None:
     from protonfs.drive import DriveError
 

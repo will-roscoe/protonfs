@@ -251,6 +251,19 @@ Two committed files under ``.protonfs/`` decide which files are in scope:
   (``.git/``, ``/.git/refs/``); a broad ``*`` does not. ``.gitignore`` and
   ``.github/`` are ordinary files.
 
+The rules apply in both directions: ``push`` never uploads an excluded file, ``pull``
+never downloads one, ``refresh`` never adds one to the index, and ``status`` and ``ls``
+leave them out. ``pull`` says how many excluded files it left on Drive.
+
+**Excluding files you already have** (say you take ``*.ev`` out of ``include`` after
+pulling some): nothing is deleted, locally or on Drive. The local copies stay where
+they are and protonfs stops managing them: an edit is not uploaded, a deletion is not
+sent to Drive (not even with ``--deletions trash``), ``offload`` leaves them alone and
+``pull`` does not restore one you delete. Their index entries are kept, so putting
+``*.ev`` back picks up where you left off: an edit made meanwhile is pushed, and a file
+deleted meanwhile is restored by ``pull`` (or, with ``--deletions trash``, its Drive
+copy is trashed by ``push``, as for any local deletion).
+
 .. code-block:: bash
 
    # Sync only the phantom dump files under an otherwise-excluded tree:

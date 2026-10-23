@@ -244,3 +244,23 @@ def test_status_counts_a_file_deleted_locally_as_remote_only(tmp_path: Path) -> 
 
     assert counts[SyncState.REMOTE_ONLY.value] == 1
     assert counts[SyncState.LOCAL_DELETED.value] == 0
+
+
+def test_status_and_ls_leave_out_what_the_rules_exclude(tmp_path, make_fake_drive) -> None:
+    from protonfs.commands.ls import collect_entries
+    from protonfs.index import IndexEntry
+
+    init_config(tmp_path, "/my-files/test")
+    (tmp_path / ".protonfs" / "include").write_text("*.ev\n")
+    ctx = load_context(tmp_path)
+    for rel in ("run1/run.ev", "run1/dump_00001"):
+        ctx.index.set(rel, IndexEntry(4, 1.0, "", "", f"/my-files/test/{rel}", "d",
+                                      "metadata-only", "t"))
+    ctx.drive = make_fake_drive(walk_entries=[
+        RemoteEntry(rel_path=r, is_dir=False, size=4)
+        for r in ("run1/run.ev", "run1/dump_00001", "run1/other.bin")
+    ])
+
+    for remote in (False, True):
+        assert sum(compute_status(ctx, None, remote=remote).values()) == 1
+        assert [e.rel_path for e in collect_entries(ctx, None, remote)] == ["run1/run.ev"]

@@ -261,7 +261,9 @@ flag/argument name; these names, not just their presence, are frozen.
        Without ``--remote`` nothing is checked on Drive: the comparison is against
        the local index only, so ``locally-indexed`` means "matches what protonfs
        last recorded", not "verified present on Drive". ``--format json`` emits
-       ``{"counts": {<state>: n, ...}, "exit_code": n, "remote": bool}``.
+       ``{"counts": {<state>: n, ...}, "exit_code": n, "remote": bool}``. Since 3.1.0,
+       a file the store's ``.protonfs/ignore``/``include`` rules exclude is not
+       counted, on Drive or locally, so it never makes status report drift.
      - ``0`` clean (every file in a *clean* state below); ``1`` drift present
        (something to push/pull/prune); ``2`` conflict present (a *conflict*-class
        state below). Conflict outranks drift when both are present. (Usage errors
@@ -271,7 +273,8 @@ flag/argument name; these names, not just their presence, are frozen.
        Options: ``--remote``, ``--trash``, ``--dirs``, ``--state`` (repeatable; any
        state name below, plus the deprecated alias ``synced`` for ``locally-indexed``,
        accepted with a warning until 4.0.0),
-       ``--format [table|plain|json]``, ``--visual [treemap|waffle]``.
+       ``--format [table|plain|json]``, ``--visual [treemap|waffle]``. Since 3.1.0,
+       files the store's ``.protonfs/ignore``/``include`` rules exclude are not listed.
      - ``0`` success; ``1`` Drive/auth error; ``2`` usage error.
    * - ``push``
      - Upload local-only/changed files to Drive. Argument: ``PATH...`` (optional,
@@ -330,7 +333,9 @@ flag/argument name; these names, not just their presence, are frozen.
        ``remote``), ``--dry-run``, ``--refresh``, ``--strict``, ``--no-restore`` (added
        in 3.0.0: files this machine held that are gone locally are left alone and
        counted as ``local-deleted=``, not a failure; a PATH given literally that names
-       one is still restored).
+       one is still restored). Since 3.1.0, a file the store's
+       ``.protonfs/ignore``/``include`` rules exclude is never downloaded, nor indexed
+       by ``--refresh``; how many were left on Drive is reported on its own line.
      - ``0`` all transferred/skipped (including the "index empty, run refresh first"
        early-exit message -- which since 2.1.0 appears only when the remote has no
        manifest to seed the index from -- and a pattern that matched nothing, which is

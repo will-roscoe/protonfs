@@ -740,9 +740,9 @@ What it changes, and only after every file is on disk and verified against Drive
   which is staged too, so no machine syncs the files any more;
 * the files' index entries (and remote manifest entries) are dropped. Their Drive
   copies are kept unless ``--trash-remote``; ``protonfs rm PATH`` trashes one later.
-  A kept copy shows as ``remote-only`` in ``status --remote`` and ``ls --remote``, but
-  ``pull`` and ``refresh`` never bring it back, on any machine, even after git moved or
-  deleted the file.
+  A kept copy is out of the store's scope like any excluded file: ``status`` and
+  ``ls`` (``--remote`` too) leave it out, and ``pull`` and ``refresh`` never bring it
+  back, on any machine, even after git moved or deleted the file.
 
 When other clones pull the commit, git replaces their copy of each file with the
 committed one, even if theirs had changes git never saw (git treats ignored files as
@@ -813,6 +813,8 @@ files are left alone and counted as ``local-deleted=N``, so the next ``push`` ca
 the move on Drive (or, with ``--deletions trash``, the deletion). A ``PATH`` given
 literally that names one such file is still restored; a pattern is not. A path the
 scan skipped that still exists on disk (now ignored, say) is never downloaded over.
+A file the store's ``.protonfs/ignore``/``include`` rules exclude is never downloaded
+at all, and ``pull`` reports how many it left on Drive.
 
 .. versionchanged:: 3.0.0
    Added ``--no-restore``.

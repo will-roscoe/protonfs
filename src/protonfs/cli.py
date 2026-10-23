@@ -418,6 +418,7 @@ def _accumulate_transfer(total, part) -> None:
     total.local_deleted_items += part.local_deleted_items
     total.moved_items += part.moved_items
     total.trashed_items += part.trashed_items
+    total.excluded_items += part.excluded_items
     total.trashed += part.trashed
 
 
@@ -1417,6 +1418,11 @@ def pull(
             f"  -> {result.local_deleted_items} file(s) this machine held are gone locally "
             "(deleted, or moved away) and were left alone (--no-restore). Run `protonfs "
             "pull PATH` to bring one back."
+        )
+    if result.excluded_items:
+        click.echo(
+            f"  -> {result.excluded_items} file(s) on Drive were not downloaded: this "
+            "store's .protonfs/ignore or .protonfs/include excludes them."
         )
     for failure in result.failures:
         click.echo(f"  FAILED {failure['name']}: {failure['error']}")

@@ -83,6 +83,9 @@ def collect_entries(
     :param reporter: :class:`~protonfs.reporting.Reporter` to narrate progress through;
         defaults to the process reporter (:func:`~protonfs.reporting.get_reporter`).
     :returns: the filtered, rel_path-sorted classification.
+
+    .. versionchanged:: 3.1.0
+       Leaves out files the store's ``.protonfs/ignore``/``include`` rules exclude.
     """
     from protonfs.reporting import get_reporter
 
@@ -97,6 +100,8 @@ def collect_entries(
     # classify must be too -- otherwise out-of-scope index entries (never scanned/walked)
     # show up, and with a remote view are misread as remote-deleted.
     entries = classify(local, ctx.index, remote_map, subpath=subpath)
+    # What the store's rules exclude is out of scope: neither synced nor listed.
+    entries = [e for e in entries if not ignore.matches(e.rel_path)]
     if states:
         entries = [e for e in entries if e.state.value in states]
     return entries

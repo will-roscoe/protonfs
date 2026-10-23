@@ -56,6 +56,17 @@ without ``fcntl`` (documented in the module as the case pending issue #9 — in
 practice non-POSIX systems), it degrades to a no-op rather than blocking
 progress; two processes on such a platform are not protected against each other.
 
+Excluded files are never touched
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+A file the store's ``.protonfs/ignore``/``include`` rules exclude (``IgnoreMatcher``
+in ``src/protonfs/ignore.py``) is outside protonfs's scope in both directions: it is
+never uploaded, downloaded, indexed by ``refresh``, offloaded, or trashed, and
+``status``/``ls`` do not report it. Changing the rules so that files you already hold
+become excluded removes nothing: the local and Drive copies stay, and so do their index
+entries, so bringing the files back into scope resumes where they left off. Before
+3.1.0, ``pull`` and ``refresh`` brought excluded files down whenever they were missing
+locally, so a file excluded on purpose came back after every deletion.
+
 Resumable, idempotent push and pull
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 ``push`` and ``pull`` (``src/protonfs/commands/push.py``,
