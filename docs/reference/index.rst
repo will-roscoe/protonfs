@@ -453,11 +453,22 @@ Default: migrate only when the current directory *is* the git toplevel, so runni
 ``setup`` in a subdirectory of a larger repo never migrates the enclosing repo off
 LFS by surprise.
 
+A new store asks for its Drive remote root. Pass ``--remote-root`` to answer in
+advance, which a script, a cron job, ``ssh host 'protonfs setup'`` or any other run
+without a terminal must do: with neither, setup stops with exit ``1`` rather than wait
+on a question nobody can answer. Setup never repoints a store: in an existing one
+(including a fresh clone), ``--remote-root`` must name the store's own root, and a
+different one is refused, naming both, with nothing changed.
+
+.. versionchanged:: 3.2.0
+   Added ``--remote-root``.
+
 Examples::
 
     protonfs setup                        # first-time setup in the current directory
     protonfs setup --dry-run               # see what setup would do first
     protonfs setup --no-migrate-lfs        # set up without touching git-LFS either way
+    protonfs setup --remote-root /my-files/my-project   # no prompt (scripts, ssh)
 
 .. _cmd-deinit:
 

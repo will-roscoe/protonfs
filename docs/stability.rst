@@ -242,10 +242,15 @@ flag/argument name; these names, not just their presence, are frozen.
      - Exit codes
    * - ``setup``
      - Install/verify the proton-drive CLI, init ``.protonfs/``, migrate off git-lfs if
-       present. Options: ``--dry-run``, ``--migrate-lfs/--no-migrate-lfs``.
+       present. Options: ``--dry-run``, ``--migrate-lfs/--no-migrate-lfs``,
+       ``--remote-root PATH`` (added in 3.2.0). A new store takes its remote root from
+       ``--remote-root``, else asks on a terminal. Setup never repoints a store: for an
+       existing one, ``--remote-root`` must name its own root.
      - ``0`` done; ``1`` operational failure (missing binary, keyring, not
-       authenticated, Drive error, failed LFS upload, declined confirmation); ``2``
-       usage error.
+       authenticated, Drive error, failed LFS upload, declined confirmation), or, since
+       3.2.0, a ``--remote-root`` that differs from the store's (nothing is changed) or
+       a new store with no ``--remote-root`` and no terminal to ask on; ``2`` usage
+       error.
    * - ``deinit``
      - Remove ``.protonfs/`` from this directory (config, local config, index,
        refresh state, ignore/include, control ``.gitattributes``/``.gitignore``) after
