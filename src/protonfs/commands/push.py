@@ -443,12 +443,11 @@ def push(
         reporter.phase("scanning local", files=len(only))
     ignore = IgnoreMatcher.from_file(ctx.root)
     scan_root = Path(subpath) if subpath else Path(".")
-    from protonfs.hashcache import HashCache
 
     local = scan(
         ctx.root, scan_root, ignore, ctx.index,
         low_io=ctx.config.defaults.low_io, reporter=reporter,
-        hash_cache=HashCache(ctx.root), only=only,
+        hash_cache=ctx.hash_cache, only=only,
     )
     diff_entries = classify(local, ctx.index)
 

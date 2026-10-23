@@ -10,6 +10,7 @@ leaves a torn manifest.
 """
 from __future__ import annotations
 
+import bisect
 import errno
 import json
 import logging
@@ -171,6 +172,7 @@ class IndexStore:
         """
         self._path = repo_root / ".protonfs" / INDEX_FILE_NAME
         self._entries: dict[str, IndexEntry] = {}
+        self._sorted_paths: list[str] | None = None  # paths_within's cache; None = stale
         self._manifest: dict | None = None
         self._underdelivered: dict[str, dict] = {}
         # A new index holds only what this release records; an existing one is read below.
@@ -297,14 +299,40 @@ class IndexStore:
         An indexed file has nothing left to replace, so this clears its
         :meth:`underdelivered` record.
         """
+        if rel_path not in self._entries:
+            self._sorted_paths = None
         self._entries[rel_path] = entry
         self._underdelivered.pop(rel_path, None)
 
     def remove(self, rel_path: str) -> None:
         """Drop ``rel_path`` from the index if present (in memory until :meth:`save`),
         with its :meth:`underdelivered` record."""
-        self._entries.pop(rel_path, None)
+        if self._entries.pop(rel_path, None) is not None:
+            self._sorted_paths = None
         self._underdelivered.pop(rel_path, None)
+
+    def paths_within(self, subpath: str | None) -> list[str]:
+        """Return the indexed paths that :func:`~protonfs.diff.within_subpath` keeps for
+        ``subpath`` (``subpath`` itself and everything under it; every path for ``None``),
+        sorted, without reading every entry: a pass over one file costs a lookup, not the
+        whole index.
+
+        .. versionadded:: 3.1.0
+        """
+        if self._sorted_paths is None:
+            self._sorted_paths = sorted(self._entries)
+        paths = self._sorted_paths
+        if not subpath:
+            return list(paths)
+        # `subpath` and `subpath/...` are not adjacent in sorted order ('a-c' sorts
+        # between 'a' and 'a/b'), so look the path up and range over its children.
+        found = [subpath] if subpath in self._entries else []
+        prefix = f"{subpath}/"
+        i = bisect.bisect_left(paths, prefix)
+        while i < len(paths) and paths[i].startswith(prefix):
+            found.append(paths[i])
+            i += 1
+        return found
 
     def all(self) -> dict[str, IndexEntry]:
         """Return a shallow copy of the full ``{rel_path: entry}`` map."""

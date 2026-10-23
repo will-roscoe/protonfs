@@ -13,7 +13,7 @@ from pathlib import Path, PurePosixPath
 from protonfs.batching import batches, group_by_parent
 from protonfs.config import CONFIG_DIR_NAME
 from protonfs.context import RepoContext
-from protonfs.diff import SyncState, classify, held_and_gone, within_subpath
+from protonfs.diff import SyncState, classify, held_and_gone
 from protonfs.drive import RemoteEntry, TransferResult
 from protonfs.ignore import IgnoreMatcher, is_git_path
 from protonfs.index import IndexEntry
@@ -222,6 +222,7 @@ def pull(
     refresh: bool = False,
     reporter=None,
     no_restore: bool = False,
+    only: set[str] | None = None,
 ) -> TransferResult:
     """Download remote-only (and, with ``resolve``, diverged) files into the tree.
 
@@ -258,12 +259,19 @@ def pull(
         defaults to the process reporter (:func:`~protonfs.reporting.get_reporter`).
     :param no_restore: when true, do not download files this machine held that are now
         gone locally; count them in ``local_deleted_items`` instead.
+    :param only: pull just these repo-relative indexed files, in one pass, instead of
+        ``subpath`` (pass ``None``): each folder's files download together and the index
+        is saved once per folder, not once per file. Not combinable with ``refresh`` or
+        ``resolve``, whose Drive walks are scoped to ``subpath``.
     :returns: a :class:`~protonfs.drive.TransferResult` of what was fetched/skipped;
         ``local_deleted_items`` counts the files ``no_restore`` left alone.
     :raises protonfs.drive.DriveError: on a Drive or lock failure.
+    :raises ValueError: when ``only`` is combined with ``subpath``, ``refresh`` or
+        ``resolve``.
 
     .. versionchanged:: 3.1.0
-       Never downloads a ``.git`` path unless ``.protonfs/include`` names ``.git``.
+       Added ``only``, so the CLI pulls N named or matched files in one pass rather
+       than N. Never downloads a ``.git`` path unless ``.protonfs/include`` names ``.git``.
 
     .. seealso:: :func:`protonfs.commands.push.push` for the upload direction.
     """
@@ -273,16 +281,20 @@ def pull(
     # remote|local|both vocabulary lines up with push's `--resolve`.
     if resolve == "replace":
         resolve = "remote"
+    if only is not None and (subpath is not None or refresh or resolve is not None):
+        raise ValueError("pull: `only` cannot be combined with subpath, refresh or resolve")
     reporter = reporter or get_reporter()
-    reporter.phase("scanning local", subpath=subpath or ".")
+    if only is None:
+        reporter.phase("scanning local", subpath=subpath or ".")
+    else:
+        reporter.phase("scanning local", files=len(only))
     ignore = IgnoreMatcher.from_file(ctx.root)
     scan_root = Path(subpath) if subpath else Path(".")
-    from protonfs.hashcache import HashCache
 
     local = scan(
         ctx.root, scan_root, ignore, ctx.index,
         low_io=ctx.config.defaults.low_io, reporter=reporter,
-        hash_cache=HashCache(ctx.root),
+        hash_cache=ctx.hash_cache, only=only,
     )
     if refresh:
         from protonfs.commands.refresh import refresh as refresh_index
@@ -296,13 +308,13 @@ def pull(
     # lean and brings down only files absent locally -- it never overwrites a local file, so
     # it cannot clobber a local edit.
     remote = _remote_view(ctx, subpath) if resolve is not None else None
-    # #96: classify() reasons over the whole repo-wide index, but the scan (and walk)
-    # above are scoped to `subpath` -- without this filter every metadata-only index
-    # entry elsewhere in the repo classifies as pullable and `pull SUBPATH` downloads
-    # unrelated directories (and rate-limits itself doing so).
-    diff_entries = [
-        e for e in classify(local, ctx.index, remote) if within_subpath(e.rel_path, subpath)
-    ]
+    # #96: the scan (and walk) above are scoped to `subpath`, so classify must be too --
+    # otherwise every metadata-only index entry elsewhere in the repo classifies as
+    # pullable and `pull SUBPATH` downloads unrelated directories (and rate-limits
+    # itself doing so).
+    diff_entries = classify(local, ctx.index, remote, subpath=subpath)
+    if only is not None:
+        diff_entries = [e for e in diff_entries if e.rel_path in only]
 
     # Safe to bring down as-is: absent locally (remote-only / metadata-only), plus -- when we
     # have a remote view -- files the remote changed while the local copy stayed in sync.

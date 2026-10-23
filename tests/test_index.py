@@ -329,3 +329,17 @@ def test_an_index_written_by_an_earlier_release_is_at_check_level_0(tmp_path: Pa
     store.set_check_level(index_mod.CHECK_LEVEL)
     store.save()
     assert IndexStore(tmp_path).check_level == index_mod.CHECK_LEVEL
+
+
+def test_paths_within_finds_a_file_or_a_directory_s_files(tmp_path: Path) -> None:
+    store = IndexStore(tmp_path)
+    for rel in ("a/b", "a/c/d", "a-c", "ab", "z"):
+        store.set(rel, _entry())
+    assert store.paths_within(None) == ["a-c", "a/b", "a/c/d", "ab", "z"]
+    assert store.paths_within("a") == ["a/b", "a/c/d"]  # not 'a-c'/'ab', sorting beside 'a/'
+    assert store.paths_within("a/b") == ["a/b"]
+    assert store.paths_within("nope") == []
+    # later changes show up in the next answer
+    store.set("a/e", _entry())
+    store.remove("a/b")
+    assert store.paths_within("a") == ["a/c/d", "a/e"]

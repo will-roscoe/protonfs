@@ -319,3 +319,31 @@ def test_pair_moves_pairs_what_is_left_once_the_tie_breaks_have_run() -> None:
     )
 
     assert sorted(pairs) == [("a/x.jpg", "c/x.jpg"), ("b/y.jpg", "d/z.jpg")]
+
+
+def test_classify_scoped_to_a_subpath_equals_filtering_its_output(tmp_path) -> None:
+    index = IndexStore(tmp_path)
+    for rel in ("a/held", "a/gone", "a-c", "ab", "z/far"):
+        index.set(rel, _index_entry("h1"))
+    index.set("a/offloaded", _index_entry("h1", local_state="metadata-only"))
+    local = {"a/held": _scan_entry("h1"), "a/new": _scan_entry("h2")}
+    remote = {"a/held": _remote(), "a/remote-only": _remote(rel_path="a/remote-only")}
+    for sub in ("a", "a/held", "a/new", "ab", "z", "nope", None):
+        scoped_local = {k: v for k, v in local.items() if within_subpath(k, sub)}
+        for rem in (None, remote):
+            whole = [
+                e for e in classify(scoped_local, index, rem) if within_subpath(e.rel_path, sub)
+            ]
+            assert classify(scoped_local, index, rem, subpath=sub) == whole, (sub, rem)
+
+
+def test_classify_scoped_to_one_file_does_not_walk_the_whole_index(tmp_path) -> None:
+    import time
+
+    index = IndexStore(tmp_path)
+    for i in range(20_000):
+        index.set(f"d{i % 50}/f{i}", _index_entry("h1"))
+    start = time.perf_counter()
+    for i in range(2_000):  # `status FILE...` / `ls FILE...` run one pass per file
+        assert len(classify({}, index, subpath=f"d{i % 50}/f{i}")) == 1
+    assert time.perf_counter() - start < 1.0
