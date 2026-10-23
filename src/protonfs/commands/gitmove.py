@@ -22,6 +22,7 @@ from __future__ import annotations
 import posixpath
 import shutil
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from protonfs import gitops, importblock
 from protonfs.context import RepoContext
@@ -31,6 +32,21 @@ from protonfs.lfs import is_pointer_stub
 
 #: File names that configure git itself; import never moves them out of git.
 GIT_CONTROL_FILES = frozenset({".gitignore", ".gitattributes"})
+
+
+class Interrupted(KeyboardInterrupt):
+    """A Ctrl-C during :func:`import_from_git` or :func:`export_to_git`, carrying a
+    message that says exactly what state it left, for the CLI to print instead of a
+    generic "re-run to resume".
+
+    :ivar message: what was done and what was not, in words a user can act on.
+
+    .. versionadded:: 3.1.0
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.message = message
 
 
 @dataclass
@@ -60,6 +76,12 @@ def _ignore_pattern(root, rel: str) -> str | None:
             if pathspec.GitIgnoreSpec.from_lines([line]).match_file(rel):
                 hit = line.strip()
     return hit
+
+
+def _normalised(paths: list[str]) -> list[str]:
+    """``paths`` with ``./`` and doubled slashes removed and duplicates dropped, in order;
+    a path outside the store is kept as given, to be refused by name."""
+    return list(dict.fromkeys(posixpath.normpath(p) if _inside_store(p) else p for p in paths))
 
 
 def _inside_store(rel: str) -> bool:
@@ -210,8 +232,8 @@ def verify_imported(ctx: RepoContext, paths: list[str], reporter=None) -> list[d
     entry's sha256 (so push recorded these bytes), the blob ``HEAD`` records for it (as
     is, or after the end-of-line conversion git applies to that path), and a
     fresh listing of its Drive directory (:func:`~protonfs.indexcheck.check_index` verdict
-    ``OK``, and Drive's sha1 where Drive reports one). The fresh hashes are written to the
-    hash cache.
+    ``OK``, and Drive's sha1; a copy Drive reports no sha1 for is downloaded and compared
+    byte for byte). The fresh hashes are written to the hash cache.
 
     :param ctx: the loaded store context.
     :param paths: store-relative file paths, already pushed.
@@ -232,8 +254,9 @@ def verify_imported(ctx: RepoContext, paths: list[str], reporter=None) -> list[d
 def verify_exported(ctx: RepoContext, paths: list[str], reporter=None) -> list[dict]:
     """Verify each of ``paths`` is the latest synced version: a fresh read matches its
     index entry, and the index matches a fresh listing of its Drive directory
-    (:func:`~protonfs.indexcheck.check_index` verdict ``OK``, and Drive's sha1 where Drive
-    reports one), so what git is given is what Drive holds.
+    (:func:`~protonfs.indexcheck.check_index` verdict ``OK``, and Drive's sha1; a copy
+    Drive reports no sha1 for is downloaded and compared byte for byte), so what git is
+    given is what Drive holds.
 
     :param ctx: the loaded store context.
     :param paths: store-relative file paths, each present locally.
@@ -266,6 +289,7 @@ def _verify_synced(ctx, paths, reporter, *, blobs, changed) -> list[dict]:
     }
     cache = ctx.hash_cache
     failures = []
+    unchecked: list[tuple[str, str]] = []  # OK on size, but Drive has no sha1 to compare
     for rel in paths:
         entry = ctx.index.get(rel)
         if entry is None or entry.local_state != "present":
@@ -302,7 +326,53 @@ def _verify_synced(ctx, paths, reporter, *, blobs, changed) -> list[dict]:
             failures.append(_fail(rel, "unverified-drive", f"Drive check: {verdict}"))
         elif finding.ident is not None and finding.ident.sha1 and finding.ident.sha1 != sha1:
             failures.append(_fail(rel, "unverified-drive", "Drive's sha1 differs"))
+        elif finding.ident is None or not finding.ident.sha1:
+            unchecked.append((rel, sha256))
     cache.save()
+    # Without a checksum (a copy uploaded by another client), size alone cannot rule out
+    # a same-size different version, so compare those few byte for byte.
+    if unchecked:
+        failures += _compare_by_download(ctx, unchecked)
+    return failures
+
+
+def _compare_by_download(ctx: RepoContext, files: list[tuple[str, str]]) -> list[dict]:
+    """Download each ``(rel, sha256)``'s Drive copy to a staging directory and compare
+    it with ``sha256``; one failure per copy that differs or cannot be downloaded."""
+    import tempfile
+
+    from protonfs.commands.pull import _staging_dir
+    from protonfs.drive import DriveError
+    from protonfs.localscan import hash_file_digests
+
+    staging = _staging_dir(ctx)
+    failures = []
+    for rel, sha256 in files:
+        entry = ctx.index.get(rel)
+        tmp = tempfile.mkdtemp(dir=staging)
+        try:
+            ctx.drive.download(
+                [entry.remote_path], tmp, file_strategy="replace",
+                payload_bytes=entry.size or None,
+            )
+            landed = Path(tmp) / posixpath.basename(rel)
+            if not landed.is_file():
+                failures.append(_fail(
+                    rel, "unverified-drive", "Drive reports no checksum for it, and it "
+                    "could not be downloaded to compare",
+                ))
+            elif hash_file_digests(landed)[0] != sha256:
+                failures.append(_fail(
+                    rel, "unverified-drive", "Drive's copy differs (compared by download, "
+                    "as Drive reports no checksum for it)",
+                ))
+        except DriveError as exc:
+            failures.append(_fail(
+                rel, "unverified-drive", f"Drive reports no checksum for it, and "
+                f"downloading it to compare failed: {exc}",
+            ))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
     return failures
 
 
@@ -354,6 +424,7 @@ def import_from_git(
     from protonfs import manifest
     from protonfs.commands.push import push
 
+    paths = _normalised(paths)
     result = ImportResult(paths=list(paths))
     result.refusals = check_import(ctx, paths)
     if result.refusals:
@@ -409,6 +480,12 @@ def _git_step(ctx: RepoContext, paths: list[str], result: ImportResult) -> None:
             done.append(label)
     except BaseException as exc:  # noqa: BLE001 -- a Ctrl-C must roll back too
         _roll_back(ctx, paths, before, exc, done, current)
+        if isinstance(exc, KeyboardInterrupt):
+            raise Interrupted(
+                "interrupted -- every git change was undone, so nothing was imported. The "
+                "files already on Drive stay there; re-running import does not upload "
+                "them again."
+            ) from exc
         if not isinstance(exc, (gitops.GitError, OSError)):
             raise
         result.rolled_back = True
@@ -506,8 +583,11 @@ def check_export(ctx: RepoContext, paths: list[str]) -> list[Refusal]:
         else:
             candidates.append(norm)
 
-    for rel, path in ((".gitignore", importblock.gitignore_path(ctx.root)),
-                      (".protonfs/ignore", ignore_path(ctx.root))):
+    imported = importblock.block_paths(ctx.root)
+    staged = [(".protonfs/ignore", ignore_path(ctx.root))]
+    if any(rel in imported for rel in candidates):  # only then is .gitignore edited
+        staged.insert(0, (".gitignore", importblock.gitignore_path(ctx.root)))
+    for rel, path in staged:
         if path.exists() and (rel not in tracked or gitops.dirty_paths(ctx.root, [rel])):
             refusals.append(Refusal(rel, f"{rel} has uncommitted changes; commit them first"))
 
@@ -622,6 +702,7 @@ def export_to_git(
     from protonfs.reporting import get_reporter
 
     reporter = reporter or get_reporter()
+    paths = _normalised(paths)
     result = ExportResult(paths=list(paths))
     result.refusals = check_export(ctx, paths)
     if result.refusals:
@@ -643,11 +724,11 @@ def export_to_git(
         result.pulled = pull(
             ctx, None, None, False, reporter=reporter, only=set(result.to_download)
         )
-        why = {f["name"]: f["error"] for f in result.pulled.failures}  # keyed by file name
+        why = {f.get("path"): f["error"] for f in result.pulled.failures}
         for rel in result.to_download:
             entry = ctx.index.get(rel)
             if entry is None or entry.local_state != "present" or not (ctx.root / rel).is_file():
-                reason = why.get(posixpath.basename(rel))
+                reason = why.get(rel)
                 result.failures.append(_fail(
                     rel, "not-delivered",
                     "not downloaded from Drive" + (f": {reason}" if reason else ""),
@@ -661,23 +742,41 @@ def export_to_git(
     if result.refusals or result.failures:
         return result
 
-    if trash_remote:
-        from protonfs.commands.push import _trash_deleted
+    trashed = TransferResult(0, 0, 0, [])
+    try:
+        if trash_remote:
+            from protonfs.commands.push import _trash_deleted
 
-        trashed = TransferResult(0, 0, 0, [])
-        _trash_deleted(ctx, paths, [], trashed, reporter)
-        result.trashed = trashed.trashed_items
-        result.failures = [
-            _fail(f["name"], "trash", "its Drive copy is still there after trashing it; "
-                  f"git has the file, and `protonfs rm {f['name']}` trashes the copy")
-            for f in trashed.failures
-        ]
+            _trash_deleted(ctx, paths, [], trashed, reporter)
+            result.trashed = trashed.trashed_items
+            result.failures = [
+                _fail(f["name"], "trash", "its Drive copy is still there after trashing it; "
+                      f"git has the file, and `protonfs rm {f['name']}` trashes the copy")
+                for f in trashed.failures
+            ]
+        _forget(ctx, paths)
+        if manifest.update(ctx, forget=list(paths)) is not None:
+            ctx.index.save()
+    except KeyboardInterrupt as exc:
+        _forget(ctx, paths)
+        drive = (
+            f"{trashed.trashed_items} Drive copy(ies) were confirmed trashed; any others "
+            "may still be on Drive, and `protonfs rm PATH` trashes one."
+            if trash_remote else "Their Drive copies are kept."
+        )
+        raise Interrupted(
+            f"interrupted after the git step -- git now has {len(paths)} file(s) staged "
+            "and protonfs no longer syncs them, so review and commit as usual (re-running "
+            f"export would refuse them as already tracked). {drive}"
+        ) from exc
+    return result
+
+
+def _forget(ctx: RepoContext, paths: list[str]) -> None:
+    """Drop exported ``paths`` from the index and save it."""
     for rel in paths:
         ctx.index.remove(rel)
     ctx.index.save()
-    if manifest.update(ctx, forget=list(paths)) is not None:
-        ctx.index.save()
-    return result
 
 
 class _StillIgnored(Exception):
@@ -731,6 +830,11 @@ def _export_git_step(ctx: RepoContext, paths: list[str], result: ExportResult) -
             done.append(label)
     except BaseException as exc:  # noqa: BLE001 -- a Ctrl-C must roll back too
         _export_roll_back(ctx, paths, files, before, exc, done, current)
+        if isinstance(exc, KeyboardInterrupt):
+            raise Interrupted(
+                "interrupted -- every git change was undone, so nothing was exported. "
+                "Files it downloaded stay on disk and synced; re-run export to try again."
+            ) from exc
         if isinstance(exc, _StillIgnored):
             result.refusals = [
                 Refusal(rel, f"git would still ignore it, by the rule {rule}; export never "

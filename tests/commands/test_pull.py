@@ -487,7 +487,7 @@ def test_pull_subpath_scopes_true_remote_only_entries_too(
 
 
 def test_pull_cli_empty_index_without_refresh_prints_hint(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch, make_fake_drive
 ) -> None:
     from click.testing import CliRunner
 
@@ -495,6 +495,7 @@ def test_pull_cli_empty_index_without_refresh_prints_hint(
 
     init_config(tmp_path, "/my-files/test")
     ctx = load_context(tmp_path)  # empty index
+    ctx.drive = make_fake_drive()  # no remote manifest; never the real binary
     monkeypatch.setattr("protonfs.context.load_context", lambda *a, **k: ctx)
 
     result = CliRunner().invoke(main, ["pull"])
