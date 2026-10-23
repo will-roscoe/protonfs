@@ -458,7 +458,9 @@ advance, which a script, a cron job, ``ssh host 'protonfs setup'`` or any other 
 without a terminal must do: with neither, setup stops with exit ``1`` rather than wait
 on a question nobody can answer. Setup never repoints a store: in an existing one
 (including a fresh clone), ``--remote-root`` must name the store's own root, and a
-different one is refused, naming both, with nothing changed.
+different one is refused, naming both, with nothing changed. A new store's root must
+live under ``/my-files`` and carry no surrounding whitespace; anything else is refused
+before anything is written (a prompted answer is asked again).
 
 .. versionchanged:: 3.2.0
    Added ``--remote-root``.

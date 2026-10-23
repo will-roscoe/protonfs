@@ -9,6 +9,7 @@ control-file bookkeeping.
 """
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -87,26 +88,54 @@ def ensure_authenticated(drive: DriveClient) -> None:
 
 
 def _can_prompt() -> bool:
-    """Whether setup can ask a question: stdin is a terminal."""
-    return sys.stdin.isatty()
+    """Whether setup can ask a question: stdin is a terminal (and not closed)."""
+    return sys.stdin is not None and sys.stdin.isatty()
+
+
+def _new_root_problem(remote_root: str) -> str | None:
+    """Why Drive cannot hold ``remote_root`` as a new store's root, or ``None`` if it can."""
+    if remote_root != remote_root.strip():
+        return (
+            f"remote root {remote_root!r} starts or ends with whitespace; quote the path "
+            "without it"
+        )
+    root = _normalised_root(remote_root)
+    if not any(root == a or root.startswith(a + "/") for a in KNOWN_TOP_LEVEL_AREAS):
+        return (
+            f"remote root {remote_root!r} must live under "
+            f"{' or '.join(KNOWN_TOP_LEVEL_AREAS)} (e.g. /my-files/myproject): Proton "
+            "Drive's root only holds special areas"
+        )
+    return None
+
+
+def _normalised_root(remote_root: str) -> str:
+    """``remote_root`` with repeated ``/`` collapsed and any trailing ``/`` removed."""
+    return re.sub(r"/{2,}", "/", remote_root).rstrip("/")
 
 
 def _usable_new_root(remote_root: str) -> str:
-    """Return a new store's ``remote_root`` without its trailing ``/``, if Drive can hold it.
+    """Return a new store's ``remote_root`` normalised, if Drive can hold it.
 
-    :param remote_root: the root given by ``--remote-root`` or the prompt.
-    :returns: ``remote_root`` with any trailing ``/`` removed.
-    :raises click.ClickException: when it is not under a known Drive area such as
-        ``/my-files`` (``ensure_remote_root`` could never create it).
+    :param remote_root: the root given by ``--remote-root``.
+    :returns: ``remote_root`` with repeated ``/`` collapsed and any trailing ``/``
+        removed.
+    :raises click.ClickException: when it has surrounding whitespace or is not under a
+        known Drive area such as ``/my-files`` (``ensure_remote_root`` could never
+        create it).
     """
-    root = remote_root.rstrip("/")
-    if not any(root == a or root.startswith(a + "/") for a in KNOWN_TOP_LEVEL_AREAS):
-        raise click.ClickException(
-            f"remote root {remote_root!r} must live under "
-            f"{' or '.join(KNOWN_TOP_LEVEL_AREAS)} (e.g. /my-files/myproject): Proton "
-            "Drive's root only holds special areas. Nothing was set up."
-        )
-    return root
+    problem = _new_root_problem(remote_root)
+    if problem:
+        raise click.ClickException(f"{problem}. Nothing was set up.")
+    return _normalised_root(remote_root)
+
+
+def _prompted_root(value: str) -> str:
+    """``click.prompt``'s value check: a usable root, or a re-ask naming the problem."""
+    problem = _new_root_problem(value)
+    if problem:
+        raise click.UsageError(problem)
+    return _normalised_root(value)
 
 
 def check_remote_root(root: Path, remote_root: str | None) -> None:
@@ -132,7 +161,7 @@ def check_remote_root(root: Path, remote_root: str | None) -> None:
         return
     current = resolved_remote_root(root)
     if remote_root is not None and current is not None and (
-        remote_root.rstrip("/") != current.rstrip("/")
+        _normalised_root(remote_root) != _normalised_root(current)
     ):
         raise click.ClickException(
             f"this store's remote root is {current}, not {remote_root}; setup does not "
@@ -189,7 +218,8 @@ def ensure_config(root: Path, remote_root: str | None = None) -> Config:
         return existing
     if remote_root is None:  # check_remote_root ensured there is a terminal to ask on
         remote_root = click.prompt(
-            "Remote Drive root path for this repo (e.g. /my-files/myproject)"
+            "Remote Drive root path for this repo (e.g. /my-files/myproject)",
+            value_proc=_prompted_root,
         )
     return init_config(root, _usable_new_root(remote_root))
 

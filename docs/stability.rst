@@ -248,9 +248,10 @@ flag/argument name; these names, not just their presence, are frozen.
        existing one, ``--remote-root`` must name its own root.
      - ``0`` done; ``1`` operational failure (missing binary, keyring, not
        authenticated, Drive error, failed LFS upload, declined confirmation), or, since
-       3.2.0, a ``--remote-root`` that differs from the store's (nothing is changed) or
-       a new store with no ``--remote-root`` and no terminal to ask on; ``2`` usage
-       error.
+       3.2.0, a ``--remote-root`` that differs from the store's, a new store's root that
+       is not under ``/my-files`` or has surrounding whitespace, or a new store with no
+       ``--remote-root`` and no terminal to ask on (nothing is changed in any of these);
+       ``2`` usage error.
    * - ``deinit``
      - Remove ``.protonfs/`` from this directory (config, local config, index,
        refresh state, ignore/include, control ``.gitattributes``/``.gitignore``) after

@@ -181,7 +181,9 @@ def test_ensure_config_uses_the_given_remote_root_without_prompting(
     assert load_config(tmp_path).remote_root == "/my-files/sph-dev/products"
 
 
-@pytest.mark.parametrize("given", ["/my-files/existing", "/my-files/existing/"])
+@pytest.mark.parametrize(
+    "given", ["/my-files/existing", "/my-files/existing/", "/my-files//existing"]
+)
 def test_ensure_config_accepts_an_existing_stores_own_root(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, given: str
 ) -> None:
@@ -950,3 +952,52 @@ def test_cli_setup_bad_remote_root_fails_before_any_drive_step(
     assert "/my-files" in result.output
     assert load_config(tmp_path) is None
     assert fake.created_folders == []
+
+
+@pytest.mark.parametrize("bad", ["/my-files/x ", "/my-files/x\t", "\n/my-files/x"])
+def test_ensure_config_refuses_a_new_root_with_surrounding_whitespace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bad: str
+) -> None:
+    # a quoting slip must not create a Drive folder named "x "
+    monkeypatch.setattr(click, "prompt", _no_prompt)
+
+    with pytest.raises(click.ClickException, match="whitespace"):
+        ensure_config(tmp_path, remote_root=bad)
+
+    assert not (tmp_path / ".protonfs" / "config.json").exists()
+
+
+def test_ensure_config_collapses_repeated_slashes_in_a_new_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(click, "prompt", _no_prompt)
+
+    assert ensure_config(tmp_path, remote_root="/my-files//x///y/").remote_root == "/my-files/x/y"
+
+
+def test_check_remote_root_with_stdin_closed_fails_with_the_flag_hint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # `protonfs setup <&-` leaves sys.stdin None
+    monkeypatch.setattr(setup_mod.sys, "stdin", None)
+
+    with pytest.raises(click.ClickException, match="--remote-root"):
+        setup_mod.check_remote_root(tmp_path, None)
+
+
+def test_ensure_config_asks_again_after_a_prompted_root_drive_cannot_hold(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from click.testing import CliRunner
+
+    monkeypatch.setattr(setup_mod, "_can_prompt", lambda: True)
+
+    @click.command()
+    def probe() -> None:
+        click.echo(f"root={ensure_config(tmp_path).remote_root}")
+
+    result = CliRunner().invoke(probe, input="/proj\n/my-files/proj\n")
+
+    assert result.exit_code == 0, result.output
+    assert "must live under /my-files" in result.output
+    assert "root=/my-files/proj" in result.output
