@@ -1005,8 +1005,8 @@ class DriveClient:
 
         Each directory is listed with throttle backoff (#33). If `on_directory` is given it
         is called with that directory's FILE entries right after the directory is listed, so
-        a caller (refresh) can persist progress per directory -- if a later directory wedges
-        past the retry budget, everything already handed to `on_directory` is durable.
+        a caller (refresh) can record progress as it goes and keep it when a later directory
+        wedges past the retry budget (refresh saves it on that error).
 
         Resumability (#33 item 2): pass `frontier` to seed the BFS queue from a saved state
         instead of the root, and `on_progress` to be handed the queue's current contents

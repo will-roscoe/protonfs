@@ -312,3 +312,71 @@ def test_refresh_seeds_git_metadata_the_include_file_names(
     refresh(ctx, None, prune=False)
 
     assert ctx.index.get(".git/config") is not None
+
+
+def _walk_then_wedge(dirs: int, wedge: bool):
+    """A walk that seeds `dirs` folders, reporting the frontier after each, then
+    optionally throttles past the retry budget."""
+    from protonfs.drive import DriveThrottleError
+
+    def walk(remote_root, on_directory=None, *, sleep=None, frontier=None, on_progress=None):
+        for i in range(dirs):
+            on_directory([RemoteEntry(rel_path=f"run{i}/a", is_dir=False, size=4)])
+            on_progress([(f"{remote_root}/run{j}", f"uid{j}") for j in range(i + 1, dirs + 1)])
+        if wedge:
+            raise DriveThrottleError("remote is throttling")
+        return []
+
+    return walk
+
+
+def test_refresh_saves_progress_per_interval_not_per_folder(
+    tmp_path: Path, make_fake_drive, monkeypatch
+) -> None:
+    from protonfs import index as index_mod
+    from protonfs.index import IndexStore
+
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.drive = make_fake_drive()
+    ctx.drive.walk = _walk_then_wedge(20, wedge=False)
+    monkeypatch.setattr(index_mod, "CHECKPOINT_INTERVAL_S", 10.0)
+    monkeypatch.setattr(index_mod, "_monotonic", lambda: 0.0)  # no interval ever passes
+    writes = []
+    real_write = IndexStore._write_atomically
+    monkeypatch.setattr(
+        IndexStore, "_write_atomically",
+        lambda self, data: (writes.append(1), real_write(self, data)),
+    )
+
+    result = refresh(ctx, None, prune=False)
+
+    assert result.seeded == 20
+    assert len(writes) <= 2
+
+
+def test_an_interrupted_refresh_never_saves_its_frontier_ahead_of_the_index(
+    tmp_path: Path, make_fake_drive, monkeypatch
+) -> None:
+    # a resume starts from the saved frontier, so it must never be past folders whose
+    # seeded entries were not saved, or those entries are skipped for good
+    import pytest
+
+    from protonfs import index as index_mod
+    from protonfs.drive import DriveThrottleError
+    from protonfs.index import IndexStore
+
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.drive = make_fake_drive()
+    ctx.drive.walk = _walk_then_wedge(5, wedge=True)
+    monkeypatch.setattr(index_mod, "CHECKPOINT_INTERVAL_S", 10.0)
+    monkeypatch.setattr(index_mod, "_monotonic", lambda: 0.0)
+
+    with pytest.raises(DriveThrottleError):
+        refresh(ctx, None, prune=False)
+
+    reloaded = IndexStore(tmp_path)
+    assert {f"run{i}/a" for i in range(5)} <= set(reloaded.all())
+    saved = refreshstate.load_frontier(tmp_path, "/my-files/test")
+    assert saved is not None and [tuple(x) for x in saved] == [("/my-files/test/run5", "uid5")]
