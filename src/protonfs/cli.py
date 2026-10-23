@@ -10,6 +10,7 @@ surface these commands expose is documented in ``docs/stability.rst``.
 
 from __future__ import annotations
 
+import bisect
 import contextlib
 import fnmatch
 import functools
@@ -176,16 +177,20 @@ def _normalize_paths(paths: tuple[str, ...]) -> list[str | None]:
     slashes stripped) and drop paths nested inside another given path, so overlapping
     pathspecs are never processed twice.
     """
-    stripped: list[str] = []
+    stripped: dict[str, None] = {}  # an ordered set: a glob can hand over 10^5 paths
     for raw in paths:
         p = raw.rstrip("/")
         if p in ("", "."):
             return [None]  # repo root subsumes every other pathspec
-        if p not in stripped:
-            stripped.append(p)
+        stripped[p] = None
     if not stripped:
         return [None]
-    return [p for p in stripped if not any(r != p and p.startswith(f"{r}/") for r in stripped)]
+    # p is nested when some given r has p.startswith(r + "/"), i.e. when r is p cut at one
+    # of its slashes: look those few prefixes up instead of comparing every pair.
+    return [
+        p for p in stripped
+        if not any(p[:i] in stripped for i in range(1, len(p)) if p[i] == "/")
+    ]
 
 
 # #131: PATH arguments that are glob patterns (mload*, mload*/*.ev), expanded by protonfs
@@ -241,19 +246,26 @@ def _glob_local(root: Path, pattern: str) -> list[str]:
     return sorted(m.relative_to(root).as_posix() for m in root.glob(pattern))
 
 
-def _glob_tracked(root: Path, pattern: str, tracked: set[str]) -> list[str]:
+def _with_parent_dirs(tracked: set[str]) -> set[str]:
+    """Return `tracked` plus every directory holding one of its files: what
+    :func:`_glob_tracked` may match. Build it once per command, not once per pattern."""
+    dirs: set[str] = set()
+    for rel in tracked:
+        cut = rel.rfind("/")
+        while cut > 0 and rel[:cut] not in dirs:  # a known dir already has its parents
+            dirs.add(rel[:cut])
+            cut = rel.rfind("/", 0, cut)
+    return tracked | dirs
+
+
+def _glob_tracked(root: Path, pattern: str, matchable: set[str]) -> list[str]:
     """Expand `pattern` against the files git tracks under `root` (import's matcher).
 
-    Uses :func:`_glob_local`'s shell-glob semantics, then keeps only tracked files and
-    directories holding a tracked file, so a pattern never picks up an untracked or
-    gitignored file.
+    Uses :func:`_glob_local`'s shell-glob semantics, then keeps only paths in
+    `matchable` (:func:`_with_parent_dirs` of the tracked files), so a pattern never
+    picks up an untracked or gitignored file.
     """
-    dirs = {rel.rsplit("/", 1)[0] for rel in tracked if "/" in rel}
-    prefixes = set()
-    for d in dirs:
-        parts = d.split("/")
-        prefixes.update("/".join(parts[:i]) for i in range(1, len(parts) + 1))
-    return [m for m in _glob_local(root, pattern) if m in tracked or m in prefixes]
+    return [m for m in _glob_local(root, pattern) if m in matchable]
 
 
 def _git_control(rel: str) -> bool:
@@ -267,16 +279,23 @@ def _tracked_under(subpaths: list[str | None], tracked: set[str]) -> list[str]:
     """The files to import for `subpaths`: a tracked file itself, a directory's tracked
     files (``None`` = the whole store), and any other literal path as given, so the
     import's preconditions can refuse it by name."""
-    files: list[str] = []
+    ordered = sorted(tracked)
+    files: dict[str, None] = {}  # an ordered set
     for sub in subpaths:
         if sub is None:
-            under = sorted(tracked)
+            under = ordered
         elif sub in tracked:
             under = [sub]
         else:
-            under = sorted(rel for rel in tracked if rel.startswith(sub + "/")) or [sub]
-        files += [rel for rel in under if rel not in files]
-    return files
+            # the paths starting `sub/` are one contiguous run of the sorted list
+            prefix = sub + "/"
+            lo = bisect.bisect_left(ordered, prefix)
+            hi = lo
+            while hi < len(ordered) and ordered[hi].startswith(prefix):
+                hi += 1
+            under = ordered[lo:hi] or [sub]
+        files.update(dict.fromkeys(under))
+    return list(files)
 
 
 def _expand_pattern_index(index_keys: list[str] | set[str], pattern: str) -> list[str]:
@@ -1001,8 +1020,9 @@ def _import(ctx, path: tuple[str, ...], dry_run: bool, strict: bool) -> None:
             click.echo(f"  REFUSED {refusal.path}: {refusal.reason}")
         raise click.ClickException("nothing imported")
     tracked = {rel for rel in gitops.tracked_files(ctx.root) if not _git_control(rel)}
+    matchable = _with_parent_dirs(tracked)
     subpaths, unmatched = _resolve_pathspecs(
-        path, lambda p: _glob_tracked(ctx.root, p, tracked)
+        path, lambda p: _glob_tracked(ctx.root, p, matchable)
     )
     _report_unmatched(unmatched, strict, "import")
     files = _tracked_under(subpaths, tracked)
