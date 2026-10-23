@@ -963,3 +963,118 @@ def test_export_a_file_that_was_never_in_git(tmp_path, make_fake_drive) -> None:
     assert result.tracked == 1 and result.gitignore_removed == []
     assert "A  store/new.bin" in _status(ctx)
     assert "store/.gitignore" not in _status(ctx)
+
+
+def _cli_export(ctx, monkeypatch, *args: str):
+    from click.testing import CliRunner
+
+    from protonfs.cli import main
+
+    monkeypatch.chdir(ctx.root)
+    monkeypatch.setattr("protonfs.context.load_context", lambda *a, **k: ctx)
+    return CliRunner().invoke(main, ["export", *args])
+
+
+def test_cli_export_prints_summary_and_notes(tmp_path, make_fake_drive, monkeypatch) -> None:
+    ctx = _imported(tmp_path, make_fake_drive)
+
+    result = _cli_export(ctx, monkeypatch, *IMPORT)
+
+    assert result.exit_code == 0, result.output
+    assert "transferred=0 skipped=2 failed=0 tracked=2" in result.output
+    assert "git commit" in result.output
+    assert "Drive copies are kept" in result.output
+    assert "other clones" in result.output
+
+
+def test_cli_export_glob_matches_offloaded_files(tmp_path, make_fake_drive, monkeypatch) -> None:
+    from protonfs.commands.offload import offload
+
+    ctx = _imported(tmp_path, make_fake_drive)
+    offload(ctx, "frames", min_age=0)
+
+    result = _cli_export(ctx, monkeypatch, "frames/*")
+
+    assert result.exit_code == 0, result.output
+    assert "transferred=2 skipped=0 failed=0 tracked=2" in result.output
+
+
+def test_cli_export_dot_skips_protonfs_and_git_control_files(
+    tmp_path, make_fake_drive, monkeypatch
+) -> None:
+    from protonfs.commands.push import push
+
+    ctx = _imported(tmp_path, make_fake_drive)
+    push(ctx, None, None, False)  # the store syncs its own .gitignore too
+    assert ctx.index.get(".gitignore") is not None
+
+    result = _cli_export(ctx, monkeypatch, ".")
+
+    assert result.exit_code == 0, result.output
+    assert "tracked=2" in result.output
+
+
+def test_cli_export_refusal_exits_1(tmp_path, make_fake_drive, monkeypatch) -> None:
+    ctx = _imported(tmp_path, make_fake_drive)
+
+    result = _cli_export(ctx, monkeypatch, "frames/f0.mp4", "nope.bin")
+
+    assert result.exit_code == 1
+    assert "REFUSED nope.bin: not held by the store" in result.output
+    assert _status(ctx) == ""
+
+
+def test_cli_export_strict_fails_on_unmatched_glob(tmp_path, make_fake_drive, monkeypatch) -> None:
+    ctx = _imported(tmp_path, make_fake_drive)
+
+    result = _cli_export(ctx, monkeypatch, "--strict", "nomatch*")
+
+    assert result.exit_code == 1
+
+
+def test_cli_export_dry_run_lists_the_plan(tmp_path, make_fake_drive, monkeypatch) -> None:
+    ctx = _imported(tmp_path, make_fake_drive)
+
+    result = _cli_export(ctx, monkeypatch, "--dry-run", "frames")
+
+    assert result.exit_code == 0, result.output
+    assert "[dry-run] export frames/f0.mp4" in result.output
+    assert "[dry-run] would remove 2 line(s) from .gitignore" in result.output
+    assert "[dry-run] would add 2 line(s) to .protonfs/ignore" in result.output
+    assert "[dry-run] git --literal-pathspecs add" in result.output
+    assert _status(ctx) == ""
+
+
+def test_cli_export_trash_remote_summary(tmp_path, make_fake_drive, monkeypatch) -> None:
+    ctx = _imported(tmp_path, make_fake_drive)
+
+    result = _cli_export(ctx, monkeypatch, "--trash-remote", *IMPORT)
+
+    assert result.exit_code == 0, result.output
+    assert "tracked=2 trashed=2" in result.output
+
+
+def test_cli_export_verification_failure_exits_1(tmp_path, make_fake_drive, monkeypatch) -> None:
+    ctx = _imported(tmp_path, make_fake_drive)
+    (ctx.root / "frames" / "f0.mp4").write_bytes(b"edited, not pushed")
+
+    result = _cli_export(ctx, monkeypatch, *IMPORT)
+
+    assert result.exit_code == 1
+    assert "FAILED frames/f0.mp4" in result.output
+    assert _status(ctx) == ""
+
+
+def test_cli_export_reports_a_dropped_download_once(tmp_path, make_fake_drive, monkeypatch) -> None:
+    from protonfs.commands.offload import offload
+
+    ctx = _imported(tmp_path, make_fake_drive)
+    offload(ctx, "frames", min_age=0)
+    ctx.drive._download_dropped_files = {"f1.mp4"}
+
+    result = _cli_export(ctx, monkeypatch, *IMPORT)
+
+    assert result.exit_code == 1
+    assert "transferred=1 skipped=0 failed=1 tracked=0" in result.output
+    assert result.output.count("FAILED") == 1
+    assert "FAILED frames/f1.mp4: not downloaded from Drive" in result.output

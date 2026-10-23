@@ -637,10 +637,15 @@ def export_to_git(
         result.pulled = pull(
             ctx, None, None, False, reporter=reporter, only=set(result.to_download)
         )
+        why = {f["name"]: f["error"] for f in result.pulled.failures}  # keyed by file name
         for rel in result.to_download:
             entry = ctx.index.get(rel)
             if entry is None or entry.local_state != "present" or not (ctx.root / rel).is_file():
-                result.failures.append(_fail(rel, "not-delivered", "not downloaded from Drive"))
+                reason = why.get(posixpath.basename(rel))
+                result.failures.append(_fail(
+                    rel, "not-delivered",
+                    "not downloaded from Drive" + (f": {reason}" if reason else ""),
+                ))
         if result.failures:
             return result
     result.failures = verify_exported(ctx, paths, reporter=reporter)
