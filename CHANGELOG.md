@@ -8,10 +8,20 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 
 ## [Unreleased]
 
+## [3.1.0] - 2026-10-23
+
 ### Upgrade notes
 
 - **Ignore and include rules now apply to downloads too.** `pull` never downloads a file the store's `.protonfs/ignore`/`include` rules exclude, and says how many it left on Drive; `refresh` never indexes one; `status` and `ls` leave them out, so an excluded file on Drive no longer makes `status` exit 1. Excluding files you already hold deletes nothing, locally or on Drive, and their index entries are kept so bringing them back into scope resumes where it left off.
 - **`.git` no longer syncs.** protonfs never uploads, downloads or indexes a path with a `.git` segment (a repository's metadata, or a submodule's `.git` file) unless `.protonfs/include` names `.git`. A `.git` an earlier version pushed stays on Drive and is never pulled back; `protonfs rm -r .git` moves it to the Drive trash without touching the local repository.
+
+### Features
+
+- protonfs import and export (git <-> store), and the published 3.x contract (#208)
+
+### Documentation
+
+- date the #197 additions to 3.0.0, the release they shipped in (#204)
 
 ## [3.0.0] - 2026-10-20
 
@@ -794,7 +804,8 @@ the preceding development history and its first tagged release:
   line-matching, git-mutation error wrapping, `pathspec` deprecation, subpath
   prune data-loss fix.
 
-[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v3.0.0...HEAD
+[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v3.1.0...HEAD
+[3.1.0]: https://github.com/will-roscoe/protonfs/compare/v3.0.0...v3.1.0
 [3.0.0]: https://github.com/will-roscoe/protonfs/compare/v2.6.0...v3.0.0
 [2.6.0]: https://github.com/will-roscoe/protonfs/compare/v2.5.1...v2.6.0
 [2.5.1]: https://github.com/will-roscoe/protonfs/compare/v2.5.0...v2.5.1
