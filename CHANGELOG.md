@@ -8,6 +8,12 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 
 ## [Unreleased]
 
+## [3.1.1] - 2026-10-23
+
+### Bug fixes
+
+- paths holding [ ] * ? { reach proton-drive literally, and a failed call is an error (#220)
+
 ## [3.1.0] - 2026-10-23
 
 ### Upgrade notes
@@ -804,7 +810,8 @@ the preceding development history and its first tagged release:
   line-matching, git-mutation error wrapping, `pathspec` deprecation, subpath
   prune data-loss fix.
 
-[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v3.1.0...HEAD
+[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v3.1.1...HEAD
+[3.1.1]: https://github.com/will-roscoe/protonfs/compare/v3.1.0...v3.1.1
 [3.1.0]: https://github.com/will-roscoe/protonfs/compare/v3.0.0...v3.1.0
 [3.0.0]: https://github.com/will-roscoe/protonfs/compare/v2.6.0...v3.0.0
 [2.6.0]: https://github.com/will-roscoe/protonfs/compare/v2.5.1...v2.6.0
