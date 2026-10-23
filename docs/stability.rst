@@ -123,6 +123,9 @@ keys always print; optional keys print only when non-zero.
    * - ``import``
      - push's keys, plus ``untracked``
      - push's optional keys
+   * - ``export``
+     - ``transferred``, ``skipped``, ``failed``, ``tracked``
+     - ``trashed`` (with ``--trash-remote``)
 
 What each key counts:
 
@@ -138,6 +141,9 @@ What each key counts:
   alone on Drive.
 * ``unsettled`` -- files held back because they were modified within ``--min-age``.
 * ``untracked`` -- files ``import`` stopped git tracking (added in 3.1.0).
+* ``tracked`` -- files ``export`` staged for git to track (added in 3.1.0). For
+  ``export``, ``transferred`` counts offloaded files downloaded, ``skipped`` files
+  already on disk, and ``trashed`` Drive copies moved to the Drive trash.
 * ``offloaded`` / ``would offload`` -- local copies removed (or that would be);
   ``bytes_reclaimed`` -- their total size in bytes; ``skipped_unverified``,
   ``skipped_modified``, ``skipped_unsettled`` -- files offload refused, by reason.
@@ -181,7 +187,7 @@ see the CHANGELOG for everything else.
 **Added:**
 
 * Commands: ``completions`` (1.5.0), ``schedule`` (1.8.0), ``verify`` (2.1.0),
-  ``prune`` (2.2.0), ``import`` (3.1.0).
+  ``prune`` (2.2.0), ``import``, ``export`` (3.1.0).
 * Global options: ``-v``/``--verbose``, ``--progress-inline``/``--progress-lines``,
   ``--event-log``/``--no-event-log`` (1.3.0).
 * ``PATH...``: every command that takes a ``PATH`` accepts several, e.g. from a shell
@@ -298,6 +304,24 @@ flag/argument name; these names, not just their presence, are frozen.
        ``.gitignore`` with uncommitted changes, no git work tree), a file that
        failed verification, a git failure (rolled back), or a Drive/lock error; ``2``
        usage error.
+   * - ``export``
+     - Move files this store holds back into git (added in 3.1.0). Argument:
+       ``PATH...`` (required; a file, a directory meaning the files the store holds
+       under it that git does not track, or a quoted glob matching the files the store
+       holds, offloaded ones included). Options: ``--dry-run``, ``--strict``,
+       ``--trash-remote``. Guarantees: offloaded files are downloaded first; git is
+       changed only after every file is verified against its index entry and a fresh
+       Drive listing, and for every ``PATH`` or none; changes are staged, never
+       committed; git history is never touched; no file is changed or deleted; protonfs
+       stops syncing the files on every machine; their Drive copies are kept unless
+       ``--trash-remote``, which trashes them only after the git step; every refusal is
+       reported before anything is done.
+     - ``0`` exported, or a dry run with nothing refused; ``1`` a refusal (not held by
+       the store, already tracked by git, still ignored by a git rule export did not
+       write, a ``.gitignore``/``.gitattributes``, outside the store, a ``.gitignore``
+       or ``.protonfs/ignore`` with uncommitted changes, no git work tree), a file not
+       downloaded or not verified, a git failure (rolled back), a Drive copy
+       ``--trash-remote`` could not trash, or a Drive/lock error; ``2`` usage error.
    * - ``pull``
      - Download remote-only/changed files from Drive. Argument: ``PATH...`` (optional,
        repeatable; a shell glob, or a quoted pattern protonfs expands itself against the

@@ -47,6 +47,7 @@ EXPECTED_TOP_LEVEL_COMMANDS = frozenset(
         "trash",
         "verify",
         "import",
+        "export",
     }
 )
 
@@ -58,6 +59,7 @@ EXPECTED_TRASH_SUBCOMMANDS = frozenset({"list", "empty"})
 # subcommand of `config`).
 EXPECTED_OPTIONS: dict[str, frozenset[str]] = {
     "import": frozenset({"--dry-run", "--strict"}),
+    "export": frozenset({"--dry-run", "--strict", "--trash-remote"}),
     "setup": frozenset({"--dry-run", "--migrate-lfs", "--no-migrate-lfs"}),
     "deinit": frozenset({"--dry-run", "--yes"}),
     "status": frozenset({"--format", "--remote"}),
@@ -95,6 +97,7 @@ EXPECTED_OPTIONS: dict[str, frozenset[str]] = {
 
 EXPECTED_ARGUMENTS: dict[str, tuple[str, ...]] = {
     "import": ("path",),
+    "export": ("path",),
     "setup": (),
     "deinit": (),
     "status": ("path",),
@@ -256,6 +259,8 @@ EXPECTED_SUMMARY_KEYS = {
         {"transferred", "adopted", "moved", "trashed", "local-deleted", "skipped", "failed",
          "unsettled", "untracked"}
     ),
+    "export": frozenset({"transferred", "skipped", "failed", "tracked"}),
+    "export --trash-remote": frozenset({"transferred", "skipped", "failed", "tracked", "trashed"}),
 }
 
 _SUMMARY_MSG = (
@@ -402,7 +407,10 @@ def _summary_emitters() -> dict[str, int]:
 def test_no_other_command_prints_a_key_value_summary() -> None:
     """Every ``key={...}`` summary emitter in cli.py is one the tests above cover; a new
     emitter fails here, pointing at the output contract."""
-    covered = {"push", "pull", "prune", "_echo_offload_result", "_import", "_transfer_summary"}
+    covered = {
+        "push", "pull", "prune", "_echo_offload_result", "_import", "_export",
+        "_transfer_summary",
+    }
     emitters = _summary_emitters()
     assert {"_transfer_summary", "pull", "prune"} <= set(emitters), emitters  # scan works
     assert set(emitters) <= covered, (
@@ -477,3 +485,23 @@ def test_import_summary_key_set_is_frozen(tmp_path, monkeypatch) -> None:
     assert _summary_keys(_summary_line(out, "transferred=")) == EXPECTED_SUMMARY_KEYS[
         "import"
     ], _SUMMARY_MSG
+
+
+@pytest.mark.parametrize("flags", [(), ("--trash-remote",)])
+def test_export_summary_key_set_is_frozen(tmp_path, monkeypatch, flags) -> None:
+    from protonfs.commands.gitmove import ExportResult
+    from protonfs.index import IndexEntry
+
+    ctx = _store(tmp_path, monkeypatch)
+    ctx.index.set("a.bin", IndexEntry(1, 1.0, "", "", "/my-files/test/a.bin", "d", "present", "t"))
+    monkeypatch.setattr(
+        "protonfs.commands.gitmove.export_to_git",
+        lambda ctx, paths, **k: ExportResult(paths=list(paths), tracked=9, trashed=8),
+    )
+    monkeypatch.setattr("protonfs.gitops.tracked_files", lambda root: set())
+    monkeypatch.setattr("protonfs.gitops.in_work_tree", lambda root: True)
+    out = CliRunner().invoke(main, ["export", *flags, "a.bin"]).output
+    key = " ".join(["export", *flags])
+    assert _summary_keys(_summary_line(out, "transferred=")) == EXPECTED_SUMMARY_KEYS[key], (
+        _SUMMARY_MSG
+    )
