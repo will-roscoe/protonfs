@@ -26,6 +26,10 @@ rename is a true same-filesystem atomic operation), flushed and ``fsync``'d, the
 swapped onto the real path with ``os.replace``. A reader — or a crash at any
 point during the write — only ever sees the complete old file or the complete
 new one; a torn or truncated index is not a failure mode this design permits.
+After the rename, ``IndexStore.save`` also ``fsync``'s the directory, so the
+rename itself survives a power cut (best effort: some FUSE and network mounts
+refuse to ``fsync`` a directory). Since 3.1.0 the index is written as compact
+JSON, about a fifth smaller than the indented form and faster to build.
 
 On some network and FUSE mounts (glusterfs, observed) the temp file is
 occasionally gone by the time of the rename. The content is still in memory, so
@@ -52,21 +56,42 @@ without ``fcntl`` (documented in the module as the case pending issue #9 — in
 practice non-POSIX systems), it degrades to a no-op rather than blocking
 progress; two processes on such a platform are not protected against each other.
 
+Excluded files are never touched
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+A file the store's ``.protonfs/ignore``/``include`` rules exclude (``IgnoreMatcher``
+in ``src/protonfs/ignore.py``) is outside protonfs's scope in both directions: it is
+never uploaded, downloaded, indexed by ``refresh``, offloaded, or trashed, and
+``status``/``ls`` do not report it. Changing the rules so that files you already hold
+become excluded removes nothing: the local and Drive copies stay, and so do their index
+entries, so bringing the files back into scope resumes where they left off. Before
+3.1.0, ``pull`` and ``refresh`` brought excluded files down whenever they were missing
+locally, so a file excluded on purpose came back after every deletion.
+
 Resumable, idempotent push and pull
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 ``push`` and ``pull`` (``src/protonfs/commands/push.py``,
 ``src/protonfs/commands/pull.py``) both group their work by parent directory and
-call ``ctx.index.save()`` after each group completes, not just once at the end.
-Combined with the atomic-write guarantee above, this makes an interrupted run
+record each group in the index once it is confirmed (an upload seen in a Drive
+listing, a download found on disk), not just once at the end. The index is saved
+part-way through at most every ``CHECKPOINT_INTERVAL_S`` (10 s), and always at the
+end. Combined with the atomic-write guarantee above, this makes an interrupted run
 (Ctrl-C, a dropped connection, a killed process) crash-safe: the next invocation
-of the same command sees the index as it stood after the last completed group and
-only acts on what remains, rather than re-doing work already recorded or losing
-track of what happened before the interruption.
+sees the index as it stood at the last save and acts on what remains, repeating at
+most those few seconds of work. Before 3.1.0 the index was saved after every
+group; each save rewrites the whole file (1.6 s at 100,000 entries), so a run over
+thousands of folders spent most of its time saving.
 
-These per-group saves are checkpoints (``IndexStore.checkpoint``): if one fails,
+These progress saves are checkpoints (``IndexStore.checkpoint``): if one fails,
 the failure is logged and the run carries on, because the in-memory index still
 holds everything. The save at the end of the command persists it, and is the one
-that fails the command if it cannot (#170). ``offload`` saves the same way.
+that fails the command if it cannot (#170).
+
+``offload`` is stricter, because deleting a local copy cannot be undone. It records
+the verified files as metadata-only and saves the index *before* deleting them, in
+batches at most every ``CHECKPOINT_INTERVAL_S``; a failed save is retried once, and
+a second failure stops offload with the batch still on disk. An interruption can
+therefore never leave the index saying a deleted file is still held here, which
+``push --deletions trash`` would take for a local deletion of the only copy.
 
 Re-running ``push``/``pull`` on files that are already synced is a no-op — they
 classify as ``locally-indexed`` and are excluded from the transfer set — so
@@ -81,10 +106,12 @@ exponential backoff (bounded by ``PROTONFS_LIST_RETRIES`` /
 ``PROTONFS_LIST_BACKOFF`` / ``PROTONFS_LIST_BACKOFF_CAP``) before giving up on
 that call, so a single wedged directory doesn't blow up an otherwise-healthy
 walk. Beyond that, the walk's own frontier (the queue of directories not yet
-listed) is persisted after each directory via the atomic writer described above
-(``src/protonfs/refreshstate.py``), and metadata-only index entries are seeded
-and saved per-directory as they're discovered
-(``commands/refresh.py:_seed_directory``). If a run is interrupted partway — by
+listed) is persisted via the atomic writer described above
+(``src/protonfs/refreshstate.py``), always together with the index holding the
+metadata-only entries seeded so far (``commands/refresh.py:_seed_directory``), at
+most every ``CHECKPOINT_INTERVAL_S`` and when the walk is interrupted. The
+frontier is never saved ahead of the index, so a resumed walk never skips a
+directory whose entries were not saved. If a run is interrupted partway — by
 a throttle giving up, or by the process dying — the next ``refresh`` invocation
 resumes from the saved frontier instead of restarting the whole tree from the
 root (and re-triggering the same throttle).
@@ -211,6 +238,47 @@ It is held to these rules (``src/protonfs/manifest.py``):
 - **Maintenance is on by default** (:confval:`defaults.manifest`) and a
   manifest failure never fails the ``push``/``rm`` that triggered it: it is
   reported as a warning, and the command's own result stands.
+
+Moving files out of git keeps a copy at every step
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+``protonfs import`` (``src/protonfs/commands/gitmove.py``) stops git tracking files
+only after it has proved each one is on Drive. It pushes them, then reads every file
+once, whatever ``defaults.low_io`` says, and requires that the bytes match the index
+entry push wrote, the blob ``HEAD`` records for the file, and a fresh listing of its
+Drive directory (size and sha1). A Drive copy with no sha1 (uploaded by another client)
+is downloaded to a staging directory and compared byte for byte, since size alone cannot
+rule out a same-size different version. If any file fails, git is not
+changed at all; running the command again uploads only what is missing.
+
+When every file verifies, it writes one literal, anchored line per file into a
+marked block in the store's ``.gitignore``, runs ``git rm --cached``, and stages the
+``.gitignore``. It never commits, never rewrites history and never changes or deletes
+an imported file, so the bytes are still on disk, in git history and on Drive afterwards.
+A failing git command undoes every git change it made; if undoing fails too, the error
+lists the commands that finish the job by hand.
+
+Another clone that pulls the import commit loses the files from its work tree (git
+removes paths a commit untracks). Its index still lists them, so they look deleted
+locally; ``push`` never trashes a path listed in the import block, whatever
+``--deletions`` says, so those Drive copies stay, and a default ``pull`` brings the
+files back.
+
+``protonfs export`` moves files the other way with the same rules. It downloads any
+offloaded file, then reads every file once and requires that the bytes match the index
+entry and that the index matches a fresh listing of the file's Drive directory (a copy
+without a sha1 is downloaded and compared, as for import), so git
+is given the version Drive holds and never a stale copy that would replace a newer one
+another clone pushed. If any file fails, git is not changed. Git's side goes first: the
+import line is removed from ``.gitignore`` and the files are staged, and only then does
+the ``.protonfs/ignore`` export block that stops protonfs syncing them get written and
+staged. An interruption therefore leaves each file tracked by git, synced by protonfs,
+or both, never neither, and a failing git command undoes every change. The Drive
+copies stay unless ``--trash-remote`` is given, which trashes them only after the git
+step succeeded, so the file is then on disk and staged in git. Export never commits,
+never rewrites history, and never changes or deletes a local file. A Ctrl-C reports the
+state it left: during the git step every change is undone; after it, the files are
+staged and no longer synced, and any Drive copies not yet trashed are named as possibly
+still there.
 
 Settle window: nothing still being written is deleted
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

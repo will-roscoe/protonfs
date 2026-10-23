@@ -3,6 +3,8 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
+import pytest
+
 from protonfs.commands.offload import offload as _offload
 from protonfs.config import init_config
 from protonfs.context import load_context
@@ -452,3 +454,111 @@ def test_no_verify_reverifies_an_entry_whose_sync_time_cannot_be_read(
 
     assert result.offloaded == 1
     assert ctx.drive.identity_calls == ["/my-files/test"]
+
+
+@pytest.mark.parametrize("interval", [0.0, 10.0])
+def test_an_interrupted_offload_never_leaves_a_file_push_would_trash(
+    tmp_path: Path, make_fake_drive, monkeypatch, interval
+) -> None:
+    # The index must say a file is on Drive only (metadata-only) BEFORE its local copy is
+    # deleted. Deleting first left a kill mid-folder with the index still saying the file
+    # is held here, so `push --deletions trash` read it as a local deletion and trashed
+    # the only copy left, on Drive.
+    import pytest
+
+    from protonfs.commands.push import push
+
+    for i in range(10):
+        p = tmp_path / "run" / f"dump_{i:04d}"
+        p.parent.mkdir(exist_ok=True)
+        p.write_bytes(b"x" * (i + 1))
+    init_config(tmp_path, "/my-files/t")
+    ctx = load_context(tmp_path)
+    ctx.drive = make_fake_drive()
+    push(ctx, None, resolve=None, dry_run=False)
+
+    from protonfs import index as index_mod
+
+    monkeypatch.setattr(index_mod, "CHECKPOINT_INTERVAL_S", interval)
+    if interval:
+        monkeypatch.setattr(index_mod, "_monotonic", lambda: 0.0)  # never due
+    deleted = []
+    real_unlink = Path.unlink
+
+    def unlink_then_die(self, *a, **k):
+        if self.parent == tmp_path / "run" and len(deleted) == 5:
+            raise KeyboardInterrupt
+        deleted.append(self)
+        return real_unlink(self, *a, **k)
+
+    monkeypatch.setattr(Path, "unlink", unlink_then_die)
+    with pytest.raises(KeyboardInterrupt):
+        offload(ctx, None)
+    monkeypatch.setattr(Path, "unlink", real_unlink)
+
+    after = load_context(tmp_path)  # what a later run reads from disk
+    after.drive = ctx.drive
+    result = push(after, None, resolve=None, dry_run=False, deletions="trash")
+
+    assert result.trashed_items == 0
+    assert ctx.drive.trashed == []
+    assert len(list((tmp_path / "run").iterdir())) == 5  # the rest were never deleted
+
+
+def test_offload_deletes_nothing_when_the_index_cannot_be_saved(
+    tmp_path: Path, make_fake_drive, monkeypatch
+) -> None:
+    import errno
+
+    import pytest
+
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    fake = make_fake_drive()
+    ctx.drive = fake
+    (tmp_path / "run1").mkdir()
+    (tmp_path / "run1" / "a").write_bytes(b"data")
+    ctx.index.set("run1/a", _synced_entry(tmp_path / "run1" / "a", "/my-files/test/run1/a"))
+    fake.upload([tmp_path / "run1" / "a"], "/my-files/test/run1")
+
+    def broken(self, data):
+        raise OSError(errno.EIO, "simulated failed index save")
+
+    monkeypatch.setattr(IndexStore, "_write_atomically", broken)
+    with pytest.raises(OSError):
+        offload(ctx, None)
+
+    assert (tmp_path / "run1" / "a").exists()
+    assert ctx.index.get("run1/a").local_state == "present"
+
+
+def test_offload_saves_the_index_per_interval_not_per_folder(
+    tmp_path: Path, make_fake_drive, monkeypatch
+) -> None:
+    # 8,000 files in 2,000 folders took 145 s when every folder rewrote the whole index
+    from protonfs import index as index_mod
+    from protonfs.commands.push import push
+
+    for i in range(40):
+        p = tmp_path / f"run{i % 20}" / f"dump_{i:04d}"
+        p.parent.mkdir(exist_ok=True)
+        p.write_bytes(b"x" * (i + 1))
+    init_config(tmp_path, "/my-files/t")
+    ctx = load_context(tmp_path)
+    ctx.drive = make_fake_drive()
+    push(ctx, None, resolve=None, dry_run=False)
+    monkeypatch.setattr(index_mod, "CHECKPOINT_INTERVAL_S", 10.0)
+    monkeypatch.setattr(index_mod, "_monotonic", lambda: 0.0)  # no interval ever passes
+    writes = []
+    real_write = IndexStore._write_atomically
+    monkeypatch.setattr(
+        IndexStore, "_write_atomically",
+        lambda self, data: (writes.append(1), real_write(self, data)),
+    )
+
+    result = offload(ctx, None)
+
+    assert result.offloaded == 40
+    assert len(writes) <= 2
+    on_disk = IndexStore(tmp_path)
+    assert {on_disk.get(r).local_state for r in on_disk.all()} == {"metadata-only"}

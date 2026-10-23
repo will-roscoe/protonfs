@@ -17,9 +17,29 @@ protonfs is a normal PyPI package::
 
 Release history and per-version upgrade notes live in the repository's
 `CHANGELOG.md <https://github.com/will-roscoe/protonfs/blob/main/CHANGELOG.md>`_.
-Versioning follows the policy in :doc:`stability`: within ``1.x``, everything
-documented on that page keeps working; a breaking change to any of it requires a
-major-version bump.
+Versioning follows the policy in :doc:`stability`: within ``3.x``, everything
+documented on that page keeps working; a breaking change to any of it requires 4.0.0.
+
+From 3.0 to 3.1
+~~~~~~~~~~~~~~~
+Nothing to do for most stores. A store at a git repository's root no longer syncs ``.git``: protonfs never uploads, downloads or indexes a path with a ``.git`` segment unless ``.protonfs/include`` names ``.git``. If an earlier version already pushed
+``.git``, that copy stays on Drive and in the index but is never pulled back or
+trashed by ``push``; ``protonfs rm -r .git`` moves it to the Drive trash without
+touching the local repository.
+
+The ``.protonfs/ignore`` and ``.protonfs/include`` rules now apply to downloads as well
+as uploads: ``pull`` no longer brings down a file they exclude (it reports how many it
+left on Drive), ``refresh`` no longer indexes one, and ``status`` and ``ls`` leave them
+out, so an excluded file on Drive no longer makes ``status`` exit 1. Nothing already
+on disk or on Drive is removed.
+
+From 2.x to 3.0
+~~~~~~~~~~~~~~~
+Nothing to do. 3.0.0 is a major release by accident (a withdrawn breaking change's
+commit message reached the release tooling) and breaks nothing relative to 2.6.0.
+Features documented as "added in 2.7.0" before 3.0.0 was released shipped in 3.0.0;
+there is no 2.7.0. :doc:`stability` now states the 3.x contract, including what changed
+since 1.0.
 
 From 1.x to 2.0
 ~~~~~~~~~~~~~~~
@@ -29,7 +49,7 @@ no migration runs; only output and filters do:
 
 - ``synced`` is now ``locally-indexed`` -- in ``status`` lines, ``status --format
   json`` keys and ``ls`` output. ``ls --state synced`` still works, with a warning,
-  until the next major release; a script parsing the output needs the new name.
+  until 4.0.0; a script parsing the output needs the new name.
 - ``status --remote`` is new: it walks Drive and classifies against it.
 - ``status --format json`` gains a ``"remote": true|false`` field.
 - Exit codes are unchanged: every state keeps its clean/drift/conflict class.

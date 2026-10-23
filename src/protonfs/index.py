@@ -10,6 +10,7 @@ leaves a torn manifest.
 """
 from __future__ import annotations
 
+import bisect
 import errno
 import json
 import logging
@@ -32,6 +33,13 @@ INDEX_FILE_NAME = "index.json"
 _SAVE_ATTEMPTS = 5
 _SAVE_BACKOFF_S = 0.1
 _VANISHED_ERRNOS = frozenset({errno.ENOENT, errno.ESTALE})
+
+#: Seconds between the progress saves :meth:`IndexStore.checkpoint` makes. Each save
+#: rewrites the whole index (1.6 s and 39 MB at 100,000 entries), so a save per folder
+#: made a run over many folders quadratic; a crash loses at most this much progress,
+#: never data. :meth:`IndexStore.save` always writes.
+CHECKPOINT_INTERVAL_S = 10.0
+_monotonic = time.monotonic  # replaced in tests
 
 # On-disk schema version. Bump this whenever the persisted shape changes, and register a
 # forward migration below so existing repos upgrade transparently on their next save.
@@ -171,10 +179,12 @@ class IndexStore:
         """
         self._path = repo_root / ".protonfs" / INDEX_FILE_NAME
         self._entries: dict[str, IndexEntry] = {}
+        self._sorted_paths: list[str] | None = None  # paths_within's cache; None = stale
         self._manifest: dict | None = None
         self._underdelivered: dict[str, dict] = {}
         # A new index holds only what this release records; an existing one is read below.
         self._check_level = CHECK_LEVEL
+        self._last_saved = _monotonic()
         self._load()
 
     def _load(self) -> None:
@@ -237,10 +247,13 @@ class IndexStore:
             document["underdelivered"] = {
                 rel_path: dict(record) for rel_path, record in self._underdelivered.items()
             }
-        data = json.dumps(document, indent=2, sort_keys=True) + "\n"
+        # Compact: json's C encoder handles no `indent`, so this is ~2.5x faster to build
+        # and about a fifth smaller to write (and send, on a network filesystem).
+        data = json.dumps(document, sort_keys=True, separators=(",", ":")) + "\n"
         for attempt in range(_SAVE_ATTEMPTS):
             try:
                 self._write_atomically(data)
+                self._last_saved = _monotonic()
                 return
             except OSError as exc:
                 if exc.errno not in _VANISHED_ERRNOS or attempt == _SAVE_ATTEMPTS - 1:
@@ -254,19 +267,34 @@ class IndexStore:
     def checkpoint(self) -> bool:
         """Save progress part-way through a command, without letting a failure abort it.
 
-        A failed save leaves the in-memory index intact, so the command carries on and
-        its final :meth:`save` persists everything; that one raises if it fails too.
+        Writes only once :data:`CHECKPOINT_INTERVAL_S` has passed since the last save
+        (:meth:`checkpoint_due`); otherwise it does nothing. A failed save leaves the
+        in-memory index intact, so the command carries on and its final :meth:`save`
+        persists everything; that one raises if it fails too.
 
-        :returns: whether the index was saved.
+        :returns: ``False`` when a due save failed, else ``True``.
 
         .. versionadded:: 2.4.0
+
+        .. versionchanged:: 3.1.0
+           Saves at most once per :data:`CHECKPOINT_INTERVAL_S`, not on every call.
         """
+        if not self.checkpoint_due():
+            return True
         try:
             self.save()
         except OSError as exc:
             logger.warning("index progress save failed, will retry at the end: %s", exc)
             return False
         return True
+
+    def checkpoint_due(self) -> bool:
+        """Whether :data:`CHECKPOINT_INTERVAL_S` has passed since the last save, so the
+        next :meth:`checkpoint` writes.
+
+        .. versionadded:: 3.1.0
+        """
+        return _monotonic() - self._last_saved >= CHECKPOINT_INTERVAL_S
 
     def _write_atomically(self, data: str) -> None:
         """Write ``data`` to a fresh temp file beside the index and rename it into place."""
@@ -286,6 +314,19 @@ class IndexStore:
         except BaseException:
             tmp.unlink(missing_ok=True)
             raise
+        # The rename is durable only once the directory entry is: without this a power cut
+        # can bring the old index back even though the new one was written. Best effort,
+        # as some FUSE/network filesystems refuse fsync on a directory.
+        try:
+            dir_fd = os.open(self._path.parent, os.O_RDONLY)
+        except OSError:
+            return
+        try:
+            os.fsync(dir_fd)
+        except OSError:
+            pass
+        finally:
+            os.close(dir_fd)
 
     def get(self, rel_path: str) -> IndexEntry | None:
         """Return the entry for ``rel_path``, or ``None`` if it is not tracked."""
@@ -297,14 +338,40 @@ class IndexStore:
         An indexed file has nothing left to replace, so this clears its
         :meth:`underdelivered` record.
         """
+        if rel_path not in self._entries:
+            self._sorted_paths = None
         self._entries[rel_path] = entry
         self._underdelivered.pop(rel_path, None)
 
     def remove(self, rel_path: str) -> None:
         """Drop ``rel_path`` from the index if present (in memory until :meth:`save`),
         with its :meth:`underdelivered` record."""
-        self._entries.pop(rel_path, None)
+        if self._entries.pop(rel_path, None) is not None:
+            self._sorted_paths = None
         self._underdelivered.pop(rel_path, None)
+
+    def paths_within(self, subpath: str | None) -> list[str]:
+        """Return the indexed paths that :func:`~protonfs.diff.within_subpath` keeps for
+        ``subpath`` (``subpath`` itself and everything under it; every path for ``None``),
+        sorted, without reading every entry: a pass over one file costs a lookup, not the
+        whole index.
+
+        .. versionadded:: 3.1.0
+        """
+        if self._sorted_paths is None:
+            self._sorted_paths = sorted(self._entries)
+        paths = self._sorted_paths
+        if not subpath:
+            return list(paths)
+        # `subpath` and `subpath/...` are not adjacent in sorted order ('a-c' sorts
+        # between 'a' and 'a/b'), so look the path up and range over its children.
+        found = [subpath] if subpath in self._entries else []
+        prefix = f"{subpath}/"
+        i = bisect.bisect_left(paths, prefix)
+        while i < len(paths) and paths[i].startswith(prefix):
+            found.append(paths[i])
+            i += 1
+        return found
 
     def all(self) -> dict[str, IndexEntry]:
         """Return a shallow copy of the full ``{rel_path: entry}`` map."""

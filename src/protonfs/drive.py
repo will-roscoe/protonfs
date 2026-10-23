@@ -157,6 +157,8 @@ class TransferResult:
         locally (``deletions="trash"``); with a dry run, the ones it would. Populated by
         push.
     :ivar trashed: the repo-relative paths counted in ``trashed_items``.
+    :ivar excluded_items: files pull left on Drive because the store's
+        ``.protonfs/ignore``/``include`` rules exclude them. Populated by pull.
 
     .. versionchanged:: 1.7.0
        Added ``adopted_items`` for the push self-heal-adopt path.
@@ -168,6 +170,9 @@ class TransferResult:
        Added ``local_deleted_items`` for the local deletions pull and push left alone,
        ``moved_items`` for the local moves push applies on Drive, and ``trashed_items``
        and ``trashed`` for the local deletions it sends to the Drive trash (#197).
+
+    .. versionchanged:: 3.1.0
+       Added ``excluded_items``.
     """
 
     transferred_items: int
@@ -178,6 +183,7 @@ class TransferResult:
     unsettled_items: int = 0
     local_deleted_items: int = 0
     moved_items: int = 0
+    excluded_items: int = 0
     trashed_items: int = 0
     trashed: list[str] = field(default_factory=list)
 
@@ -1005,8 +1011,8 @@ class DriveClient:
 
         Each directory is listed with throttle backoff (#33). If `on_directory` is given it
         is called with that directory's FILE entries right after the directory is listed, so
-        a caller (refresh) can persist progress per directory -- if a later directory wedges
-        past the retry budget, everything already handed to `on_directory` is durable.
+        a caller (refresh) can record progress as it goes and keep it when a later directory
+        wedges past the retry budget (refresh saves it on that error).
 
         Resumability (#33 item 2): pass `frontier` to seed the BFS queue from a saved state
         instead of the root, and `on_progress` to be handed the queue's current contents

@@ -8,7 +8,16 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 
 ## [Unreleased]
 
+### Upgrade notes
+
+- **Ignore and include rules now apply to downloads too.** `pull` never downloads a file the store's `.protonfs/ignore`/`include` rules exclude, and says how many it left on Drive; `refresh` never indexes one; `status` and `ls` leave them out, so an excluded file on Drive no longer makes `status` exit 1. Excluding files you already hold deletes nothing, locally or on Drive, and their index entries are kept so bringing them back into scope resumes where it left off.
+- **`.git` no longer syncs.** protonfs never uploads, downloads or indexes a path with a `.git` segment (a repository's metadata, or a submodule's `.git` file) unless `.protonfs/include` names `.git`. A `.git` an earlier version pushed stays on Drive and is never pulled back; `protonfs rm -r .git` moves it to the Drive trash without touching the local repository.
+
 ## [3.0.0] - 2026-10-20
+
+### Upgrade notes
+
+- **3.0.0 is a major release by accident.** A breaking change in #203 was withdrawn before merge, but its `BREAKING CHANGE:` footer stayed in the squash commit's message and the release tooling cut a major. Nothing breaks relative to 2.6.0; there is nothing to do when upgrading. Features documented as "added in 2.7.0" before this release shipped in 3.0.0; 2.7.0 was never released
 
 ### Bug fixes
 

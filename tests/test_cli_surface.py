@@ -1,11 +1,11 @@
 # tests/test_cli_surface.py
 """Freeze test for the CLI surface (#12, M4.1).
 
-The command set, and every option/argument name per command, is documented as a
-stable 1.0 contract in ``docs/stability.rst``. This test asserts the *exact* set --
-not a subset -- so an accidental addition, removal, or rename of a command/option
-fails CI here, pointing back at that doc, rather than silently shipping a breaking
-change with no major-version bump.
+The command set, every option/argument name per command, the summary-line keys and
+the ``--format json`` keys are documented as the stable 3.x contract in
+``docs/stability.rst``. These tests assert the *exact* sets -- not subsets -- so an
+accidental addition, removal, or rename fails CI here, pointing back at that doc,
+rather than silently shipping a breaking change. A removal or rename needs 4.0.0.
 
 If you are here because this test just failed: either you made an unintentional
 change (revert it), or you're intentionally growing/changing the CLI surface, in
@@ -46,6 +46,8 @@ EXPECTED_TOP_LEVEL_COMMANDS = frozenset(
         "config",
         "trash",
         "verify",
+        "import",
+        "export",
     }
 )
 
@@ -56,6 +58,8 @@ EXPECTED_TRASH_SUBCOMMANDS = frozenset({"list", "empty"})
 # e.g. "-r"/"--recursive") and argument names, keyed by command name (dotted for a
 # subcommand of `config`).
 EXPECTED_OPTIONS: dict[str, frozenset[str]] = {
+    "import": frozenset({"--dry-run", "--strict"}),
+    "export": frozenset({"--dry-run", "--strict", "--trash-remote"}),
     "setup": frozenset({"--dry-run", "--migrate-lfs", "--no-migrate-lfs"}),
     "deinit": frozenset({"--dry-run", "--yes"}),
     "status": frozenset({"--format", "--remote"}),
@@ -92,6 +96,8 @@ EXPECTED_OPTIONS: dict[str, frozenset[str]] = {
 }
 
 EXPECTED_ARGUMENTS: dict[str, tuple[str, ...]] = {
+    "import": ("path",),
+    "export": ("path",),
     "setup": (),
     "deinit": (),
     "status": ("path",),
@@ -223,3 +229,279 @@ def test_group_level_global_options_are_frozen() -> None:
         "-v", "--verbose", "--progress-inline", "--progress-lines",
         "--event-log", "--no-event-log",
     } <= opts
+
+
+# --- the output contract: summary-line keys (3.x) ---------------------------------------
+#
+# Each transfer command prints one `[<label>: ]key=value ...` summary line on stdout. The
+# key names are part of the 3.x contract (docs/stability.rst, "Output contract"): within
+# 3.x a key is never renamed, removed or given a new meaning. Optional keys print only
+# when non-zero, so every stub below sets every counter non-zero. Adding a key is
+# additive for callers (they ignore unknown keys) but must update this set and the doc
+# together.
+
+EXPECTED_SUMMARY_KEYS = {
+    "push": frozenset(
+        {"transferred", "adopted", "moved", "trashed", "local-deleted", "skipped", "failed",
+         "unsettled"}
+    ),
+    "pull": frozenset({"transferred", "skipped", "failed", "local-deleted"}),
+    "offload": frozenset(
+        {"offloaded", "bytes_reclaimed", "skipped_unverified", "skipped_modified",
+         "skipped_unsettled"}
+    ),
+    "offload --dry-run": frozenset(
+        {"would offload", "bytes_reclaimed", "skipped_unverified", "skipped_modified",
+         "skipped_unsettled"}
+    ),
+    "prune pushed:": frozenset({"transferred", "skipped", "failed"}),
+    "import": frozenset(
+        {"transferred", "adopted", "moved", "trashed", "local-deleted", "skipped", "failed",
+         "unsettled", "untracked"}
+    ),
+    "export": frozenset({"transferred", "skipped", "failed", "tracked"}),
+    "export --trash-remote": frozenset({"transferred", "skipped", "failed", "tracked", "trashed"}),
+}
+
+_SUMMARY_MSG = (
+    "summary keys changed -- update docs/stability.rst 'Output contract' and this set "
+    "together"
+)
+
+
+def _summary_keys(line: str) -> set[str]:
+    """The key names on one summary line, without an optional ``<label>: `` prefix.
+
+    ``would offload=N`` (offload's dry-run form) is one key, ``would offload``.
+    """
+    label, sep, rest = line.partition(": ")
+    body = rest if sep and "=" not in label else line
+    keys = set()
+    if body.startswith("would offload="):
+        keys.add("would offload")
+        body = body[len("would offload="):]
+    keys |= {token.split("=", 1)[0] for token in body.split() if "=" in token}
+    return keys
+
+
+def _summary_line(output: str, marker: str) -> str:
+    for line in output.splitlines():
+        if line.startswith(marker) or f" {marker}" in line:
+            return line
+    raise AssertionError(f"no summary line containing {marker!r} in:\n{output}")
+
+
+def _store(tmp_path, monkeypatch):
+    from protonfs.config import init_config
+    from protonfs.context import load_context
+
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("protonfs.context.load_context", lambda *a, **k: ctx)
+    return ctx
+
+
+def _all_counters_transfer():
+    from protonfs.drive import TransferResult
+
+    return TransferResult(
+        1, 2, 3, [], adopted_items=4, unsettled_items=5, local_deleted_items=6,
+        moved_items=7, trashed_items=8, trashed=["t"],
+    )
+
+
+def _all_counters_offload():
+    from protonfs.commands.offload import OffloadResult
+
+    return OffloadResult(
+        offloaded=1, skipped_unverified=2, skipped_modified=3, bytes_reclaimed=4,
+        skipped_unsettled=5,
+    )
+
+
+def test_push_summary_key_set_is_frozen(tmp_path, monkeypatch) -> None:
+    _store(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "protonfs.commands.push.push", lambda *a, **k: _all_counters_transfer()
+    )
+    out = CliRunner().invoke(main, ["push"]).output
+    assert _summary_keys(_summary_line(out, "transferred=")) == EXPECTED_SUMMARY_KEYS[
+        "push"
+    ], _SUMMARY_MSG
+
+
+def test_pull_summary_key_set_is_frozen(tmp_path, monkeypatch) -> None:
+    from protonfs.index import IndexEntry
+
+    ctx = _store(tmp_path, monkeypatch)
+    ctx.index.set("a.bin", IndexEntry(1, 0.0, "", "", "/my-files/test/a.bin", "d", "present", ""))
+    monkeypatch.setattr(
+        "protonfs.commands.pull.pull", lambda *a, **k: _all_counters_transfer()
+    )
+    out = CliRunner().invoke(main, ["pull"]).output
+    assert _summary_keys(_summary_line(out, "transferred=")) == EXPECTED_SUMMARY_KEYS[
+        "pull"
+    ], _SUMMARY_MSG
+
+
+@pytest.mark.parametrize(
+    ("args", "key", "marker"),
+    [
+        (["offload", "--yes"], "offload", "offloaded="),
+        (["offload", "--dry-run"], "offload --dry-run", "would offload="),
+    ],
+)
+def test_offload_summary_key_set_is_frozen(tmp_path, monkeypatch, args, key, marker) -> None:
+    _store(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "protonfs.commands.offload.offload", lambda *a, **k: _all_counters_offload()
+    )
+    out = CliRunner().invoke(main, args).output
+    assert _summary_keys(_summary_line(out, marker)) == EXPECTED_SUMMARY_KEYS[key], (
+        _SUMMARY_MSG
+    )
+
+
+def test_prune_pushed_line_key_set_is_frozen(tmp_path, monkeypatch) -> None:
+    from protonfs.commands.prune import PruneResult
+
+    _store(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "protonfs.commands.prune.prune",
+        lambda *a, **k: PruneResult(pushed=_all_counters_transfer(), considered=1),
+    )
+    out = CliRunner().invoke(main, ["prune", "--yes"]).output
+    assert _summary_keys(_summary_line(out, "pushed: ")) == EXPECTED_SUMMARY_KEYS[
+        "prune pushed:"
+    ], _SUMMARY_MSG
+
+
+def _summary_emitters() -> dict[str, int]:
+    """``{function or command name: count}`` of ``key={...}`` f-strings in cli.py.
+
+    Scans module-level functions and every Click command's callback (Click replaces the
+    decorated function with a Command, so a plain function scan misses them).
+    """
+    import inspect
+    import re
+
+    import protonfs.cli as cli
+
+    pattern = re.compile(r'f"[^"\n]*?[a-z_-]+=\{')
+    funcs = {
+        name: fn for name, fn in inspect.getmembers(cli, inspect.isfunction)
+        if fn.__module__ == cli.__name__
+    }
+    for name, cmd in _leaf_commands().items():
+        if cmd.callback is not None and cmd.callback.__module__ == cli.__name__:
+            funcs[name] = cmd.callback
+    emitters = {}
+    for name, fn in funcs.items():
+        hits = pattern.findall(inspect.getsource(inspect.unwrap(fn)))
+        if hits:
+            emitters[name] = len(hits)
+    return emitters
+
+
+def test_no_other_command_prints_a_key_value_summary() -> None:
+    """Every ``key={...}`` summary emitter in cli.py is one the tests above cover; a new
+    emitter fails here, pointing at the output contract."""
+    covered = {
+        "push", "pull", "prune", "_echo_offload_result", "_import", "_export",
+        "_transfer_summary",
+    }
+    emitters = _summary_emitters()
+    assert {"_transfer_summary", "pull", "prune"} <= set(emitters), emitters  # scan works
+    assert set(emitters) <= covered, (
+        f"new key=value summary emitter(s) {sorted(set(emitters) - covered)} -- add them "
+        "to EXPECTED_SUMMARY_KEYS and docs/stability.rst 'Output contract'"
+    )
+
+
+# --- the output contract: --format json keys (3.x) --------------------------------------
+
+EXPECTED_JSON_KEYS = {
+    "status": frozenset({"counts", "exit_code", "remote"}),
+    "ls": frozenset({"path", "state"}),
+    "ls --dirs": frozenset(
+        {"path", "files", "local_bytes", "indexed_bytes", "apparent_bytes", "states"}
+    ),
+    "ls --trash": frozenset({"name", "type"}),
+}
+
+_JSON_MSG = (
+    "--format json keys changed -- update docs/stability.rst 'Output contract' and this "
+    "set together"
+)
+
+
+def test_status_json_keys_are_frozen(tmp_path, monkeypatch) -> None:
+    import json
+
+    _store(tmp_path, monkeypatch)
+    out = CliRunner().invoke(main, ["status", "--format", "json"]).output
+    assert set(json.loads(out)) == EXPECTED_JSON_KEYS["status"], _JSON_MSG
+
+
+@pytest.mark.parametrize(
+    ("args", "key"),
+    [
+        (["ls", "--format", "json"], "ls"),
+        (["ls", "--dirs", "--format", "json"], "ls --dirs"),
+        (["ls", "--trash", "--format", "json"], "ls --trash"),
+    ],
+)
+def test_ls_json_row_keys_are_frozen(tmp_path, monkeypatch, make_fake_drive, args, key) -> None:
+    import json
+
+    ctx = _store(tmp_path, monkeypatch)
+    ctx.drive = make_fake_drive(
+        trash_listing=[{"name": {"ok": True, "value": "old.bin"}, "type": "file"}]
+    )
+    (tmp_path / "d").mkdir()
+    (tmp_path / "d" / "a.bin").write_bytes(b"abc")
+    result = CliRunner().invoke(main, args)
+    rows = json.loads(result.output)
+    assert rows, result.output  # every shape printed at least one row
+    for row in rows:
+        assert set(row) == EXPECTED_JSON_KEYS[key], _JSON_MSG
+
+
+def test_import_summary_key_set_is_frozen(tmp_path, monkeypatch) -> None:
+    from protonfs.commands.gitmove import ImportResult
+
+    _store(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "protonfs.commands.gitmove.import_from_git",
+        lambda ctx, paths, **k: ImportResult(
+            paths=list(paths), pushed=_all_counters_transfer(), untracked=9
+        ),
+    )
+    monkeypatch.setattr("protonfs.gitops.tracked_files", lambda root: {"a.bin"})
+    monkeypatch.setattr("protonfs.gitops.in_work_tree", lambda root: True)
+    (tmp_path / "a.bin").write_bytes(b"a")
+    out = CliRunner().invoke(main, ["import", "a.bin"]).output
+    assert _summary_keys(_summary_line(out, "transferred=")) == EXPECTED_SUMMARY_KEYS[
+        "import"
+    ], _SUMMARY_MSG
+
+
+@pytest.mark.parametrize("flags", [(), ("--trash-remote",)])
+def test_export_summary_key_set_is_frozen(tmp_path, monkeypatch, flags) -> None:
+    from protonfs.commands.gitmove import ExportResult
+    from protonfs.index import IndexEntry
+
+    ctx = _store(tmp_path, monkeypatch)
+    ctx.index.set("a.bin", IndexEntry(1, 1.0, "", "", "/my-files/test/a.bin", "d", "present", "t"))
+    monkeypatch.setattr(
+        "protonfs.commands.gitmove.export_to_git",
+        lambda ctx, paths, **k: ExportResult(paths=list(paths), tracked=9, trashed=8),
+    )
+    monkeypatch.setattr("protonfs.gitops.tracked_files", lambda root: set())
+    monkeypatch.setattr("protonfs.gitops.in_work_tree", lambda root: True)
+    out = CliRunner().invoke(main, ["export", *flags, "a.bin"]).output
+    key = " ".join(["export", *flags])
+    assert _summary_keys(_summary_line(out, "transferred=")) == EXPECTED_SUMMARY_KEYS[key], (
+        _SUMMARY_MSG
+    )

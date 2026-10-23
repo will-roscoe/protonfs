@@ -110,3 +110,44 @@ def test_init_include_does_not_overwrite_existing_file(tmp_path: Path) -> None:
     include_path(tmp_path).write_text(custom)
     init_include(tmp_path)
     assert include_path(tmp_path).read_text() == custom
+
+
+# --- .git is never synced unless the include file names it -----------------------------
+
+
+def test_git_dirs_and_gitlinks_are_excluded_by_default() -> None:
+    matcher = IgnoreMatcher([])
+    assert matcher.matches(".git/HEAD")
+    assert matcher.matches(".git/objects/ab/cdef")
+    assert matcher.matches("sub/repo/.git/config")  # a nested repository
+    assert matcher.matches("sub/module/.git")  # a submodule's or worktree's gitlink file
+    # names that merely start with .git are ordinary files
+    for rel in (".gitignore", ".gitattributes", ".github/workflows/ci.yml", "a.git", "x/.git2"):
+        assert not matcher.matches(rel)
+
+
+def test_ignore_file_cannot_re_include_git() -> None:
+    assert IgnoreMatcher(["!.git/", "!.git/HEAD"]).matches(".git/HEAD")
+
+
+def test_include_that_does_not_name_git_leaves_it_excluded() -> None:
+    matcher = IgnoreMatcher([], include_patterns=["*", "**/*", "*HEAD", ".gi*/"])
+    assert matcher.matches(".git/HEAD")
+    assert not matcher.matches("data/run.ev")
+
+
+def test_include_naming_git_syncs_what_it_matches() -> None:
+    matcher = IgnoreMatcher([], include_patterns=[".git/", "*.ev"])
+    assert not matcher.matches(".git/HEAD")
+    assert not matcher.matches(".git/objects/ab/cdef")
+    assert not matcher.matches("sub/.git/HEAD")  # gitignore: no inner slash = any depth
+    assert not matcher.matches("data/run.ev")
+    assert matcher.matches("data/run.txt")
+
+
+def test_include_negations_and_ignore_still_apply_to_git() -> None:
+    matcher = IgnoreMatcher([".git/config"], include_patterns=["/.git/", "!*.sample"])
+    assert not matcher.matches(".git/HEAD")
+    assert matcher.matches(".git/config")  # ignore always wins
+    assert matcher.matches(".git/hooks/pre-commit.sample")  # a negation elsewhere in include
+    assert matcher.matches("sub/.git/HEAD")  # `/.git/` is anchored to the store root

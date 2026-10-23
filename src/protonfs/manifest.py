@@ -547,9 +547,14 @@ def seed_index(ctx: RepoContext) -> tuple[int, int] | None:
 
     :returns: ``(entries seeded, manifest generation)``, or ``None`` when there is no
         readable manifest (or ``$PROTONFS_NO_MANIFEST`` is set).
+
+    .. versionchanged:: 3.1.0
+       Never seeds a path the store's ``.protonfs/ignore``/``include`` rules exclude
+       (``.git`` and exported files included).
     """
     if disabled():
         return None
+    from protonfs.ignore import IgnoreMatcher
     from protonfs.index import IndexEntry
     from protonfs.reporting import get_reporter
 
@@ -563,9 +568,12 @@ def seed_index(ctx: RepoContext) -> tuple[int, int] | None:
     now = _now()
     root = _remote_root(ctx)
     seeded = 0
+    ignore = IgnoreMatcher.from_file(ctx.root)
     for rel, entry in handle.manifest.entries.items():
         if is_control_path(rel) or ctx.index.get(rel) is not None:
             continue
+        if ignore.matches(rel):
+            continue  # out of this store's scope (ignore/include, .git, exported)
         ctx.index.set(
             rel,
             IndexEntry(

@@ -116,7 +116,11 @@ def _verdict(entry: IndexEntry, ident: RemoteIdentity | None) -> Verdict:
 
 
 def check_index(
-    ctx: RepoContext, subpath: str | None = None, reporter=None
+    ctx: RepoContext,
+    subpath: str | None = None,
+    reporter=None,
+    *,
+    only: set[str] | None = None,
 ) -> IndexCheck:
     """Compare every index entry (under ``subpath``) with a live listing of its remote
     directory. Read-only: changes nothing, and reads no local file.
@@ -128,11 +132,16 @@ def check_index(
     :param subpath: repo-relative subtree to check, or ``None`` for the whole index.
     :param reporter: :class:`~protonfs.reporting.Reporter` to narrate progress through;
         defaults to the process reporter.
+    :param only: judge just these repo-relative paths (those in the index), listing only
+        their directories; the result is then never :attr:`IndexCheck.complete`.
     :returns: an :class:`IndexCheck`.
     :raises protonfs.drive.DriveThrottleError: when Drive throttles a listing past its
         retry budget, and :class:`~protonfs.drive.DriveAuthError` when not logged in. A
         throttled or unauthenticated run is not evidence about any file. Any other
         failed listing marks that directory's entries :attr:`Verdict.UNLISTED`.
+
+    .. versionchanged:: 3.1.0
+       Added ``only`` (#205).
     """
     from protonfs.manifest import is_control_path
     from protonfs.reporting import get_reporter
@@ -141,6 +150,8 @@ def check_index(
     by_dir: dict[str, list[tuple[str, IndexEntry]]] = {}
     for rel_path, entry in sorted(ctx.index.all().items()):
         if is_control_path(rel_path) or not within_subpath(rel_path, subpath):
+            continue
+        if only is not None and rel_path not in only:
             continue
         parent = entry.remote_path.rpartition("/")[0]
         by_dir.setdefault(parent, []).append((rel_path, entry))
@@ -168,7 +179,8 @@ def check_index(
             check.findings.append(Finding(rel_path, _verdict(entry, ident), entry, ident))
         reporter.progress(done, len(by_dir))
     check.complete = (
-        subpath is None and not check.unlisted and not check.count(Verdict.UNSIZED)
+        subpath is None and only is None and not check.unlisted
+        and not check.count(Verdict.UNSIZED)
     )
     return check
 

@@ -100,6 +100,28 @@ def _active_patterns(patterns: list[str]) -> list[str]:
     return [line for line in patterns if line.strip() and not line.strip().startswith("#")]
 
 
+def is_git_path(rel_path: str) -> bool:
+    """Whether `rel_path` has a ``.git`` segment: a repository's metadata, or a
+    submodule's or worktree's ``.git`` gitlink file. ``.gitignore`` is not.
+
+    .. versionadded:: 3.1.0
+    """
+    return ".git" in rel_path.split("/")
+
+
+def _git_include_lines(active_include: list[str]) -> list[str]:
+    """The include lines that may sync a ``.git`` path: those naming ``.git`` as a whole
+    path segment (``.git/``, ``/.git/objects/``), plus every negation, in file order, so
+    ``!*.sample`` still subtracts. A broad ``*`` never reaches into ``.git``."""
+    named = [
+        line for line in active_include
+        if not line.lstrip().startswith("!") and ".git" in line.strip().split("/")
+    ]
+    if not named:
+        return []
+    return [line for line in active_include if line in named or line.lstrip().startswith("!")]
+
+
 class IgnoreMatcher:
     """Combines an ignore denylist with an optional include allowlist.
 
@@ -123,6 +145,10 @@ class IgnoreMatcher:
         self._include_spec = (
             pathspec.GitIgnoreSpec.from_lines(active_include) if active_include else None
         )
+        git_lines = _git_include_lines(active_include)
+        self._git_include_spec = (
+            pathspec.GitIgnoreSpec.from_lines(git_lines) if git_lines else None
+        )
 
     @classmethod
     def from_file(cls, repo_root: Path) -> IgnoreMatcher:
@@ -144,9 +170,22 @@ class IgnoreMatcher:
     def matches(self, rel_path: str) -> bool:
         """True if `rel_path` should be EXCLUDED from sync: it matches the ignore
         denylist, or an active include allowlist is configured and `rel_path` matches
-        none of its patterns. Ignore always wins over include (#18)."""
+        none of its patterns. Ignore always wins over include (#18).
+
+        A ``.git`` path (any path with a ``.git`` segment: a repository's metadata, or a
+        submodule's gitlink file) is always excluded unless an include line names
+        ``.git`` as a whole segment and matches it; ``.gitignore`` and ``.github/`` are
+        ordinary files.
+
+        .. versionchanged:: 3.1.0
+           ``.git`` paths are excluded unless the include file names ``.git``.
+        """
         if self._spec.match_file(rel_path):
             return True
+        if is_git_path(rel_path):
+            return self._git_include_spec is None or not self._git_include_spec.match_file(
+                rel_path
+            )
         if self._include_spec is not None and not self._include_spec.match_file(rel_path):
             return True
         return False

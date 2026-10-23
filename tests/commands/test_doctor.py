@@ -443,9 +443,14 @@ def test_shell_exports_emits_pass_vars_on_pass_host(monkeypatch: pytest.MonkeyPa
 
 
 def test_doctor_reports_pass_store_when_active(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, stub_currency
 ) -> None:
     from protonfs import credstore, secretservice
+
+    monkeypatch.setattr(
+        doctor_mod, "DriveClient",
+        lambda: FakeDoctorDrive(version=credstore.PASS_STORE_MIN_DRIVE),
+    )
 
     monkeypatch.setattr(secretservice.Path, "home", staticmethod(lambda: tmp_path))
     monkeypatch.setattr(credstore, "active_store", lambda env=None: ("pass", "sticky"))
@@ -460,11 +465,16 @@ def test_doctor_reports_pass_store_when_active(
 
 
 def test_doctor_fix_establishes_pass_store(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, stub_currency
 ) -> None:
     # Fix 2 regression: `doctor --fix` on a pass-active host must actually call
     # ensure_pass_store, not just report "not initialized" and stop.
     from protonfs import credstore, secretservice
+
+    monkeypatch.setattr(
+        doctor_mod, "DriveClient",
+        lambda: FakeDoctorDrive(version=credstore.PASS_STORE_MIN_DRIVE),
+    )
 
     monkeypatch.setattr(secretservice.Path, "home", staticmethod(lambda: tmp_path))
     monkeypatch.setattr(credstore, "active_store", lambda env=None: ("pass", "sticky"))
