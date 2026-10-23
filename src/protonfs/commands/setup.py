@@ -15,16 +15,17 @@ from pathlib import Path
 
 import click
 
-from protonfs.commands.push import ensure_remote_root
+from protonfs.commands.push import KNOWN_TOP_LEVEL_AREAS, ensure_remote_root
 from protonfs.commands.push import push as push_files
 from protonfs.config import (
     Config,
     MissingDeviceIdError,
+    config_path,
     ensure_device_id,
     init_config,
-    load_config,
     load_layered_config,
     migrate_device_id_to_local,
+    resolved_remote_root,
 )
 from protonfs.context import RepoContext
 from protonfs.drive import DriveClient
@@ -90,6 +91,55 @@ def _can_prompt() -> bool:
     return sys.stdin.isatty()
 
 
+def _usable_new_root(remote_root: str) -> str:
+    """Return a new store's ``remote_root`` without its trailing ``/``, if Drive can hold it.
+
+    :param remote_root: the root given by ``--remote-root`` or the prompt.
+    :returns: ``remote_root`` with any trailing ``/`` removed.
+    :raises click.ClickException: when it is not under a known Drive area such as
+        ``/my-files`` (``ensure_remote_root`` could never create it).
+    """
+    root = remote_root.rstrip("/")
+    if not any(root == a or root.startswith(a + "/") for a in KNOWN_TOP_LEVEL_AREAS):
+        raise click.ClickException(
+            f"remote root {remote_root!r} must live under "
+            f"{' or '.join(KNOWN_TOP_LEVEL_AREAS)} (e.g. /my-files/myproject): Proton "
+            "Drive's root only holds special areas. Nothing was set up."
+        )
+    return root
+
+
+def check_remote_root(root: Path, remote_root: str | None) -> None:
+    """Refuse a ``--remote-root`` setup cannot use, before setup changes anything.
+
+    :param root: the protonfs root.
+    :param remote_root: the ``--remote-root`` value, or ``None``.
+    :raises click.ClickException: when ``root`` is a store whose resolved remote root
+        differs from ``remote_root`` (a trailing ``/`` aside); or when it is not a store
+        yet and ``remote_root`` is not under a known Drive area, or is ``None`` with no
+        terminal on stdin to ask on.
+
+    .. versionadded:: 3.2.0
+    """
+    if not config_path(root).exists():
+        if remote_root is None and not _can_prompt():
+            raise click.ClickException(
+                "this directory is not a store yet, and setup cannot ask for its remote "
+                "root without a terminal; pass --remote-root /my-files/..."
+            )
+        if remote_root is not None:
+            _usable_new_root(remote_root)
+        return
+    current = resolved_remote_root(root)
+    if remote_root is not None and current is not None and (
+        remote_root.rstrip("/") != current.rstrip("/")
+    ):
+        raise click.ClickException(
+            f"this store's remote root is {current}, not {remote_root}; setup does not "
+            f"repoint a store. Drop --remote-root, or pass --remote-root {current}."
+        )
+
+
 def ensure_config(root: Path, remote_root: str | None = None) -> Config:
     """Load the repo's config, or create it, returning the result.
 
@@ -107,28 +157,20 @@ def ensure_config(root: Path, remote_root: str | None = None) -> Config:
         setup never repoints a store.
     :returns: the loaded or newly-initialised :class:`~protonfs.config.Config`.
     :raises click.ClickException: when ``remote_root`` differs from an existing
-        store's (nothing is written), or when a new store has no ``remote_root`` and
-        stdin is not a terminal to ask on.
+        store's, when a new store's root (given or prompted) is not under a known Drive
+        area, or when a new store has no ``remote_root`` and stdin is not a terminal to
+        ask on. Nothing is written in any of these cases.
 
     .. versionchanged:: 1.12.1
        Sets up a freshly cloned repo instead of failing on its missing ``device_id``.
 
     .. versionchanged:: 3.2.0
        Added ``remote_root``; a new store with neither it nor a terminal fails instead
-       of waiting on a prompt.
+       of waiting on a prompt, and a new root Drive cannot hold is refused before it is
+       written.
     """
-    shared = load_config(root)
-    if (
-        shared is not None
-        and remote_root is not None
-        and remote_root.rstrip("/") != shared.remote_root.rstrip("/")
-    ):
-        # checked before a clone's device_id is minted, so a refusal writes nothing
-        raise click.ClickException(
-            f"this store's remote root is {shared.remote_root}, not {remote_root}; "
-            "setup does not repoint a store. Drop --remote-root, or pass "
-            f"--remote-root {shared.remote_root}."
-        )
+    # before a clone's device_id is minted, so a refusal writes nothing
+    check_remote_root(root, remote_root)
     try:
         existing = load_layered_config(root)
     except MissingDeviceIdError:
@@ -145,16 +187,11 @@ def ensure_config(root: Path, remote_root: str | None = None) -> Config:
         # anyway. Straightforward and idempotent; doesn't change the resolved config.
         migrate_device_id_to_local(root)
         return existing
-    if remote_root is None:
-        if not _can_prompt():
-            raise click.ClickException(
-                "this directory is not a store yet, and setup cannot ask for its remote "
-                "root without a terminal; pass --remote-root /my-files/..."
-            )
+    if remote_root is None:  # check_remote_root ensured there is a terminal to ask on
         remote_root = click.prompt(
             "Remote Drive root path for this repo (e.g. /my-files/myproject)"
         )
-    return init_config(root, remote_root.rstrip("/") or "/")
+    return init_config(root, _usable_new_root(remote_root))
 
 
 def is_git_toplevel(root: Path) -> bool:
@@ -416,6 +453,8 @@ def run_setup(
     from protonfs.reporting import get_reporter
 
     reporter = reporter or get_reporter()
+    # #217: refuse an unusable --remote-root before installing, keyring or auth work
+    check_remote_root(root, remote_root)
 
     drive = DriveClient()
     reporter.phase("checking proton-drive CLI")

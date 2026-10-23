@@ -647,6 +647,7 @@ def _stub_setup_guards(monkeypatch: pytest.MonkeyPatch, config) -> None:
     monkeypatch.setattr(setup_mod, "ensure_secrets", lambda drive: None)
     monkeypatch.setattr(setup_mod, "ensure_authenticated", lambda drive: None)
     monkeypatch.setattr(setup_mod, "ensure_config", lambda root, remote_root=None: config)
+    monkeypatch.setattr(setup_mod, "check_remote_root", lambda root, remote_root: None)
     monkeypatch.setattr(setup_mod, "init_ignore", lambda root: None)
     monkeypatch.setattr(setup_mod, "init_include", lambda root: None)
     monkeypatch.setattr(setup_mod, "write_git_control_files", lambda root: None)
@@ -859,5 +860,93 @@ def test_cli_setup_new_store_without_remote_root_or_terminal_fails_fast(
 
     assert result.exit_code == 1
     assert "--remote-root" in result.output
+    assert load_config(tmp_path) is None
+    assert fake.created_folders == []
+
+
+def _store_with_root_in_local_layer(root: Path) -> None:
+    """A store whose remote_root lives only in config.local.json, not config.json."""
+    (root / ".protonfs").mkdir()
+    (root / ".protonfs" / "config.json").write_text("{}")
+    (root / ".protonfs" / "config.local.json").write_text(
+        json.dumps({"device_id": "d1", "remote_root": "/my-files/local"})
+    )
+
+
+def test_ensure_config_without_a_flag_keeps_a_root_from_another_layer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # regression: the --remote-root check must not demand remote_root in config.json
+    _store_with_root_in_local_layer(tmp_path)
+    monkeypatch.setattr(click, "prompt", _no_prompt)
+
+    assert ensure_config(tmp_path).remote_root == "/my-files/local"
+
+
+def test_ensure_config_compares_the_flag_with_the_root_the_store_resolves(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _store_with_root_in_local_layer(tmp_path)
+    monkeypatch.setattr(click, "prompt", _no_prompt)
+
+    assert ensure_config(tmp_path, remote_root="/my-files/local").remote_root == "/my-files/local"
+    with pytest.raises(click.ClickException, match="/my-files/local"):
+        ensure_config(tmp_path, remote_root="/my-files/other")
+
+
+@pytest.mark.parametrize("case", ["mismatch", "no-terminal"])
+def test_run_setup_refuses_before_any_cli_keyring_or_auth_step(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    from protonfs.config import init_config
+
+    def _too_late(*args, **kwargs):
+        raise AssertionError("refusal must come before the binary/keyring/auth steps")
+
+    monkeypatch.setattr(setup_mod, "ensure_cli_present", _too_late)
+    monkeypatch.setattr(setup_mod, "ensure_secrets", _too_late)
+    monkeypatch.setattr(setup_mod, "ensure_authenticated", _too_late)
+    monkeypatch.setattr(setup_mod, "DriveClient", lambda: None)
+    monkeypatch.setattr(setup_mod, "_can_prompt", lambda: False)
+    if case == "mismatch":
+        init_config(tmp_path, "/my-files/existing")
+
+    with pytest.raises(click.ClickException):
+        run_setup(tmp_path, remote_root="/my-files/other" if case == "mismatch" else None)
+
+
+@pytest.mark.parametrize("bad", ["", "/", "//", "myproject", "/myproject", "/my-filesx/p"])
+def test_ensure_config_refuses_a_new_root_drive_cannot_hold_without_writing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bad: str
+) -> None:
+    # a root ensure_remote_root would reject must not be written first: the store would
+    # then hold a root it can never use, and a corrected re-run would be a "repoint"
+    monkeypatch.setattr(click, "prompt", _no_prompt)
+
+    with pytest.raises(click.ClickException, match="/my-files"):
+        ensure_config(tmp_path, remote_root=bad)
+
+    assert not (tmp_path / ".protonfs" / "config.json").exists()
+
+
+def test_ensure_config_refuses_a_prompted_root_drive_cannot_hold_without_writing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(setup_mod, "_can_prompt", lambda: True)
+    monkeypatch.setattr(click, "prompt", lambda *a, **k: "/myproject")
+
+    with pytest.raises(click.ClickException, match="/my-files"):
+        ensure_config(tmp_path)
+
+    assert not (tmp_path / ".protonfs" / "config.json").exists()
+
+
+def test_cli_setup_bad_remote_root_fails_before_any_drive_step(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, make_fake_drive
+) -> None:
+    result, fake = _cli_setup(tmp_path, monkeypatch, make_fake_drive, "--remote-root", "/proj")
+
+    assert result.exit_code == 1
+    assert "/my-files" in result.output
     assert load_config(tmp_path) is None
     assert fake.created_folders == []
