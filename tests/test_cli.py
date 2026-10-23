@@ -138,6 +138,65 @@ def test_normalize_paths_dedupes_and_drops_nested() -> None:
     assert _normalize_paths(("a/b", "a")) == ["a"]
     # sibling with a common name prefix is NOT nested
     assert _normalize_paths(("a", "ab")) == ["a", "ab"]
+    # nor is one that sorts between a directory and its children ('-' < '/')
+    assert _normalize_paths(("a-c", "a/b", "a")) == ["a-c", "a"]
+    # an empty segment still nests under its parent, as a plain prefix test says
+    assert _normalize_paths(("a//b", "a")) == ["a"]
+
+
+def test_normalize_paths_scales_linearly() -> None:
+    import time
+
+    from protonfs.cli import _normalize_paths
+
+    # a shell or protonfs glob over a large tree hands over one argument per file
+    paths = tuple(f"d{i % 50}/f{i}.fits" for i in range(20_000))
+    start = time.perf_counter()
+    assert _normalize_paths(paths + ("d7",)) == [
+        *(p for p in paths if not p.startswith("d7/")), "d7",
+    ]
+    assert time.perf_counter() - start < 1.0
+
+
+# --- #205: import's expansion of PATH to the tracked files under it -------------------
+
+
+def test_tracked_under_expands_directories_and_keeps_literals() -> None:
+    from protonfs.cli import _tracked_under
+
+    tracked = {"a/b", "a/c/d", "a-c", "ab", "z"}
+    # only the directory's own files: 'a-c' and 'ab' sort either side of 'a/...'
+    assert _tracked_under(["a"], tracked) == ["a/b", "a/c/d"]
+    assert _tracked_under([None], tracked) == ["a-c", "a/b", "a/c/d", "ab", "z"]
+    assert _tracked_under(["z", "a/c"], tracked) == ["z", "a/c/d"]
+    # an untracked literal comes back as given, for the preconditions to refuse by name
+    assert _tracked_under(["nope"], tracked) == ["nope"]
+    # overlap is reported once, in first-seen order
+    assert _tracked_under(["a/b", "a"], tracked) == ["a/b", "a/c/d"]
+
+
+def test_tracked_under_scales_linearly() -> None:
+    import time
+
+    from protonfs.cli import _tracked_under
+
+    tracked = {f"d{i % 50}/f{i}.fits" for i in range(20_000)}
+    start = time.perf_counter()
+    assert len(_tracked_under(sorted(tracked), tracked)) == 20_000
+    assert len(_tracked_under([f"d{i}" for i in range(50)], tracked)) == 20_000
+    assert time.perf_counter() - start < 1.0
+
+
+def test_glob_tracked_keeps_tracked_files_and_their_directories(tmp_path: Path) -> None:
+    from protonfs.cli import _glob_tracked, _with_parent_dirs
+
+    for rel in ("a/b/x.fits", "a/b/y.fits", "a/u.fits", "c/v.fits"):
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text("x")
+    matchable = _with_parent_dirs({"a/b/x.fits", "a/u.fits"})
+    assert matchable == {"a/b/x.fits", "a/u.fits", "a", "a/b"}
+    assert _glob_tracked(tmp_path, "a/b/*", matchable) == ["a/b/x.fits"]
+    assert _glob_tracked(tmp_path, "*", matchable) == ["a"]
 
 
 # --- #131: PATH arguments that are glob patterns, expanded by protonfs itself (not the
