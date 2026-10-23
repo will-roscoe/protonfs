@@ -15,7 +15,7 @@ from collections import Counter
 from pathlib import Path
 
 from protonfs.context import RepoContext
-from protonfs.diff import SyncState, classify, within_subpath
+from protonfs.diff import SyncState, classify
 from protonfs.ignore import IgnoreMatcher
 from protonfs.localscan import scan
 
@@ -78,12 +78,10 @@ def compute_status(
 
         reporter.phase("listing", subpath=subpath or ".")
         remote_view = remote_rel_paths(ctx, subpath)
-    entries = classify(local, ctx.index, remote_view)
-    # #96: classify() sees the whole repo-wide index; the scan above is scoped. Filter
-    # so `status SUBPATH` never counts (or exits non-zero for) entries outside SUBPATH.
-    return Counter(
-        entry.state.value for entry in entries if within_subpath(entry.rel_path, subpath)
-    )
+    # #96: the scan above is scoped, so classify must be too: `status SUBPATH` never
+    # counts (or exits non-zero for) entries outside SUBPATH.
+    entries = classify(local, ctx.index, remote_view, subpath=subpath)
+    return Counter(entry.state.value for entry in entries)
 
 
 def status_exit_code(counts: Counter) -> int:

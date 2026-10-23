@@ -1205,7 +1205,14 @@ def pull(
             rel for rel in _normalize_paths(tuple(p for p in path if not _is_pattern(p)))
             if rel is not None and ctx.index.get(rel) is not None
         }
-        for subpath in subpaths:
+        # #171 for pull: every PATH naming an indexed file shares one pass (one download
+        # per folder, one index save per folder) instead of a pass, a download and two
+        # whole-index saves per file. --refresh and --resolve walk Drive per PATH, so
+        # they keep one pass each.
+        files: set[str] = set()
+        if resolve is None and not refresh:
+            files = {s for s in subpaths if s is not None and ctx.index.get(s) is not None}
+        for subpath in [s for s in subpaths if s not in files]:
             _accumulate_transfer(
                 result,
                 pull_files(
@@ -1213,6 +1220,17 @@ def pull(
                     no_restore=no_restore and subpath not in named_files,
                 ),
             )
+        # a file asked for by name comes back even under --no-restore; a matched one not
+        for group, group_no_restore in (
+            (files & named_files, False), (files - named_files, no_restore),
+        ):
+            if group:
+                _accumulate_transfer(
+                    result,
+                    pull_files(
+                        ctx, None, None, dry_run, no_restore=group_no_restore, only=group,
+                    ),
+                )
     local_deleted = (
         f" local-deleted={result.local_deleted_items}" if result.local_deleted_items else ""
     )

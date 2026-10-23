@@ -125,6 +125,8 @@ def classify(
     local: dict[str, ScanEntry],
     index: IndexStore,
     remote: dict[str, RemoteEntry] | None = None,
+    *,
+    subpath: str | None = None,
 ) -> list[DiffEntry]:
     """Classify every known path's :class:`SyncState` across local, index, and remote.
 
@@ -134,18 +136,32 @@ def classify(
     :param remote: Current remote listing keyed by relative path, or ``None`` if no
         remote walk was performed. Without it, deletions/changes on the remote side
         cannot be distinguished -- see :func:`_classify_absent`.
-    :returns: One :class:`DiffEntry` per path in ``local | index.all() | (remote or {})``,
-        sorted by ``rel_path``.
+    :param subpath: classify only paths :func:`within_subpath` keeps for it, finding
+        the index's through :meth:`~protonfs.index.IndexStore.paths_within`; the same
+        result as filtering the unscoped one, at a cost that follows the subtree's size.
+    :returns: One :class:`DiffEntry` per path in ``local | index.all() | (remote or {})``
+        (within ``subpath`` when given), sorted by ``rel_path``.
+
+    .. versionchanged:: 3.1.0
+       ``subpath``.
 
     .. seealso::
        :func:`within_subpath` -- filter this result when the scan/walk that produced
-       ``local``/``remote`` was itself scoped to a subpath.
+       ``local``/``remote`` was itself scoped to a subpath, or pass ``subpath``.
     """
     from protonfs.manifest import is_control_path
 
-    known_paths = set(local) | set(index.all())
-    if remote is not None:
-        known_paths |= set(remote)
+    if subpath:
+        # only this subtree's index entries, by lookup: a pass over one file must not
+        # cost a walk of the whole index
+        known_paths = {p for p in local if within_subpath(p, subpath)}
+        known_paths.update(index.paths_within(subpath))
+        if remote is not None:
+            known_paths.update(p for p in remote if within_subpath(p, subpath))
+    else:
+        known_paths = set(local) | set(index.all())
+        if remote is not None:
+            known_paths |= set(remote)
     # #146: `.protonfs/` holds protonfs's own state on both sides (the remote manifest
     # lives there). It is never data, whatever a listing or an older host's index says.
     known_paths = {p for p in known_paths if not is_control_path(p)}

@@ -9,14 +9,19 @@ each CLI command can call :func:`load_context` once and get everything it needs.
 
 from __future__ import annotations
 
+import functools
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import click
 
 from protonfs.config import Config, MissingDeviceIdError, load_layered_config
 from protonfs.drive import DriveClient
 from protonfs.index import IndexStore
+
+if TYPE_CHECKING:
+    from protonfs.hashcache import HashCache
 
 
 @dataclass
@@ -33,6 +38,18 @@ class RepoContext:
     config: Config
     index: IndexStore
     drive: DriveClient
+
+    @functools.cached_property
+    def hash_cache(self) -> HashCache:
+        """This repo's :class:`~protonfs.hashcache.HashCache`, read from disk on first use
+        and shared by every pass of the command, so a command run once per PATH does not
+        re-read a cache holding every file in the store.
+
+        .. versionadded:: 3.1.0
+        """
+        from protonfs.hashcache import HashCache
+
+        return HashCache(self.root)
 
 
 def load_context(start: Path | None = None) -> RepoContext:

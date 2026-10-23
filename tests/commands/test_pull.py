@@ -794,3 +794,85 @@ def test_pull_writes_git_metadata_the_include_file_names(
     pull(ctx, None, resolve=None, dry_run=False)
 
     assert [call[0] for call in ctx.drive.download_calls] == [("/my-files/test/.git/config",)]
+
+
+def test_passes_of_one_command_read_the_hash_cache_once(
+    tmp_path: Path, make_fake_drive, monkeypatch
+) -> None:
+    # `pull PATTERN` runs one pass per matched file; each pass re-reading a cache that
+    # holds every file in the store made the command quadratic
+    from protonfs.commands.push import push
+    from protonfs.hashcache import HashCache
+
+    loads = []
+    real_load = HashCache._load
+    monkeypatch.setattr(HashCache, "_load", lambda self: (loads.append(1), real_load(self)))
+    for rel in ("a/x", "b/y"):
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_bytes(b"data")
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.drive = make_fake_drive()
+
+    for sub in ("a", "b"):
+        push(ctx, sub, resolve=None, dry_run=False)
+    for sub in ("a/x", "b/y", "a"):
+        pull(ctx, sub, resolve=None, dry_run=True)
+
+    assert len(loads) == 1
+
+
+def test_pull_cli_fetches_the_files_a_pattern_matches_in_one_pass(
+    tmp_path: Path, make_fake_drive, monkeypatch
+) -> None:
+    # one pass per matched file meant one proton-drive download and two whole-index
+    # saves per file; one shared pass downloads each folder's files together (#171 for push)
+    from click.testing import CliRunner
+
+    from protonfs.cli import main
+
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    for rel in ("run1/dump_0001", "run1/dump_0002", "run1/dump_0003", "run2/dump_0001"):
+        _metadata_only(ctx, rel)
+    ctx.index.save()
+    ctx.drive = make_fake_drive()
+    monkeypatch.setattr("protonfs.context.load_context", lambda *a, **k: ctx)
+    saves = []
+    real_save = type(ctx.index).save
+    monkeypatch.setattr(type(ctx.index), "save", lambda self: (saves.append(1), real_save(self)))
+
+    result = CliRunner().invoke(main, ["pull", "run*/dump_*"])
+
+    assert result.exit_code == 0, result.output
+    assert "transferred=4" in result.output
+    assert sorted(call[0] for call in ctx.drive.download_calls) == [
+        ("/my-files/test/run1/dump_0001", "/my-files/test/run1/dump_0002",
+         "/my-files/test/run1/dump_0003"),
+        ("/my-files/test/run2/dump_0001",),
+    ]
+    assert len(saves) <= 3  # a checkpoint per folder and the final save, not 2 per file
+
+
+def test_pull_cli_no_restore_still_restores_a_named_file_among_matched_ones(
+    tmp_path: Path, make_fake_drive, monkeypatch
+) -> None:
+    from click.testing import CliRunner
+
+    from protonfs.cli import main
+
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    for rel in ("gone/dump_0001", "gone/dump_0002"):
+        ctx.index.set(rel, _held_entry(rel))
+    ctx.index.save()
+    ctx.drive = make_fake_drive()
+    monkeypatch.setattr("protonfs.context.load_context", lambda *a, **k: ctx)
+
+    result = CliRunner().invoke(main, ["pull", "--no-restore", "gone/dump_0001", "gone/*"])
+
+    assert result.exit_code == 0, result.output
+    assert "transferred=1" in result.output
+    assert "local-deleted=1" in result.output
+    assert (tmp_path / "gone" / "dump_0001").exists()
+    assert not (tmp_path / "gone" / "dump_0002").exists()

@@ -18,7 +18,7 @@ from rich.console import Console
 from rich.table import Table
 
 from protonfs.context import RepoContext
-from protonfs.diff import DiffEntry, classify, within_subpath
+from protonfs.diff import DiffEntry, classify
 from protonfs.drive import RemoteEntry, decrypted_name
 from protonfs.ignore import IgnoreMatcher
 from protonfs.localscan import scan
@@ -93,13 +93,10 @@ def collect_entries(
     if remote:
         reporter.phase("walking remote", subpath=subpath or ".")
     remote_map = remote_rel_paths(ctx, subpath) if remote else None
-    # classify reasons over the whole repo-wide index; when a subpath was given, the
-    # local scan and remote walk are scoped to it, so restrict the rows to that
-    # subpath too -- otherwise out-of-scope index entries (never scanned/walked) show
-    # up, and with a remote view are misread as remote-deleted.
-    entries = [
-        e for e in classify(local, ctx.index, remote_map) if within_subpath(e.rel_path, subpath)
-    ]
+    # When a subpath was given, the local scan and remote walk are scoped to it, so
+    # classify must be too -- otherwise out-of-scope index entries (never scanned/walked)
+    # show up, and with a remote view are misread as remote-deleted.
+    entries = classify(local, ctx.index, remote_map, subpath=subpath)
     if states:
         entries = [e for e in entries if e.state.value in states]
     return entries
