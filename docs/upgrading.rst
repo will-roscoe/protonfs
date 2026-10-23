@@ -20,6 +20,13 @@ Release history and per-version upgrade notes live in the repository's
 Versioning follows the policy in :doc:`stability`: within ``3.x``, everything
 documented on that page keeps working; a breaking change to any of it requires 4.0.0.
 
+From 3.0 to 3.1
+~~~~~~~~~~~~~~~
+Nothing to do for most stores. A store at a git repository's root no longer syncs ``.git``: protonfs never uploads, downloads or indexes a path with a ``.git`` segment unless ``.protonfs/include`` names ``.git``. If an earlier version already pushed
+``.git``, that copy stays on Drive and in the index but is never pulled back or
+trashed by ``push``; ``protonfs rm -r .git`` moves it to the Drive trash without
+touching the local repository.
+
 From 2.x to 3.0
 ~~~~~~~~~~~~~~~
 Nothing to do. 3.0.0 is a major release by accident (a withdrawn breaking change's

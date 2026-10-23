@@ -282,3 +282,33 @@ def test_refresh_narrates(tmp_path: Path, make_fake_drive, recording_reporter_cl
     assert "item" in kinds
     assert kinds[-1] == "done"
     assert result.seeded == 1
+
+
+def test_refresh_never_seeds_git_metadata_from_drive(tmp_path: Path, make_fake_drive) -> None:
+    # Drive may hold a .git uploaded before 3.1.0; indexing it would let pull write it
+    # over this clone's own repository.
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.drive = make_fake_drive(walk_entries=[
+        RemoteEntry(".git/config", is_dir=False, size=10),
+        RemoteEntry("sub/.git", is_dir=False, size=10),
+        RemoteEntry("run1/dump_0001", is_dir=False, size=100),
+    ])
+
+    result = refresh(ctx, None, prune=False)
+
+    assert result.seeded == 1
+    assert set(ctx.index.all()) == {"run1/dump_0001"}
+
+
+def test_refresh_seeds_git_metadata_the_include_file_names(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    init_config(tmp_path, "/my-files/test")
+    (tmp_path / ".protonfs" / "include").write_text(".git/\n")
+    ctx = load_context(tmp_path)
+    ctx.drive = make_fake_drive(walk_entries=[RemoteEntry(".git/config", is_dir=False, size=10)])
+
+    refresh(ctx, None, prune=False)
+
+    assert ctx.index.get(".git/config") is not None

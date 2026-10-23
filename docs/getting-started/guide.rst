@@ -246,6 +246,10 @@ Two committed files under ``.protonfs/`` decide which files are in scope:
 - ``.protonfs/ignore`` — gitignore-syntax exclusions (always wins).
 - ``.protonfs/include`` — a gitignore-syntax **allowlist**: when present and
   non-empty, only matching files sync (and still never those matched by ``ignore``).
+- ``.git`` — a repository's metadata, at any depth, and a submodule's ``.git``
+  file never sync, unless an ``include`` line names ``.git`` as a whole path segment
+  (``.git/``, ``/.git/refs/``); a broad ``*`` does not. ``.gitignore`` and
+  ``.github/`` are ordinary files.
 
 .. code-block:: bash
 

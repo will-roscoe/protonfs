@@ -15,7 +15,7 @@ from protonfs.config import CONFIG_DIR_NAME
 from protonfs.context import RepoContext
 from protonfs.diff import SyncState, classify, held_and_gone, within_subpath
 from protonfs.drive import RemoteEntry, TransferResult
-from protonfs.ignore import IgnoreMatcher
+from protonfs.ignore import IgnoreMatcher, is_git_path
 from protonfs.index import IndexEntry
 from protonfs.localscan import hash_file_digests, scan
 
@@ -262,6 +262,9 @@ def pull(
         ``local_deleted_items`` counts the files ``no_restore`` left alone.
     :raises protonfs.drive.DriveError: on a Drive or lock failure.
 
+    .. versionchanged:: 3.1.0
+       Never downloads a ``.git`` path unless ``.protonfs/include`` names ``.git``.
+
     .. seealso:: :func:`protonfs.commands.push.push` for the upload direction.
     """
     from protonfs.reporting import get_reporter
@@ -313,6 +316,9 @@ def pull(
     # A path still on disk was only hidden from the scan (now ignored, say): it is not
     # absent, and downloading over it would overwrite it.
     to_pull = [rel for rel in to_pull if not (ctx.root / rel).exists()]
+    # A .git path is never written from Drive unless the include file names it: an old
+    # copy of a repository's metadata must not land in the live one.
+    to_pull = [rel for rel in to_pull if not (is_git_path(rel) and ignore.matches(rel))]
     # #197: a file this machine held that is gone locally is restored by default (the
     # git-LFS reading: its copy is on Drive). With no_restore it was deleted or moved away
     # on purpose; leave it for push to act on and count it.

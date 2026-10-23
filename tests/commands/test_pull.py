@@ -757,3 +757,40 @@ def test_sync_after_a_local_move_leaves_one_copy_on_drive(tmp_path: Path, make_f
     assert "x.jpg" not in ctx.drive.remote_identities("/my-files/test/a")
     assert "x.jpg" in ctx.drive.remote_identities("/my-files/test/b")
     assert not (tmp_path / "a" / "x.jpg").exists()
+
+
+def _metadata_only(ctx, rel: str) -> None:
+    ctx.index.set(rel, IndexEntry(
+        size=4, mtime=1.0, sha256="", sha1="", remote_path=f"/my-files/test/{rel}",
+        origin_device="d", local_state="metadata-only", last_synced="2026-01-01T00:00:00Z",
+    ))
+
+
+def test_pull_never_writes_git_metadata_from_drive(tmp_path: Path, make_fake_drive) -> None:
+    # an index entry for .git (pushed before 3.1.0, or seeded from an old manifest) must
+    # not become a download into the live repository
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    for rel in (".git/config", "sub/.git", "run1/dump_0001"):
+        _metadata_only(ctx, rel)
+    ctx.drive = make_fake_drive()
+
+    result = pull(ctx, None, resolve=None, dry_run=False)
+
+    assert result.transferred_items == 1
+    assert [call[0] for call in ctx.drive.download_calls] == [("/my-files/test/run1/dump_0001",)]
+    assert not (tmp_path / ".git").exists()
+
+
+def test_pull_writes_git_metadata_the_include_file_names(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    init_config(tmp_path, "/my-files/test")
+    (tmp_path / ".protonfs" / "include").write_text(".git/\n")
+    ctx = load_context(tmp_path)
+    _metadata_only(ctx, ".git/config")
+    ctx.drive = make_fake_drive()
+
+    pull(ctx, None, resolve=None, dry_run=False)
+
+    assert [call[0] for call in ctx.drive.download_calls] == [("/my-files/test/.git/config",)]
