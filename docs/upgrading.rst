@@ -20,6 +20,13 @@ Release history and per-version upgrade notes live in the repository's
 Versioning follows the policy in :doc:`stability`: within ``3.x``, everything
 documented on that page keeps working; a breaking change to any of it requires 4.0.0.
 
+From 3.1 to 3.2
+~~~~~~~~~~~~~~~
+Nothing to do unless a script sets up new stores. ``protonfs setup`` takes a new
+store's Drive path as ``--remote-root PATH``. Without a terminal it no longer reads the
+path from standard input: a script that piped it in (``echo /my-files/x | protonfs
+setup``) now stops with exit ``1`` and must pass ``--remote-root /my-files/x`` instead.
+
 From 3.0 to 3.1
 ~~~~~~~~~~~~~~~
 Nothing to do for most stores. A store at a git repository's root no longer syncs ``.git``: protonfs never uploads, downloads or indexes a path with a ``.git`` segment unless ``.protonfs/include`` names ``.git``. If an earlier version already pushed

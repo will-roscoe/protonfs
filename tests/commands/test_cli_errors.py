@@ -72,10 +72,11 @@ def test_setup_command_reports_clean_error_on_drive_error(
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr("protonfs.commands.setup.ensure_cli_present", lambda drive: "1.0")
     monkeypatch.setattr("protonfs.commands.setup.ensure_secrets", lambda drive: None)
+    monkeypatch.setattr("protonfs.commands.setup.check_remote_root", lambda root, remote_root: None)
     monkeypatch.setattr("protonfs.commands.setup.ensure_authenticated", lambda drive: None)
     monkeypatch.setattr(
         "protonfs.commands.setup.ensure_config",
-        lambda root: Config(remote_root="/my-files/test", device_id="d1"),
+        lambda root, remote_root=None: Config(remote_root="/my-files/test", device_id="d1"),
     )
     monkeypatch.setattr("protonfs.commands.setup.init_ignore", lambda root: None)
     monkeypatch.setattr("protonfs.commands.setup.init_include", lambda root: None)

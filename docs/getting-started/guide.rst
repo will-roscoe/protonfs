@@ -90,6 +90,16 @@ Set up a directory, log in, and push its contents to Drive.
    # 5. Confirm everything is in sync (exit code 0 == clean).
    protonfs status
 
+To set up without the prompt (a script, or ``ssh host 'cd my-project && protonfs
+setup'``), give the path up front:
+
+.. code-block:: bash
+
+   protonfs setup --remote-root /my-files/my-project
+
+Without a terminal and without ``--remote-root``, setup stops and says so, rather than
+waiting on a question nobody can answer.
+
 On another machine, run ``protonfs setup`` pointed at the **same** Drive path, then
 ``protonfs pull`` to bring the files down.
 
