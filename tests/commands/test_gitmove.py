@@ -1200,3 +1200,138 @@ def test_export_undo_instructions_cover_files_that_did_not_exist(
     assert "--literal-pathspecs" in message
     assert f"rm {ctx.root / '.protonfs' / 'ignore'}" in message
     assert "checkout HEAD -- .gitignore" in message
+
+
+# --- review follow-ups: truthful interrupts, unverifiable Drive copies, paths ---------
+
+
+def test_cli_export_interrupted_after_git_says_what_is_true(
+    tmp_path, make_fake_drive, monkeypatch
+) -> None:
+    ctx = _imported(tmp_path, make_fake_drive)
+
+    def interrupt(remote_paths):
+        raise KeyboardInterrupt
+
+    ctx.drive.trash = interrupt
+
+    result = _cli_export(ctx, monkeypatch, "--trash-remote", *IMPORT)
+
+    assert result.exit_code == 130
+    assert "re-run to resume" not in result.output
+    assert "git now has 2 file(s) staged" in result.output
+    assert "protonfs rm" in result.output
+    assert not set(IMPORT) & set(IndexStore(ctx.root).all())
+    assert "A  store/frames/f0.mp4" in _status(ctx)
+
+
+@pytest.mark.parametrize("verb", ["import", "export"])
+def test_cli_interrupted_git_step_says_everything_was_undone(
+    tmp_path, make_fake_drive, monkeypatch, verb
+) -> None:
+    ctx = _imported(tmp_path, make_fake_drive) if verb == "export" else _store(
+        tmp_path, make_fake_drive, FILES
+    )
+    real_add = gitops.add
+
+    def add_then_interrupt(root, paths):
+        real_add(root, paths)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("protonfs.gitops.add", add_then_interrupt)
+
+    result = (_cli_export if verb == "export" else _cli)(ctx, monkeypatch, *IMPORT)
+
+    assert result.exit_code == 130
+    assert "re-run to resume" not in result.output
+    assert "every git change was undone" in result.output
+    assert _status(ctx) == ""
+
+
+def _drop_drive_sha1(ctx) -> None:
+    for sha1s in ctx.drive._remote_sha1.values():
+        sha1s.clear()
+
+
+def test_export_verifies_a_copy_without_a_checksum_by_downloading_it(
+    tmp_path, make_fake_drive
+) -> None:
+    ctx = _imported(tmp_path, make_fake_drive)
+    _drop_drive_sha1(ctx)
+
+    result = export_to_git(ctx, IMPORT)
+
+    assert result.failures == [] and result.tracked == 2
+    assert len(ctx.drive.download_calls) == 2  # compared byte for byte
+    assert (ctx.root / "frames" / "f0.mp4").read_bytes() == b"frame zero"
+
+
+@pytest.mark.parametrize("verb", ["import", "export"])
+def test_a_same_size_version_on_drive_without_a_checksum_is_caught(
+    tmp_path, make_fake_drive, verb
+) -> None:
+    from protonfs.commands.gitmove import verify_exported, verify_imported
+    from protonfs.commands.push import push
+
+    ctx = _imported(tmp_path, make_fake_drive) if verb == "export" else _store(
+        tmp_path, make_fake_drive, FILES
+    )
+    if verb == "import":
+        push(ctx, None, None, False)
+    _drop_drive_sha1(ctx)
+    ctx.drive._remote_content[f"{ROOT}/frames/f1.mp4"] = b"FRAME  ONE"  # same size
+
+    verify = verify_exported if verb == "export" else verify_imported
+    failures = {f["name"]: f for f in verify(ctx, IMPORT)}
+
+    assert set(failures) == {"frames/f1.mp4"}
+    assert failures["frames/f1.mp4"]["kind"] == "unverified-drive"
+    assert "differs" in failures["frames/f1.mp4"]["error"]
+    assert (ctx.root / "frames" / "f1.mp4").read_bytes() == b"frame one"  # untouched
+
+
+def test_pull_failures_name_the_full_path(tmp_path, make_fake_drive) -> None:
+    from protonfs.commands.pull import pull
+    from protonfs.index import IndexEntry
+
+    init_config(tmp_path, ROOT)
+    ctx = load_context(tmp_path)
+    for rel in ("a/x.bin", "b/x.bin"):
+        ctx.index.set(rel, IndexEntry(4, 1.0, "", "", f"{ROOT}/{rel}", "d", "metadata-only", "t"))
+    ctx.drive = make_fake_drive(download_dropped_files={"x.bin"})
+
+    result = pull(ctx, None, None, False)
+
+    assert sorted(f["path"] for f in result.failures) == ["a/x.bin", "b/x.bin"]
+
+
+def test_import_and_export_normalise_their_paths(tmp_path, make_fake_drive) -> None:
+    ctx = _store(tmp_path, make_fake_drive, FILES)
+    from protonfs.ignore import init_ignore
+
+    init_ignore(ctx.root)
+    _git(ctx.root, "add", ".protonfs/ignore")
+    _git(ctx.root, "commit", "-q", "-m", "ignore")
+
+    imported = import_from_git(ctx, ["./frames/f0.mp4", "frames//f1.mp4"])
+    assert imported.untracked == 2 and imported.failures == []
+    _git(ctx.root, "commit", "-q", "-m", "import")
+
+    exported = export_to_git(ctx, ["./frames/f0.mp4", "frames//f1.mp4"])
+    assert exported.tracked == 2 and exported.failures == []
+    assert importblock.export_block_paths(ctx.root) == set(IMPORT)
+
+
+def test_check_export_ignores_a_dirty_gitignore_it_will_not_touch(
+    tmp_path, make_fake_drive
+) -> None:
+    from protonfs.commands.push import push
+
+    ctx = _imported(tmp_path, make_fake_drive)
+    (ctx.root / "new.bin").write_bytes(b"only ever synced")
+    push(ctx, None, None, False)
+    with open(ctx.root / ".gitignore", "a") as fh:
+        fh.write("*.log\n")  # the user's own edit, not export's business
+
+    assert check_export(ctx, ["new.bin"]) == []
+    assert ".gitignore" in _reasons(check_export(ctx, IMPORT))  # these would edit it

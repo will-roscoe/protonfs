@@ -234,7 +234,9 @@ Moving files out of git keeps a copy at every step
 only after it has proved each one is on Drive. It pushes them, then reads every file
 once, whatever ``defaults.low_io`` says, and requires that the bytes match the index
 entry push wrote, the blob ``HEAD`` records for the file, and a fresh listing of its
-Drive directory (size, and sha1 where Drive reports one). If any file fails, git is not
+Drive directory (size and sha1). A Drive copy with no sha1 (uploaded by another client)
+is downloaded to a staging directory and compared byte for byte, since size alone cannot
+rule out a same-size different version. If any file fails, git is not
 changed at all; running the command again uploads only what is missing.
 
 When every file verifies, it writes one literal, anchored line per file into a
@@ -252,7 +254,8 @@ files back.
 
 ``protonfs export`` moves files the other way with the same rules. It downloads any
 offloaded file, then reads every file once and requires that the bytes match the index
-entry and that the index matches a fresh listing of the file's Drive directory, so git
+entry and that the index matches a fresh listing of the file's Drive directory (a copy
+without a sha1 is downloaded and compared, as for import), so git
 is given the version Drive holds and never a stale copy that would replace a newer one
 another clone pushed. If any file fails, git is not changed. Git's side goes first: the
 import line is removed from ``.gitignore`` and the files are staged, and only then does
@@ -261,7 +264,10 @@ staged. An interruption therefore leaves each file tracked by git, synced by pro
 or both, never neither, and a failing git command undoes every change. The Drive
 copies stay unless ``--trash-remote`` is given, which trashes them only after the git
 step succeeded, so the file is then on disk and staged in git. Export never commits,
-never rewrites history, and never changes or deletes a local file.
+never rewrites history, and never changes or deletes a local file. A Ctrl-C reports the
+state it left: during the git step every change is undone; after it, the files are
+staged and no longer synced, and any Drive copies not yet trashed are named as possibly
+still there.
 
 Settle window: nothing still being written is deleted
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

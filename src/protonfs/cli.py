@@ -397,11 +397,13 @@ def _resumable_on_interrupt(ctx, verb: str):
     """
     try:
         yield
-    except KeyboardInterrupt:
+    except KeyboardInterrupt as exc:
         ctx.index.save()
-        click.echo(
-            f"\ninterrupted -- progress saved; re-run to resume the {verb}.", err=True
-        )
+        # import/export raise an Interrupted saying exactly what state they left, where
+        # "re-run to resume" would be false (a rolled-back or completed git step).
+        message = getattr(exc, "message", None) or f"progress saved; re-run to resume the {verb}."
+        click.echo(f"\n{message}" if message.startswith("interrupted") else
+                   f"\ninterrupted -- {message}", err=True)
         raise click.exceptions.Exit(130) from None
 
 

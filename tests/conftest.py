@@ -502,6 +502,33 @@ def _reset_protonfs_logger():
 
 
 @pytest.fixture(autouse=True)
+def no_real_proton_drive(request, monkeypatch, tmp_path_factory):
+    """Fail any test that runs the real proton-drive binary.
+
+    A test that loads a context and forgets to swap in ``make_fake_drive`` gets the real
+    ``DriveClient``. On a machine with proton-drive installed that quietly talks to the
+    developer's own Drive (and took minutes); without it, it degrades to a DriveError and
+    passes, so CI never noticed. The default binary is pointed at a stub that records
+    any call. ``test_live_*`` modules, which mean to reach Drive, are exempt.
+    """
+    if request.node.path.name.startswith("test_live"):
+        yield
+        return
+    stub_dir = tmp_path_factory.mktemp("no-proton-drive")
+    calls = stub_dir / "calls"
+    stub = stub_dir / "proton-drive"
+    stub.write_text(f"#!/bin/sh\necho \"$*\" >> '{calls}'\nexit 97\n")
+    stub.chmod(0o755)
+    monkeypatch.setenv("PROTONFS_DRIVE_BIN", str(stub))
+    yield
+    if calls.exists():
+        pytest.fail(
+            "test ran the proton-drive binary (use make_fake_drive): "
+            + calls.read_text()[:300]
+        )
+
+
+@pytest.fixture(autouse=True)
 def checkpoint_every_call(monkeypatch):
     """Make every IndexStore.checkpoint() save, as before 3.1.0 throttled it, so the
     tests of what each progress save records still see one per folder or batch. Tests

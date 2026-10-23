@@ -145,9 +145,13 @@ def _download_and_index(
                         landed.replace(ctx.root / rel)
             finally:
                 shutil.rmtree(tmp, ignore_errors=True)
+            # proton-drive names a failure by file name only; a batch is one folder, so
+            # the name settles the path, which callers matching failures need
+            by_name = {Path(rel).name: rel for rel in batch}
+            failures = [{**f, "path": by_name.get(f["name"])} for f in result.failures]
             total.skipped_items += result.skipped_items
             total.failed_items += result.failed_items
-            total.failures += result.failures
+            total.failures += failures
             done += len(batch)
             reporter.progress(done, progress_total or len(rels))
             failed_names = {f["name"] for f in result.failures}
@@ -167,9 +171,10 @@ def _download_and_index(
                 downloaded_path = ctx.root / rel
                 if not downloaded_path.exists():
                     total.failed_items += 1
-                    total.failures.append(
-                        {"name": name, "error": UNDERDELIVERED_ERROR, "kind": UNDERDELIVERED_KIND}
-                    )
+                    total.failures.append({
+                        "name": name, "error": UNDERDELIVERED_ERROR,
+                        "kind": UNDERDELIVERED_KIND, "path": rel,
+                    })
                     continue
                 stat = downloaded_path.stat()
                 prior = ctx.index.get(rel)
