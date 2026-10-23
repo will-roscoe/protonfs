@@ -192,6 +192,30 @@ def remove_paths(store_root: Path, rels: list[str]) -> list[str]:
     return _remove(gitignore_path(store_root), _IMPORT, rels)
 
 
+def gitignore_without(store_root: Path, rels: list[str]) -> bytes | None:
+    """Return ``<store>/.gitignore``'s bytes as :func:`remove_paths` would leave them for
+    ``rels``, without writing anything; ``None`` when there is no such file.
+
+    :param store_root: the store root.
+    :param rels: store-relative file paths.
+    :returns: the would-be file content, or ``None``.
+
+    .. versionadded:: 3.1.0
+    """
+    path = gitignore_path(store_root)
+    lines = _read(path)
+    if lines is None:
+        return None
+    bounds = _bounds(lines, *_IMPORT)
+    if bounds is not None:
+        start, end = bounds
+        drop = {escape_line(rel) for rel in rels}
+        kept = [line for line in lines[start + 1:end] if line not in drop]
+        lines[start:end + 1] = [_IMPORT[0], *kept, _IMPORT[1]] if kept else []
+    newline = _newline(path)
+    return (newline.join(lines) + (newline if lines else "")).encode("utf-8", "surrogateescape")
+
+
 def export_block_paths(store_root: Path) -> set[str]:
     """Return the store-relative paths listed in the export block of ``.protonfs/ignore``.
 

@@ -1078,3 +1078,122 @@ def test_cli_export_reports_a_dropped_download_once(tmp_path, make_fake_drive, m
     assert "transferred=1 skipped=0 failed=1 tracked=0" in result.output
     assert result.output.count("FAILED") == 1
     assert "FAILED frames/f1.mp4: not downloaded from Drive" in result.output
+
+
+# --- final review fixes ------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_export_refuses_a_shadowed_path_before_downloading_anything(
+    tmp_path, make_fake_drive, dry_run
+) -> None:
+    from protonfs.commands.offload import offload
+
+    ctx = _imported(tmp_path, make_fake_drive)
+    gitignore = ctx.root / ".gitignore"
+    gitignore.write_bytes(b"*.mp4\n" + gitignore.read_bytes())
+    _git(ctx.root, "add", ".gitignore")
+    _git(ctx.root, "commit", "-q", "-m", "rule")
+    offload(ctx, "frames", min_age=0)
+    before = _export_snapshot(ctx)
+
+    result = export_to_git(ctx, IMPORT, dry_run=dry_run)
+
+    assert "store/.gitignore:1:*.mp4" in _reasons(result.refusals)["frames/f0.mp4"]
+    assert ctx.drive.download_calls == []
+    assert _export_snapshot(ctx) == before
+
+
+def test_pull_and_refresh_never_bring_back_an_exported_file(tmp_path, make_fake_drive) -> None:
+    # its Drive copy is kept; once git has moved or deleted the file, neither this clone
+    # (refresh seeds it) nor another (its index entry survives) may download it again
+    from protonfs.commands.pull import pull
+    from protonfs.drive import RemoteEntry
+
+    ctx = _imported(tmp_path, make_fake_drive)
+    export_to_git(ctx, IMPORT)
+    _git(ctx.root, "commit", "-q", "-m", "export")
+    _git(ctx.root, "mv", "frames/f0.mp4", "frames/g0.mp4")
+    _git(ctx.root, "commit", "-q", "-m", "rename")
+    ctx = load_context(ctx.root)
+    ctx.drive = make_fake_drive(
+        walk_entries=[RemoteEntry(rel_path=r, is_dir=False, size=9) for r in IMPORT]
+    )
+
+    pull(ctx, None, None, False, refresh=True)
+    assert ctx.drive.download_calls == []
+    assert ctx.index.get("frames/f0.mp4") is None
+
+    ctx.index.set("frames/f1.mp4", _synced_like(ctx, "frames/f1.mp4"))  # another clone's entry
+    (ctx.root / "frames" / "f1.mp4").unlink()
+    pull(ctx, None, None, False)
+    assert ctx.drive.download_calls == []
+    assert not (ctx.root / "frames" / "f0.mp4").exists()
+
+
+def _synced_like(ctx, rel):
+    from protonfs.index import IndexEntry
+
+    return IndexEntry(9, 1.0, "h", "", f"{ROOT}/{rel}", "d", "present", "t")
+
+
+def test_check_export_refuses_a_path_git_lfs_would_store(tmp_path, make_fake_drive) -> None:
+    ctx = _imported(tmp_path, make_fake_drive)
+    (ctx.root / ".gitattributes").write_text("*.mp4 filter=lfs diff=lfs merge=lfs -text\n")
+    _git(ctx.root, "add", ".gitattributes")
+    _git(ctx.root, "commit", "-q", "-m", "lfs")
+
+    assert "git-LFS" in _reasons(check_export(ctx, IMPORT))["frames/f0.mp4"]
+
+
+def test_cli_export_counts_each_path_once(tmp_path, make_fake_drive, monkeypatch) -> None:
+    ctx = _imported(tmp_path, make_fake_drive)
+    (ctx.root / "frames" / "f0.mp4").write_bytes(b"edited, not pushed")
+
+    result = _cli_export(ctx, monkeypatch, *IMPORT)
+
+    assert "transferred=0 skipped=1 failed=1 tracked=0" in result.output
+
+
+def test_export_trash_failure_message_does_not_promise_a_later_push(
+    tmp_path, make_fake_drive
+) -> None:
+    ctx = _imported(tmp_path, make_fake_drive)
+    ctx.drive._fail_trash = True
+
+    result = export_to_git(ctx, IMPORT, trash_remote=True)
+
+    assert len(result.failures) == 2
+    for failure in result.failures:
+        assert "next push" not in failure["error"]
+        assert f"protonfs rm {failure['name']}" in failure["error"]
+
+
+def test_export_undo_instructions_cover_files_that_did_not_exist(
+    tmp_path, make_fake_drive, monkeypatch
+) -> None:
+    import click
+
+    ctx = _store(tmp_path, make_fake_drive, FILES)
+    import_from_git(ctx, IMPORT)
+    _git(ctx.root, "commit", "-q", "-m", "import")  # no .protonfs/ignore in HEAD
+    real_add = gitops.add
+
+    def add_then_fail(root, paths):
+        real_add(root, paths)
+        if ".protonfs/ignore" in paths:
+            raise gitops.GitError(["git", "add"], 1, "injected")
+
+    monkeypatch.setattr("protonfs.gitops.add", add_then_fail)
+    monkeypatch.setattr(
+        "protonfs.gitops.reset_paths",
+        lambda root, paths: (_ for _ in ()).throw(gitops.GitError(["git", "reset"], 1, "x")),
+    )
+
+    with pytest.raises(click.ClickException) as excinfo:
+        export_to_git(ctx, IMPORT)
+
+    message = excinfo.value.format_message()
+    assert "--literal-pathspecs" in message
+    assert f"rm {ctx.root / '.protonfs' / 'ignore'}" in message
+    assert "checkout HEAD -- .gitignore" in message

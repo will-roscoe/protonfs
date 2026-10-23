@@ -318,7 +318,7 @@ flag/argument name; these names, not just their presence, are frozen.
        reported before anything is done.
      - ``0`` exported, or a dry run with nothing refused; ``1`` a refusal (not held by
        the store, already tracked by git, still ignored by a git rule export did not
-       write, a ``.gitignore``/``.gitattributes``, outside the store, a ``.gitignore``
+       write, matched by a git-LFS filter, a ``.gitignore``/``.gitattributes``, outside the store, a ``.gitignore``
        or ``.protonfs/ignore`` with uncommitted changes, no git work tree), a file not
        downloaded or not verified, a git failure (rolled back), a Drive copy
        ``--trash-remote`` could not trash, or a Drive/lock error; ``2`` usage error.

@@ -460,11 +460,6 @@ def _roll_back(
 # --- export: files the store holds back into git ----------------------------------------
 
 
-def _own_import_line(rel: str, rule: str, imported: set[str]) -> bool:
-    """Whether ``rule`` (``source:line:pattern``) is the import block's line for ``rel``."""
-    return rel in imported and rule.endswith(":" + importblock.escape_line(rel))
-
-
 def check_export(ctx: RepoContext, paths: list[str]) -> list[Refusal]:
     """Return every reason the store-held ``paths`` cannot be exported, all at once.
 
@@ -516,12 +511,23 @@ def check_export(ctx: RepoContext, paths: list[str]) -> list[Refusal]:
         if path.exists() and (rel not in tracked or gitops.dirty_paths(ctx.root, [rel])):
             refusals.append(Refusal(rel, f"{rel} has uncommitted changes; commit them first"))
 
-    imported = importblock.block_paths(ctx.root)
-    for rel, rule in gitops.check_ignore(ctx.root, candidates).items():
-        if not _own_import_line(rel, rule, imported):
+    # Judged against .gitignore as export will leave it (these paths' import lines
+    # gone), without touching it: git reports only the LAST matching rule, so a rule
+    # shadowed by an import line shows only once that line is gone.
+    still = gitops.check_ignore_with(
+        ctx.root, candidates, importblock.gitignore_without(ctx.root, candidates)
+    )
+    for rel, rule in still.items():
+        refusals.append(Refusal(
+            rel, f"git would still ignore it, by the rule {rule}; export never edits a rule "
+            "it did not write",
+        ))
+    lfs = gitops.attribute(ctx.root, [r for r in candidates if r not in still], "filter")
+    for rel in candidates:
+        if lfs.get(rel) == "lfs":
             refusals.append(Refusal(
-                rel, f"git would still ignore it, by the rule {rule}; export never edits a "
-                "rule it did not write",
+                rel, "is matched by a git-LFS filter in .gitattributes, so `git add` would "
+                "send it to LFS rather than into git",
             ))
     return refusals
 
@@ -662,8 +668,8 @@ def export_to_git(
         _trash_deleted(ctx, paths, [], trashed, reporter)
         result.trashed = trashed.trashed_items
         result.failures = [
-            _fail(f["name"], "trash", f"its Drive copy is still there ({f['error']}); "
-                  f"`protonfs rm {f['name']}` trashes it")
+            _fail(f["name"], "trash", "its Drive copy is still there after trashing it; "
+                  f"git has the file, and `protonfs rm {f['name']}` trashes the copy")
             for f in trashed.failures
         ]
     for rel in paths:
@@ -752,11 +758,20 @@ def _export_roll_back(ctx, paths, files, before, exc, done, current) -> None:
             else:
                 path.write_bytes(before[rel])
     except (gitops.GitError, OSError) as undo_exc:
+        import shlex
+
         ran = "; ".join(done) or "nothing"
+        quoted = " ".join(shlex.quote(p) for p in [*paths, *files])
+        restore = [
+            f"rm {shlex.quote(str(path))}" if before[rel] is None
+            else f"git -C {shlex.quote(str(ctx.root))} checkout HEAD -- {rel}"
+            for rel, path in files.items()
+        ]
         raise click.ClickException(
             f"the git step failed ({exc}) and undoing it failed too ({undo_exc}). "
             f"Completed: {ran}. Interrupted while it: {current} (may be partly done). "
-            f"To undo by hand: `git -C {ctx.root} reset -q -- {' '.join(paths)} .gitignore "
-            f".protonfs/ignore`, then `git -C {ctx.root} checkout HEAD -- .gitignore "
-            ".protonfs/ignore`. Nothing was committed and no file was changed."
+            f"To undo by hand: `git --literal-pathspecs -C {shlex.quote(str(ctx.root))} reset "
+            f"-q -- {quoted}`, then " + ", ".join(f"`{c}`" for c in restore) + ". Nothing "
+            "was committed and no exported file was changed; .gitignore and "
+            ".protonfs/ignore may have been."
         ) from exc

@@ -549,7 +549,8 @@ def seed_index(ctx: RepoContext) -> tuple[int, int] | None:
         readable manifest (or ``$PROTONFS_NO_MANIFEST`` is set).
 
     .. versionchanged:: 3.1.0
-       Never seeds a ``.git`` path unless ``.protonfs/include`` names ``.git``.
+       Never seeds a ``.git`` path unless ``.protonfs/include`` names ``.git``, nor a
+       path in the ``.protonfs/ignore`` export block.
     """
     if disabled():
         return None
@@ -567,12 +568,15 @@ def seed_index(ctx: RepoContext) -> tuple[int, int] | None:
     now = _now()
     root = _remote_root(ctx)
     seeded = 0
+    from protonfs.importblock import export_block_paths
+
     ignore = IgnoreMatcher.from_file(ctx.root)
+    exported = export_block_paths(ctx.root)
     for rel, entry in handle.manifest.entries.items():
         if is_control_path(rel) or ctx.index.get(rel) is not None:
             continue
-        if is_git_path(rel) and ignore.matches(rel):
-            continue  # never index Drive's copy of a repository's .git
+        if (is_git_path(rel) and ignore.matches(rel)) or rel in exported:
+            continue  # never index Drive's copy of a .git, or of a file export moved to git
         ctx.index.set(
             rel,
             IndexEntry(

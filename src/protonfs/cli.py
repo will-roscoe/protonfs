@@ -1133,9 +1133,10 @@ def export_cmd(path: tuple[str, ...], dry_run: bool, strict: bool, trash_remote:
     Directories and patterns skip ``.protonfs/`` and git's own ``.gitignore`` and
     ``.gitattributes`` files. Refused, with nothing done (exit 1): a path the store does
     not hold, one git already tracks, one a git rule other than its import line still
-    ignores (the rule is named), a ``.gitignore``/``.gitattributes``, a path outside the
-    store; a ``.gitignore`` or ``.protonfs/ignore`` with uncommitted changes; a store
-    outside a git work tree. Every refusal is listed at once.
+    ignores (the rule is named), one a git-LFS filter would store in LFS, a
+    ``.gitignore``/``.gitattributes``, a path outside the store; a ``.gitignore`` or
+    ``.protonfs/ignore`` with uncommitted changes; a store outside a git work tree. Every
+    refusal is listed at once.
 
     Exit code: 0 exported (or a dry run with nothing refused); 1 a refusal, a file not
     downloaded or not verified, a git failure (rolled back), a Drive copy
@@ -1223,10 +1224,13 @@ def _export(ctx, path: tuple[str, ...], dry_run: bool, strict: bool, trash_remot
             click.echo(f"[dry-run] would trash {len(files)} Drive copy(ies)")
         click.echo("[dry-run] each file is verified on Drive when run for real")
         return
-    pulled = result.pulled
-    transferred = pulled.transferred_items if pulled else 0
-    skipped = len(files) - len(result.to_download)  # already on disk
-    failed = sum(1 for f in result.failures if f["kind"] != "git")
+    # each path counts once: downloaded, already on disk, or failed
+    failed_paths = {f["name"] for f in result.failures if f["kind"] != "git"}
+    transferred = result.pulled.transferred_items if result.pulled else 0
+    skipped = len([
+        rel for rel in files if rel not in result.to_download and rel not in failed_paths
+    ])
+    failed = len(failed_paths)
     trashed = f" trashed={result.trashed}" if trash_remote else ""
     click.echo(
         f"transferred={transferred} skipped={skipped} failed={failed} "
