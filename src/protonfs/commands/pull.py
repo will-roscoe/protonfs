@@ -14,7 +14,7 @@ from protonfs.batching import batches, group_by_parent
 from protonfs.config import CONFIG_DIR_NAME
 from protonfs.context import RepoContext
 from protonfs.diff import SyncState, classify, held_and_gone
-from protonfs.drive import RemoteEntry, TransferResult
+from protonfs.drive import RemoteEntry, TransferResult, downloaded_name
 from protonfs.ignore import IgnoreMatcher
 from protonfs.index import IndexEntry
 from protonfs.localscan import hash_file_digests, scan
@@ -95,6 +95,39 @@ def _staging_dir(ctx: RepoContext) -> Path:
     return staging
 
 
+def _remote_path(ctx: RepoContext, rel: str) -> str:
+    """The Drive path ``rel`` is downloaded from: its indexed one, else the default."""
+    entry = ctx.index.get(rel)
+    return entry.remote_path if entry else f"{ctx.config.remote_root}/{rel}"
+
+
+def _landed_name(ctx: RepoContext, rel: str) -> str:
+    """The name ``rel``'s download lands under (proton-drive renames ``q?`` to ``q_``)."""
+    return downloaded_name(PurePosixPath(_remote_path(ctx, rel)).name)
+
+
+def _apart_by_landed_name(batch: list[str], landed: dict[str, str]) -> list[list[str]]:
+    """Split ``batch`` so no two of its files land under one name in a single call.
+
+    :param batch: repo-relative paths of one folder's files.
+    :param landed: each path's landed name, from :func:`_landed_name`.
+    :returns: ``[batch]`` when every landed name is distinct (the usual case); otherwise
+        the fewest calls, in order, each holding at most one file per landed name.
+    """
+    calls: list[list[str]] = []
+    names: list[set[str]] = []
+    for rel in batch:
+        for call, taken in zip(calls, names):
+            if landed[rel] not in taken:
+                call.append(rel)
+                taken.add(landed[rel])
+                break
+        else:
+            calls.append([rel])
+            names.append({landed[rel]})
+    return calls
+
+
 def _download_and_index(
     ctx: RepoContext, rels: list[str], now: str, reporter, progress_total: int = 0
 ) -> TransferResult:
@@ -116,13 +149,20 @@ def _download_and_index(
     for parent, group in group_by_parent(rels).items():
         local_folder = ctx.root if parent == "." else ctx.root / parent
         local_folder.mkdir(parents=True, exist_ok=True)
-        for batch in batches(group, batch_size):
+        landed = {rel: _landed_name(ctx, rel) for rel in group}
+        # Two files proton-drive would land under one name ("a?" and "a*" both become
+        # "a_") would overwrite each other in staging, so they go in separate calls.
+        calls = [
+            call
+            for batch in batches(group, batch_size)
+            for call in _apart_by_landed_name(batch, landed)
+        ]
+        for batch in calls:
             remote_paths = []
             payload = 0  # #184: sizes the download's timeout
             for rel in batch:
                 entry = ctx.index.get(rel)
-                default_remote = f"{ctx.config.remote_root}/{rel}"
-                remote_paths.append(entry.remote_path if entry else default_remote)
+                remote_paths.append(_remote_path(ctx, rel))
                 payload += entry.size if entry else 0
             # Download into a staging directory and move each file into the tree only
             # once the transfer returns. Downloading straight to the destination left a
@@ -139,15 +179,20 @@ def _download_and_index(
                     remote_paths, tmp, file_strategy="replace", payload_bytes=payload or None
                 )
                 for rel in batch:
-                    landed = tmp / Path(rel).name
-                    if landed.exists():
-                        landed.replace(ctx.root / rel)
+                    landed_file = tmp / landed[rel]
+                    if landed_file.exists():
+                        landed_file.replace(ctx.root / rel)
             finally:
                 shutil.rmtree(tmp, ignore_errors=True)
-            # proton-drive names a failure by file name only; a batch is one folder, so
-            # the name settles the path, which callers matching failures need
-            by_name = {Path(rel).name: rel for rel in batch}
-            failures = [{**f, "path": by_name.get(f["name"])} for f in result.failures]
+            # proton-drive names a failure by its landed name only; a call is one folder
+            # with distinct landed names, so the name settles the path, which callers
+            # matching failures need. Report the file's own name, not the landed one.
+            by_name = {landed[rel]: rel for rel in batch}
+            failures = []
+            for f in result.failures:
+                rel = by_name.get(f["name"])
+                name = Path(rel).name if rel else f["name"]
+                failures.append({**f, "name": name, "path": rel})
             total.skipped_items += result.skipped_items
             total.failed_items += result.failed_items
             total.failures += failures
@@ -155,7 +200,7 @@ def _download_and_index(
             reporter.progress(done, progress_total or len(rels))
             failed_names = {f["name"] for f in result.failures}
             for rel in batch:
-                if Path(rel).name not in failed_names:
+                if landed[rel] not in failed_names:
                     reporter.item("v", rel)
 
             # #132: do NOT trust result.transferred_items -- verify each non-failed
@@ -165,7 +210,7 @@ def _download_and_index(
             # it unindexed so the next pull retries it, mirroring #22 on push.
             for rel in batch:
                 name = Path(rel).name
-                if name in failed_names:
+                if landed[rel] in failed_names:
                     continue
                 downloaded_path = ctx.root / rel
                 if not downloaded_path.exists():
@@ -206,13 +251,12 @@ def _fetch_remote_copies(ctx: RepoContext, rels: list[str]) -> int:
     suffixed copy is deliberately NOT indexed -- it is scratch for the user to reconcile."""
     fetched = 0
     for rel in rels:
-        entry = ctx.index.get(rel)
-        remote_path = entry.remote_path if entry else f"{ctx.config.remote_root}/{rel}"
+        remote_path = _remote_path(ctx, rel)
         dest = ctx.root / (rel + REMOTE_COPY_SUFFIX)
         dest.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(dir=dest.parent) as tmp:
             ctx.drive.download([remote_path], Path(tmp), file_strategy="replace")
-            landed = Path(tmp) / Path(rel).name
+            landed = Path(tmp) / _landed_name(ctx, rel)
             if landed.exists():
                 landed.replace(dest)
                 fetched += 1
