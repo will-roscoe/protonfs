@@ -387,12 +387,13 @@ def test_save_makes_the_rename_durable(tmp_path: Path, monkeypatch) -> None:
     # fsync the temp file, rename it into place, then fsync the directory: without the
     # last step a power cut can bring the old index back after offload deleted files
     import os
+    import stat
 
     calls = []
     real_fsync, real_replace = os.fsync, os.replace
 
     def fsync(fd):
-        calls.append("fsync-dir" if os.path.isdir(f"/proc/self/fd/{fd}") else "fsync-file")
+        calls.append("fsync-dir" if stat.S_ISDIR(os.fstat(fd).st_mode) else "fsync-file")
         return real_fsync(fd)
 
     monkeypatch.setattr(os, "fsync", fsync)
