@@ -10,6 +10,7 @@ control-file bookkeeping.
 from __future__ import annotations
 
 import subprocess
+import sys
 from pathlib import Path
 
 import click
@@ -21,6 +22,7 @@ from protonfs.config import (
     MissingDeviceIdError,
     ensure_device_id,
     init_config,
+    load_config,
     load_layered_config,
     migrate_device_id_to_local,
 )
@@ -83,23 +85,50 @@ def ensure_authenticated(drive: DriveClient) -> None:
         )
 
 
-def ensure_config(root: Path) -> Config:
-    """Load the repo's config, or interactively create it, returning the result.
+def _can_prompt() -> bool:
+    """Whether setup can ask a question: stdin is a terminal."""
+    return sys.stdin.isatty()
+
+
+def ensure_config(root: Path, remote_root: str | None = None) -> Config:
+    """Load the repo's config, or create it, returning the result.
 
     An existing repo is migrated in passing (any ``device_id`` in the shared config
-    is relocated to ``config.local.json``); a fresh repo prompts for its Drive
-    ``remote_root``.
+    is relocated to ``config.local.json``); a fresh repo takes its Drive
+    ``remote_root`` from ``remote_root``, or asks for it when stdin is a terminal.
 
     A repo that arrived by clone is a third case: its shared config is present but the
     per-device one is not, so it needs a ``device_id`` minted for this machine and
     nothing else (#151).
 
     :param root: the protonfs root.
+    :param remote_root: the Drive path for a new store (``--remote-root``). For an
+        existing store it must name the store's own root (a trailing ``/`` aside);
+        setup never repoints a store.
     :returns: the loaded or newly-initialised :class:`~protonfs.config.Config`.
+    :raises click.ClickException: when ``remote_root`` differs from an existing
+        store's (nothing is written), or when a new store has no ``remote_root`` and
+        stdin is not a terminal to ask on.
 
     .. versionchanged:: 1.12.1
        Sets up a freshly cloned repo instead of failing on its missing ``device_id``.
+
+    .. versionchanged:: 3.2.0
+       Added ``remote_root``; a new store with neither it nor a terminal fails instead
+       of waiting on a prompt.
     """
+    shared = load_config(root)
+    if (
+        shared is not None
+        and remote_root is not None
+        and remote_root.rstrip("/") != shared.remote_root.rstrip("/")
+    ):
+        # checked before a clone's device_id is minted, so a refusal writes nothing
+        raise click.ClickException(
+            f"this store's remote root is {shared.remote_root}, not {remote_root}; "
+            "setup does not repoint a store. Drop --remote-root, or pass "
+            f"--remote-root {shared.remote_root}."
+        )
     try:
         existing = load_layered_config(root)
     except MissingDeviceIdError:
@@ -116,8 +145,16 @@ def ensure_config(root: Path) -> Config:
         # anyway. Straightforward and idempotent; doesn't change the resolved config.
         migrate_device_id_to_local(root)
         return existing
-    remote_root = click.prompt("Remote Drive root path for this repo (e.g. /my-files/myproject)")
-    return init_config(root, remote_root)
+    if remote_root is None:
+        if not _can_prompt():
+            raise click.ClickException(
+                "this directory is not a store yet, and setup cannot ask for its remote "
+                "root without a terminal; pass --remote-root /my-files/..."
+            )
+        remote_root = click.prompt(
+            "Remote Drive root path for this repo (e.g. /my-files/myproject)"
+        )
+    return init_config(root, remote_root.rstrip("/") or "/")
 
 
 def is_git_toplevel(root: Path) -> bool:

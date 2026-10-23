@@ -119,6 +119,7 @@ def test_ensure_config_reuses_existing_config(
 def test_ensure_config_prompts_when_missing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setattr(setup_mod, "_can_prompt", lambda: True)
     monkeypatch.setattr(click, "prompt", lambda *a, **k: "/my-files/new")
     result = ensure_config(tmp_path)
     assert result.remote_root == "/my-files/new"
@@ -128,6 +129,7 @@ def test_ensure_config_prompts_when_missing(
 def test_ensure_config_new_repo_writes_device_id_to_local_file_only(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setattr(setup_mod, "_can_prompt", lambda: True)
     monkeypatch.setattr(click, "prompt", lambda *a, **k: "/my-files/new")
     ensure_config(tmp_path)
     shared_on_disk = json.loads((tmp_path / ".protonfs" / "config.json").read_text())
@@ -160,6 +162,84 @@ def test_ensure_config_sets_up_a_fresh_clone_without_prompting(
     assert load_local_config(tmp_path)["device_id"] == result.device_id
     shared_on_disk = json.loads((tmp_path / ".protonfs" / "config.json").read_text())
     assert shared_on_disk == {"remote_root": "/my-files/cloned"}
+
+
+def _no_prompt(*args, **kwargs):
+    raise AssertionError("setup must not prompt here")
+
+
+def test_ensure_config_uses_the_given_remote_root_without_prompting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # #217: no terminal needed when the root is given
+    monkeypatch.setattr(setup_mod, "_can_prompt", lambda: False)
+    monkeypatch.setattr(click, "prompt", _no_prompt)
+
+    result = ensure_config(tmp_path, remote_root="/my-files/sph-dev/products/")
+
+    assert result.remote_root == "/my-files/sph-dev/products"
+    assert load_config(tmp_path).remote_root == "/my-files/sph-dev/products"
+
+
+@pytest.mark.parametrize("given", ["/my-files/existing", "/my-files/existing/"])
+def test_ensure_config_accepts_an_existing_stores_own_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, given: str
+) -> None:
+    from protonfs.config import init_config
+
+    existing = init_config(tmp_path, "/my-files/existing")
+    before = (tmp_path / ".protonfs" / "config.json").read_bytes()
+    monkeypatch.setattr(click, "prompt", _no_prompt)
+
+    result = ensure_config(tmp_path, remote_root=given)
+
+    assert (result.remote_root, result.device_id) == ("/my-files/existing", existing.device_id)
+    assert (tmp_path / ".protonfs" / "config.json").read_bytes() == before
+
+
+def test_ensure_config_refuses_to_repoint_an_existing_store(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from protonfs.config import init_config
+
+    init_config(tmp_path, "/my-files/existing")
+    before = (tmp_path / ".protonfs" / "config.json").read_bytes()
+    monkeypatch.setattr(click, "prompt", _no_prompt)
+
+    with pytest.raises(click.ClickException) as info:
+        ensure_config(tmp_path, remote_root="/my-files/other")
+
+    assert "/my-files/existing" in info.value.message
+    assert "/my-files/other" in info.value.message
+    assert (tmp_path / ".protonfs" / "config.json").read_bytes() == before
+
+
+def test_ensure_config_refuses_to_repoint_a_fresh_clone_before_minting_its_device_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from protonfs.config import init_config
+
+    init_config(tmp_path, "/my-files/cloned")
+    (tmp_path / ".protonfs" / "config.local.json").unlink()
+    monkeypatch.setattr(click, "prompt", _no_prompt)
+
+    with pytest.raises(click.ClickException):
+        ensure_config(tmp_path, remote_root="/my-files/other")
+
+    assert not (tmp_path / ".protonfs" / "config.local.json").exists()
+
+
+def test_ensure_config_without_a_terminal_or_a_root_fails_naming_the_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(setup_mod, "_can_prompt", lambda: False)
+    monkeypatch.setattr(click, "prompt", _no_prompt)
+
+    with pytest.raises(click.ClickException) as info:
+        ensure_config(tmp_path)
+
+    assert "--remote-root" in info.value.message
+    assert load_config(tmp_path) is None
 
 
 def test_ensure_config_migrates_old_layout_device_id_to_local(tmp_path: Path) -> None:
