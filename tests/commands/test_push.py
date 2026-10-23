@@ -82,6 +82,31 @@ def test_push_uploads_local_only_files_and_updates_index(
     assert ctx.index.get("run1/dump_0001").remote_path == "/my-files/test/run1/dump_0001"
 
 
+def test_push_never_uploads_git_metadata(tmp_path: Path, make_fake_drive) -> None:
+    # a store at a repository's root, holding a nested repo's gitlink file
+    for rel, data in {
+        ".git/HEAD": b"ref: refs/heads/main\n",
+        ".git/objects/ab/cdef": b"blob",
+        "run1/dump_0001": b"data",
+        "sub/.git": b"gitdir: ../.git/modules/sub\n",
+        "sub/table.csv": b"1,2",
+    }.items():
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_bytes(data)
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    fake = make_fake_drive()
+    ctx.drive = fake
+
+    result = push(ctx, None, resolve=None, dry_run=False)
+
+    assert result.transferred_items == 2
+    assert set(fake.revision_uids) == {
+        "/my-files/test/run1/dump_0001", "/my-files/test/sub/table.csv",
+    }
+    assert set(ctx.index.all()) == {"run1/dump_0001", "sub/table.csv"}
+
+
 def test_push_dry_run_does_not_call_upload(tmp_path: Path, make_fake_drive) -> None:
     (tmp_path / "dump_0001").write_bytes(b"data")
     init_config(tmp_path, "/my-files/test")

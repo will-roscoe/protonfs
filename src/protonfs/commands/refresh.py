@@ -12,7 +12,7 @@ from pathlib import Path
 from protonfs import refreshstate
 from protonfs.context import RepoContext
 from protonfs.diff import SyncState, classify, within_subpath
-from protonfs.ignore import IgnoreMatcher
+from protonfs.ignore import IgnoreMatcher, is_git_path
 from protonfs.index import IndexEntry
 from protonfs.localscan import ScanEntry, scan
 from protonfs.manifest import is_control_path
@@ -77,6 +77,9 @@ def refresh(
        as the point this index was reconciled with (#146), and never seeds anything
        under the remote ``.protonfs/`` control directory.
 
+    .. versionchanged:: 3.1.0
+       Never seeds a ``.git`` path unless ``.protonfs/include`` names ``.git``.
+
     .. seealso:: :mod:`protonfs.refreshstate` for the resumable-frontier persistence.
     """
     from protonfs.reporting import get_reporter
@@ -90,8 +93,8 @@ def refresh(
     # `local` may be supplied by a caller (e.g. pull --refresh) that already scanned
     # the same tree, so we don't pay for a second recursive walk + re-hash. Scan BEFORE
     # the remote walk so the per-directory seeding callback can consult it.
+    ignore = IgnoreMatcher.from_file(ctx.root)
     if local is None:
-        ignore = IgnoreMatcher.from_file(ctx.root)
         scan_root = Path(subpath) if subpath else Path(".")
         local = scan(ctx.root, scan_root, ignore, ctx.index, low_io=ctx.config.defaults.low_io)
 
@@ -107,6 +110,8 @@ def refresh(
             full_rel = f"{subpath}/{file_entry.rel_path}" if subpath else file_entry.rel_path
             if is_control_path(full_rel):
                 continue  # #146: the remote manifest lives here; it is not data
+            if is_git_path(full_rel) and ignore.matches(full_rel):
+                continue  # Drive's copy of a repository's .git must never land in this one
             if ctx.index.get(full_rel) is None and full_rel not in local:
                 ctx.index.set(
                     full_rel,

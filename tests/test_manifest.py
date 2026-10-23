@@ -703,6 +703,19 @@ def test_seed_index_never_overwrites_or_seeds_control_paths(tmp_path, make_fake_
     assert ctx.index.get(".protonfs/stray") is None
 
 
+def test_seed_index_skips_git_metadata(tmp_path, make_fake_drive) -> None:
+    ctx = _ctx(tmp_path, make_fake_drive)
+    handle = _create(ctx)
+    handle.record(".git/config", ManifestEntry(1, "", "", "", "t"))
+    handle.record("data", ManifestEntry(1, "", "", "", "t"))
+    handle.save()
+
+    seeded, _generation = manifest.seed_index(ctx)
+
+    assert seeded == 1
+    assert ctx.index.get(".git/config") is None
+
+
 def test_staleness_note_is_silent_when_the_check_fails(tmp_path, make_fake_drive) -> None:
     from protonfs.drive import DriveError
 

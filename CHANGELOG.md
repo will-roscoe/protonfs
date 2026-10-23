@@ -8,6 +8,10 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 
 ## [Unreleased]
 
+### Upgrade notes
+
+- **`.git` no longer syncs.** protonfs never uploads, downloads or indexes a path with a `.git` segment (a repository's metadata, or a submodule's `.git` file) unless `.protonfs/include` names `.git`. A `.git` an earlier version pushed stays on Drive and is never pulled back; `protonfs rm -r .git` moves it to the Drive trash without touching the local repository.
+
 ## [3.0.0] - 2026-10-20
 
 ### Upgrade notes
