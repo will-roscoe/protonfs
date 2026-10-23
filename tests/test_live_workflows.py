@@ -224,3 +224,45 @@ def test_workflow_import_two_files_from_a_git_repo(tmp_path: Path, live_remote: 
         parent, name = f"{live_remote}/{rel}".rsplit("/", 1)
         ident = ctx.drive.remote_identities(parent)[name]
         assert ident.claimed_size == len(data)
+
+
+def test_workflow_export_round_trip(tmp_path: Path, live_remote: str) -> None:
+    """#205: import two files, offload one, then export both with --trash-remote against
+    the real backend. The offloaded one is downloaded and both are verified on Drive, git
+    tracks them again with their original bytes, and their Drive copies are trashed."""
+    import subprocess
+
+    from protonfs import gitops
+    from protonfs.commands.gitmove import export_to_git, import_from_git
+    from protonfs.commands.offload import offload
+
+    def git(*args: str) -> str:
+        return subprocess.run(
+            ["git", "-c", "user.email=t@example.com", "-c", "user.name=t",
+             "-C", str(tmp_path / "repo"), *args],
+            check=True, capture_output=True, text=True,
+        ).stdout
+
+    (tmp_path / "repo").mkdir()
+    ctx = _repo(tmp_path / "repo", "store", live_remote)
+    files = {"out/a.bin": b"alpha" * 100, "out/b.bin": b"bravo" * 100}
+    _seed(ctx, files)
+    git("init", "-q")
+    git("add", "-A")
+    git("commit", "-q", "-m", "outputs")
+    imported = _eventually(lambda: import_from_git(ctx, sorted(files)))
+    assert imported.untracked == 2, (imported.refusals, imported.failures)
+    git("commit", "-q", "-m", "import")
+    offloaded = _eventually(lambda: offload(ctx, "out/a.bin", min_age=0))
+    assert offloaded.offloaded == 1
+
+    result = _eventually(lambda: export_to_git(ctx, sorted(files), trash_remote=True))
+
+    assert result.refusals == [] and result.failures == [], (result.refusals, result.failures)
+    assert result.pulled.transferred_items == 1
+    assert result.tracked == 2 and result.trashed == 2
+    assert set(files) <= gitops.tracked_files(ctx.root)
+    for rel, data in files.items():
+        assert (ctx.root / rel).read_bytes() == data
+    listed = ctx.drive.remote_identities(f"{live_remote}/out")
+    assert not {"a.bin", "b.bin"} & set(listed)

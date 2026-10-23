@@ -127,6 +127,7 @@ def check_import(ctx: RepoContext, paths: list[str]) -> list[Refusal]:
     modes = gitops.file_modes(ctx.root, in_git)
     lfs = gitops.attribute(ctx.root, in_git, "filter")
     matcher = IgnoreMatcher.from_file(ctx.root)
+    exported = importblock.export_block_paths(ctx.root)
     for rel in in_git:
         if rel in dirty:
             refusals.append(Refusal(rel, "has uncommitted changes; commit them first"))
@@ -144,6 +145,12 @@ def check_import(ctx: RepoContext, paths: list[str]) -> list[Refusal]:
             refusals.append(
                 Refusal(rel, "is a git-LFS pointer stub; run `git lfs pull` first")
             )
+        elif rel in exported:
+            refusals.append(Refusal(
+                rel, "was exported from this store: its line in the `# protonfs export` "
+                "block of .protonfs/ignore stops protonfs syncing it; remove that line and "
+                "commit, then import it",
+            ))
         elif matcher.matches(rel):
             pattern = _ignore_pattern(ctx.root, rel)
             refusals.append(
@@ -216,15 +223,48 @@ def verify_imported(ctx: RepoContext, paths: list[str], reporter=None) -> list[d
 
     .. versionadded:: 3.1.0
     """
-    from protonfs.hashcache import HashCache
+    return _verify_synced(
+        ctx, paths, reporter, blobs=gitops.head_blobs(ctx.root, paths),
+        changed=lambda rel: "changed since push read it",
+    )
+
+
+def verify_exported(ctx: RepoContext, paths: list[str], reporter=None) -> list[dict]:
+    """Verify each of ``paths`` is the latest synced version: a fresh read matches its
+    index entry, and the index matches a fresh listing of its Drive directory
+    (:func:`~protonfs.indexcheck.check_index` verdict ``OK``, and Drive's sha1 where Drive
+    reports one), so what git is given is what Drive holds.
+
+    :param ctx: the loaded store context.
+    :param paths: store-relative file paths, each present locally.
+    :param reporter: :class:`~protonfs.reporting.Reporter` for the listing's progress.
+    :returns: one ``{"name", "error", "kind"}`` dict per failed path (``kind``:
+        ``"unverified-local"``, ``"unverified-drive"``, ``"low-io-stale"``); empty when
+        every path verified.
+    :raises protonfs.drive.DriveThrottleError: when Drive throttles the listing, and
+        :class:`~protonfs.drive.DriveAuthError` when not logged in.
+
+    .. versionadded:: 3.1.0
+    """
+    return _verify_synced(
+        ctx, paths, reporter, blobs=None,
+        changed=lambda rel: (
+            f"changed since it was last pushed; run `protonfs push {rel}` first, so the "
+            "version git gets is the one Drive holds"
+        ),
+    )
+
+
+def _verify_synced(ctx, paths, reporter, *, blobs, changed) -> list[dict]:
+    """The checks :func:`verify_imported` and :func:`verify_exported` share; ``blobs``
+    (``HEAD``'s blob ids) adds import's comparison with git."""
     from protonfs.indexcheck import Verdict, check_index
     from protonfs.localscan import hash_file_digests_with_blob
 
-    blobs = gitops.head_blobs(ctx.root, paths)
     findings = {
         f.rel_path: f for f in check_index(ctx, reporter=reporter, only=set(paths)).findings
     }
-    cache = HashCache(ctx.root)
+    cache = ctx.hash_cache
     failures = []
     for rel in paths:
         entry = ctx.index.get(rel)
@@ -248,8 +288,12 @@ def verify_imported(ctx: RepoContext, paths: list[str], reporter=None) -> list[d
                     f"low_io) did not see it; run `PROTONFS_LOW_IO=0 protonfs push {rel}`",
                 ))
             else:
-                failures.append(_fail(rel, "unverified-local", "changed since push read it"))
-        elif blobs.get(rel) != blob and blobs.get(rel) != gitops.hash_object(ctx.root, rel):
+                failures.append(_fail(rel, "unverified-local", changed(rel)))
+        elif (
+            blobs is not None
+            and blobs.get(rel) != blob
+            and blobs.get(rel) != gitops.hash_object(ctx.root, rel)
+        ):
             # The second id applies the path's attributes (eol conversion): a file whose
             # bytes differ from HEAD's blob only by git's own checkout conversion matches.
             failures.append(_fail(rel, "unverified-local", "differs from the blob in HEAD"))
@@ -410,4 +454,324 @@ def _roll_back(
             f"`git --literal-pathspecs -C {ctx.root} reset -q --pathspec-from-file={listing} "
             f"--pathspec-file-nul`, `git -C {ctx.root} reset -q -- .gitignore`, then "
             f"`{restore}`. Nothing was committed and no imported file was changed."
+        ) from exc
+
+
+# --- export: files the store holds back into git ----------------------------------------
+
+
+def check_export(ctx: RepoContext, paths: list[str]) -> list[Refusal]:
+    """Return every reason the store-held ``paths`` cannot be exported, all at once.
+
+    The whole store (``"."``) is refused when git is missing or the store is not in a git
+    work tree. A path is refused when it lies outside the store or under ``.protonfs/``,
+    is a ``.gitignore``/``.gitattributes``, has a newline in its name, has no index entry
+    (the store does not hold it), is already tracked by git, or is ignored by a git rule
+    other than its own line in the import block (named, ``source:line:pattern``; export
+    never edits a rule it did not write). ``.gitignore`` and ``.protonfs/ignore`` are
+    refused when untracked or with uncommitted changes, since export stages them.
+
+    :param ctx: the loaded store context.
+    :param paths: store-relative file paths.
+    :returns: every refusal; empty when the export may go ahead.
+    :raises protonfs.gitops.GitError: when a git query itself fails.
+
+    .. versionadded:: 3.1.0
+    """
+    if shutil.which("git") is None:
+        return [Refusal(".", "git is not installed")]
+    if not gitops.in_work_tree(ctx.root):
+        return [Refusal(".", "not inside a git work tree")]
+
+    refusals: list[Refusal] = []
+    candidates = []
+    tracked = gitops.tracked_files(ctx.root)
+    for rel in paths:
+        norm = posixpath.normpath(rel) if _inside_store(rel) else rel
+        if not _inside_store(rel):
+            refusals.append(Refusal(rel, "outside the store"))
+        elif norm.split("/")[0] == ".protonfs":
+            refusals.append(Refusal(rel, "inside .protonfs/ (protonfs's own files)"))
+        elif posixpath.basename(norm) in GIT_CONTROL_FILES:
+            refusals.append(Refusal(rel, "is a git control file; it is not the store's"))
+        elif "\n" in rel or "\r" in rel:
+            refusals.append(Refusal(
+                rel, "name contains a newline or carriage return, which no ignore line "
+                "can match exactly",
+            ))
+        elif norm in tracked:
+            refusals.append(Refusal(rel, "already tracked by git"))
+        elif ctx.index.get(norm) is None:
+            refusals.append(Refusal(rel, "not held by the store (no index entry)"))
+        else:
+            candidates.append(norm)
+
+    for rel, path in ((".gitignore", importblock.gitignore_path(ctx.root)),
+                      (".protonfs/ignore", ignore_path(ctx.root))):
+        if path.exists() and (rel not in tracked or gitops.dirty_paths(ctx.root, [rel])):
+            refusals.append(Refusal(rel, f"{rel} has uncommitted changes; commit them first"))
+
+    # Judged against .gitignore as export will leave it (these paths' import lines
+    # gone), without touching it: git reports only the LAST matching rule, so a rule
+    # shadowed by an import line shows only once that line is gone.
+    still = gitops.check_ignore_with(
+        ctx.root, candidates, importblock.gitignore_without(ctx.root, candidates)
+    )
+    for rel, rule in still.items():
+        refusals.append(Refusal(
+            rel, f"git would still ignore it, by the rule {rule}; export never edits a rule "
+            "it did not write",
+        ))
+    lfs = gitops.attribute(ctx.root, [r for r in candidates if r not in still], "filter")
+    for rel in candidates:
+        if lfs.get(rel) == "lfs":
+            refusals.append(Refusal(
+                rel, "is matched by a git-LFS filter in .gitattributes, so `git add` would "
+                "send it to LFS rather than into git",
+            ))
+    return refusals
+
+
+@dataclass
+class ExportResult:
+    """The outcome of :func:`export_to_git`.
+
+    :ivar paths: the store-relative paths asked for.
+    :ivar refusals: precondition failures (:func:`check_export`, or a git rule found to
+        still ignore a path once its import line was gone); when any, git was not changed.
+    :ivar to_download: the paths not on disk (offloaded), which are pulled first.
+    :ivar pulled: what that pull did (``None`` when nothing needed downloading).
+    :ivar failures: ``{"name", "error", "kind"}`` per path not delivered
+        (``"not-delivered"``) or not verified (:func:`verify_exported`'s kinds), when git
+        was not changed; one ``kind="git"`` entry when the git step failed and was rolled
+        back; or, after a successful export, ``kind="trash"`` per Drive copy
+        ``trash_remote`` could not remove.
+    :ivar tracked: files git now tracks (staged).
+    :ivar trashed: Drive copies moved to the Drive trash (``trash_remote``).
+    :ivar gitignore_removed: lines removed (or that would be) from the store's
+        ``.gitignore`` import block.
+    :ivar ignore_lines: lines added (or that would be) to the ``.protonfs/ignore`` export
+        block.
+    :ivar git_commands: the git commands run (or, in a dry run, that would run).
+    :ivar rolled_back: a git command failed and every change was undone.
+    :ivar total_bytes: the combined size of the files in ``paths``, from the index.
+
+    .. versionadded:: 3.1.0
+    """
+
+    paths: list[str]
+    refusals: list[Refusal] = field(default_factory=list)
+    to_download: list[str] = field(default_factory=list)
+    pulled: TransferResult | None = None
+    failures: list[dict] = field(default_factory=list)
+    tracked: int = 0
+    trashed: int = 0
+    gitignore_removed: list[str] = field(default_factory=list)
+    ignore_lines: list[str] = field(default_factory=list)
+    git_commands: list[str] = field(default_factory=list)
+    rolled_back: bool = False
+    total_bytes: int = 0
+
+
+def _export_commands(paths: list[str], stage_gitignore: bool) -> list[str]:
+    import shlex
+
+    staged = [*paths, ".gitignore"] if stage_gitignore else list(paths)
+    return [
+        "git --literal-pathspecs add -- " + " ".join(shlex.quote(p) for p in staged),
+        "git add -- .protonfs/ignore",
+    ]
+
+
+def export_to_git(
+    ctx: RepoContext,
+    paths: list[str],
+    *,
+    dry_run: bool = False,
+    trash_remote: bool = False,
+    reporter=None,
+) -> ExportResult:
+    """Move store-held ``paths`` into git: pull, verify, then track them and stop syncing.
+
+    Steps: :func:`check_export` (any refusal returns at once, nothing done); pull the
+    paths not on disk (any not delivered returns, git unchanged); :func:`verify_exported`
+    (any failure returns, git unchanged); then, all or nothing, remove their lines from
+    the store's ``.gitignore`` import block, ``git add`` them (and ``.gitignore``), add a
+    literal line per path to the ``.protonfs/ignore`` export block and stage it. A
+    failing git command rolls every change back. Only then, with ``trash_remote``, are
+    their Drive copies trashed (each confirmed by a listing); their index and manifest
+    entries are dropped either way. Never commits; never changes a local file's content.
+    The caller holds the repo lock.
+
+    :param ctx: the loaded store context.
+    :param paths: store-relative file paths, already expanded.
+    :param dry_run: report the plan (downloads, lines, commands) and change nothing;
+        Drive is not listed and no file is hashed.
+    :param trash_remote: trash the Drive copies once git tracks the files; otherwise
+        they are kept, and protonfs no longer syncs them.
+    :param reporter: :class:`~protonfs.reporting.Reporter` to narrate progress through.
+    :returns: an :class:`ExportResult`.
+    :raises click.ClickException: when a git step failed and the rollback failed too;
+        the message lists the commands that undo what was done.
+    :raises protonfs.drive.DriveError: on a Drive failure the pull or the listing raises.
+
+    .. versionadded:: 3.1.0
+    """
+    from protonfs import manifest
+    from protonfs.commands.pull import pull
+    from protonfs.reporting import get_reporter
+
+    reporter = reporter or get_reporter()
+    result = ExportResult(paths=list(paths))
+    result.refusals = check_export(ctx, paths)
+    if result.refusals:
+        return result
+    imported = importblock.block_paths(ctx.root)
+    exported = importblock.export_block_paths(ctx.root)
+    result.gitignore_removed = [importblock.escape_line(p) for p in paths if p in imported]
+    result.ignore_lines = [importblock.escape_line(p) for p in paths if p not in exported]
+    result.git_commands = _export_commands(paths, bool(result.gitignore_removed))
+    result.to_download = [
+        p for p in paths
+        if ctx.index.get(p).local_state != "present" or not (ctx.root / p).is_file()
+    ]
+    result.total_bytes = sum(ctx.index.get(p).size for p in paths)
+    if dry_run:
+        return result
+
+    if result.to_download:
+        result.pulled = pull(
+            ctx, None, None, False, reporter=reporter, only=set(result.to_download)
+        )
+        why = {f["name"]: f["error"] for f in result.pulled.failures}  # keyed by file name
+        for rel in result.to_download:
+            entry = ctx.index.get(rel)
+            if entry is None or entry.local_state != "present" or not (ctx.root / rel).is_file():
+                reason = why.get(posixpath.basename(rel))
+                result.failures.append(_fail(
+                    rel, "not-delivered",
+                    "not downloaded from Drive" + (f": {reason}" if reason else ""),
+                ))
+        if result.failures:
+            return result
+    result.failures = verify_exported(ctx, paths, reporter=reporter)
+    if result.failures:
+        return result
+    _export_git_step(ctx, paths, result)
+    if result.refusals or result.failures:
+        return result
+
+    if trash_remote:
+        from protonfs.commands.push import _trash_deleted
+
+        trashed = TransferResult(0, 0, 0, [])
+        _trash_deleted(ctx, paths, [], trashed, reporter)
+        result.trashed = trashed.trashed_items
+        result.failures = [
+            _fail(f["name"], "trash", "its Drive copy is still there after trashing it; "
+                  f"git has the file, and `protonfs rm {f['name']}` trashes the copy")
+            for f in trashed.failures
+        ]
+    for rel in paths:
+        ctx.index.remove(rel)
+    ctx.index.save()
+    if manifest.update(ctx, forget=list(paths)) is not None:
+        ctx.index.save()
+    return result
+
+
+class _StillIgnored(Exception):
+    """A git rule other than export's own still ignores some paths."""
+
+    def __init__(self, hits: dict[str, str]) -> None:
+        super().__init__(f"{len(hits)} path(s) still ignored")
+        self.hits = hits
+
+
+def _export_git_step(ctx: RepoContext, paths: list[str], result: ExportResult) -> None:
+    """Un-ignore and stage ``paths``, then add their export lines and stage those, all or
+    nothing.
+
+    Git's side goes first, so an interruption leaves each file tracked by git, synced by
+    protonfs, or both, never neither. Any exception, a Ctrl-C included, undoes every
+    change before it propagates (a git or file error becomes a ``kind="git"`` failure, a
+    rule that still ignores a path a refusal). When the undo fails too, a
+    :class:`click.ClickException` says which steps ran and how to undo them by hand.
+    """
+    files = {
+        ".gitignore": importblock.gitignore_path(ctx.root),
+        ".protonfs/ignore": ignore_path(ctx.root),
+    }
+    before = {rel: (p.read_bytes() if p.exists() else None) for rel, p in files.items()}
+    staged = [*paths, ".gitignore"] if result.gitignore_removed else list(paths)
+
+    def check() -> None:
+        hits = gitops.check_ignore(ctx.root, paths)
+        if hits:
+            raise _StillIgnored(hits)
+
+    steps = []
+    if result.gitignore_removed:
+        steps.append((
+            "removed the .gitignore lines", lambda: importblock.remove_paths(ctx.root, paths)
+        ))
+    steps += [
+        ("checked no other git rule ignores the files", check),
+        ("staged the files (git add)", lambda: gitops.add(ctx.root, staged)),
+        ("wrote the .protonfs/ignore lines",
+         lambda: importblock.add_export_paths(ctx.root, paths)),
+        ("staged .protonfs/ignore", lambda: gitops.add(ctx.root, [".protonfs/ignore"])),
+    ]
+    done: list[str] = []
+    current = ""
+    try:
+        for label, step in steps:
+            current = label
+            step()
+            done.append(label)
+    except BaseException as exc:  # noqa: BLE001 -- a Ctrl-C must roll back too
+        _export_roll_back(ctx, paths, files, before, exc, done, current)
+        if isinstance(exc, _StillIgnored):
+            result.refusals = [
+                Refusal(rel, f"git would still ignore it, by the rule {rule}; export never "
+                        "edits a rule it did not write")
+                for rel, rule in sorted(exc.hits.items())
+            ]
+            return
+        if not isinstance(exc, (gitops.GitError, OSError)):
+            raise
+        result.rolled_back = True
+        result.failures = [_fail(".", "git", f"git step failed and was rolled back: {exc}")]
+        return
+    result.tracked = len(paths)
+
+
+def _export_roll_back(ctx, paths, files, before, exc, done, current) -> None:
+    """Undo :func:`_export_git_step`'s changes: the git index, then both files' bytes."""
+    import click
+
+    try:
+        gitops.reset_paths(ctx.root, [*paths, *files])
+        for rel, path in files.items():
+            if before[rel] is None:
+                path.unlink(missing_ok=True)
+            else:
+                path.write_bytes(before[rel])
+    except (gitops.GitError, OSError) as undo_exc:
+        import shlex
+
+        ran = "; ".join(done) or "nothing"
+        quoted = " ".join(shlex.quote(p) for p in [*paths, *files])
+        restore = [
+            f"rm {shlex.quote(str(path))}" if before[rel] is None
+            else f"git -C {shlex.quote(str(ctx.root))} checkout HEAD -- {rel}"
+            for rel, path in files.items()
+        ]
+        raise click.ClickException(
+            f"the git step failed ({exc}) and undoing it failed too ({undo_exc}). "
+            f"Completed: {ran}. Interrupted while it: {current} (may be partly done). "
+            f"To undo by hand: `git --literal-pathspecs -C {shlex.quote(str(ctx.root))} reset "
+            f"-q -- {quoted}`, then " + ", ".join(f"`{c}`" for c in restore) + ". Nothing "
+            "was committed and no exported file was changed; .gitignore and "
+            ".protonfs/ignore may have been."
         ) from exc

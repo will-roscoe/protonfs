@@ -110,3 +110,40 @@ def test_a_non_utf8_gitignore_is_read_and_kept_byte_for_byte(tmp_path: Path) -> 
 
     assert (tmp_path / ".gitignore").read_bytes().startswith(b"caf\xe9.tmp\n")
     assert importblock.block_paths(tmp_path) == {"a.bin"}
+
+
+# --- the export block in .protonfs/ignore ---------------------------------------------
+
+
+@pytest.mark.parametrize("name", NAMES)
+def test_export_block_round_trips_and_matches_only_its_own_file(
+    tmp_path: Path, name: str
+) -> None:
+    from protonfs.ignore import IgnoreMatcher
+
+    (tmp_path / ".protonfs").mkdir()
+    importblock.add_export_paths(tmp_path, [name])
+    assert importblock.export_block_paths(tmp_path) == {name}
+    matcher = IgnoreMatcher.from_file(tmp_path)
+    assert matcher.matches(name)
+    if name in DECOYS:
+        assert not matcher.matches(DECOYS[name])
+
+
+def test_export_block_leaves_user_lines_and_import_block_alone(tmp_path: Path) -> None:
+    (tmp_path / ".protonfs").mkdir()
+    ignore = tmp_path / ".protonfs" / "ignore"
+    ignore.write_bytes(b"*.tmp\r\ncore.*\r\n")
+    importblock.add_paths(tmp_path, ["kept.bin"])
+
+    assert importblock.add_export_paths(tmp_path, ["a.bin", "a.bin", "b.bin"]) == [
+        "/a.bin", "/b.bin",
+    ]
+    assert importblock.remove_export_paths(tmp_path, ["a.bin"]) == ["/a.bin"]
+    assert ignore.read_bytes() == (
+        b"*.tmp\r\ncore.*\r\n" + importblock.EXPORT_BLOCK_START.encode() + b"\r\n/b.bin\r\n"
+        + importblock.EXPORT_BLOCK_END.encode() + b"\r\n"
+    )
+    importblock.remove_export_paths(tmp_path, ["b.bin"])
+    assert ignore.read_bytes() == b"*.tmp\r\ncore.*\r\n"
+    assert importblock.block_paths(tmp_path) == {"kept.bin"}  # .gitignore untouched

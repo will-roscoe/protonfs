@@ -711,6 +711,45 @@ The location and format of that block are current behaviour, not part of the
 :doc:`../stability` contract. ``.gitignore`` is itself an ordinary file in the store,
 so protonfs syncs it like any other.
 
+.. _cmd-export:
+
+export
+------
+.. click:: protonfs.cli:export_cmd
+   :prog: protonfs export
+
+.. versionadded:: 3.1.0
+
+The reverse of :ref:`import <cmd-import>`: moves files this store holds back into git,
+for example a file that should be versioned after all. ``PATH`` may be a file, a
+directory (the files the store holds under it that git does not track) or a quoted glob
+matched against the files the store holds, offloaded ones included::
+
+    protonfs export --dry-run 'run01/*.reduced.fits'
+    protonfs export 'run01/*.reduced.fits'
+    git status
+    git commit -m "chore: move 32 file(s) from protonfs into git"
+
+What it changes, and only after every file is on disk and verified against Drive (see
+:doc:`../guarantees`):
+
+* offloaded files are downloaded first;
+* each file's line is removed from the import block of ``<store>/.gitignore``, if it
+  has one, and ``git add`` stages the file (and ``.gitignore``);
+* one line per file goes into a ``# protonfs export`` block in ``.protonfs/ignore``,
+  which is staged too, so no machine syncs the files any more;
+* the files' index entries (and remote manifest entries) are dropped. Their Drive
+  copies are kept unless ``--trash-remote``; ``protonfs rm PATH`` trashes one later.
+  A kept copy shows as ``remote-only`` in ``status --remote`` and ``ls --remote``, but
+  ``pull`` and ``refresh`` never bring it back, on any machine, even after git moved or
+  deleted the file.
+
+When other clones pull the commit, git replaces their copy of each file with the
+committed one, even if theirs had changes git never saw (git treats ignored files as
+expendable). Run ``protonfs push`` on those clones first. A file listed in the export
+block is refused by ``import``, with the line to remove named. The block's location and
+format are current behaviour, not part of the :doc:`../stability` contract.
+
 The summary is push's line plus ``untracked=N``. Afterwards the files are still in
 git history; ``git filter-repo`` removes them from it (protonfs does not). On other
 clones, pulling the commit removes the files from the work tree; ``protonfs pull``

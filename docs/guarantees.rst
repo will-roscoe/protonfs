@@ -250,6 +250,19 @@ locally; ``push`` never trashes a path listed in the import block, whatever
 ``--deletions`` says, so those Drive copies stay, and a default ``pull`` brings the
 files back.
 
+``protonfs export`` moves files the other way with the same rules. It downloads any
+offloaded file, then reads every file once and requires that the bytes match the index
+entry and that the index matches a fresh listing of the file's Drive directory, so git
+is given the version Drive holds and never a stale copy that would replace a newer one
+another clone pushed. If any file fails, git is not changed. Git's side goes first: the
+import line is removed from ``.gitignore`` and the files are staged, and only then does
+the ``.protonfs/ignore`` export block that stops protonfs syncing them get written and
+staged. An interruption therefore leaves each file tracked by git, synced by protonfs,
+or both, never neither, and a failing git command undoes every change. The Drive
+copies stay unless ``--trash-remote`` is given, which trashes them only after the git
+step succeeded, so the file is then on disk and staged in git. Export never commits,
+never rewrites history, and never changes or deletes a local file.
+
 Settle window: nothing still being written is deleted
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 A file can still be in use when no process holds it open, so ``offload`` (and

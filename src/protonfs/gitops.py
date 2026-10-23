@@ -205,6 +205,10 @@ def check_ignore(root: Path, paths: list[str]) -> dict[str, str]:
         root, ["check-ignore", "-v", "-z", "--no-index", "--stdin"],
         stdin=_nul(paths), ok=(0, 1), literal=False,
     )
+    return _ignore_hits(out)
+
+
+def _ignore_hits(out: bytes) -> dict[str, str]:
     fields = _split_keep_empty(out)
     hits: dict[str, str] = {}
     for i in range(0, len(fields) - 3, 4):
@@ -212,6 +216,60 @@ def check_ignore(root: Path, paths: list[str]) -> dict[str, str]:
         if pattern and not pattern.startswith("!"):
             hits[path] = f"{source}:{line}:{pattern}"
     return hits
+
+
+def check_ignore_with(root: Path, paths: list[str], gitignore: bytes | None) -> dict[str, str]:
+    """As :func:`check_ignore`, but as if the store root's ``.gitignore`` held
+    ``gitignore`` (``None``: no such file), without changing any file.
+
+    Git is asked about a scratch work tree holding copies of only the ``.gitignore``
+    files on the way from the repository root to each path, with the store's replaced;
+    the repository's ``info/exclude`` and ``core.excludesFile`` apply as usual.
+
+    :param root: the store root.
+    :param paths: store-relative paths.
+    :param gitignore: the store ``.gitignore``'s content to judge by.
+    :returns: ``{path: "source:line:pattern"}`` for each path still ignored, ``source``
+        relative to the repository root (or absolute, for ``info/exclude``).
+    :raises GitError: when git fails.
+
+    .. versionadded:: 3.1.0
+    """
+    import shutil
+    import tempfile
+
+    if not paths:
+        return {}
+    def rev_parse(option: str) -> str:
+        out = _run(root, ["rev-parse", option], literal=False)
+        return out.decode("utf-8", "surrogateescape").rstrip("\n")
+
+    top = Path(rev_parse("--show-toplevel"))
+    git_dir = rev_parse("--absolute-git-dir")
+    prefix_dir = rev_parse("--show-prefix").rstrip("/")
+    with tempfile.TemporaryDirectory(prefix="protonfs-ignore-") as tmp:
+        mirror = Path(tmp)
+        dirs = {""}
+        for path in paths:
+            parts = [*filter(None, prefix_dir.split("/")), *path.split("/")[:-1]]
+            dirs.update("/".join(parts[:i]) for i in range(len(parts) + 1))
+        for rel_dir in dirs:
+            source = top / rel_dir / ".gitignore"
+            if source.is_file():
+                (mirror / rel_dir).mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(source, mirror / rel_dir / ".gitignore")
+        store = mirror / prefix_dir
+        store.mkdir(parents=True, exist_ok=True)
+        (store / ".gitignore").unlink(missing_ok=True)
+        if gitignore is not None:
+            (store / ".gitignore").write_bytes(gitignore)
+        out = _run(
+            store,
+            [f"--git-dir={git_dir}", f"--work-tree={mirror}", "check-ignore", "-v", "-z",
+             "--no-index", "--stdin"],
+            stdin=_nul(paths), ok=(0, 1), literal=False,
+        )
+    return _ignore_hits(out)
 
 
 def _split_keep_empty(out: bytes) -> list[str]:

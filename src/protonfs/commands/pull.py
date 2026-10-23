@@ -10,6 +10,7 @@ import shutil
 import tempfile
 from pathlib import Path, PurePosixPath
 
+from protonfs import importblock
 from protonfs.batching import batches, group_by_parent
 from protonfs.config import CONFIG_DIR_NAME
 from protonfs.context import RepoContext
@@ -271,7 +272,9 @@ def pull(
 
     .. versionchanged:: 3.1.0
        Added ``only``, so the CLI pulls N named or matched files in one pass rather
-       than N. Never downloads a ``.git`` path unless ``.protonfs/include`` names ``.git``.
+       than N. Never downloads a ``.git`` path unless ``.protonfs/include`` names ``.git``,
+       nor a path in the ``.protonfs/ignore`` export block (``protonfs export`` moved it
+       into git; its kept Drive copy must not come back).
 
     .. seealso:: :func:`protonfs.commands.push.push` for the upload direction.
     """
@@ -331,6 +334,10 @@ def pull(
     # A .git path is never written from Drive unless the include file names it: an old
     # copy of a repository's metadata must not land in the live one.
     to_pull = [rel for rel in to_pull if not (is_git_path(rel) and ignore.matches(rel))]
+    # A file `export` moved into git is git's now; its kept Drive copy must never come
+    # back, e.g. after git moved or deleted it, or via another clone's old index entry.
+    exported = importblock.export_block_paths(ctx.root)
+    to_pull = [rel for rel in to_pull if rel not in exported]
     # #197: a file this machine held that is gone locally is restored by default (the
     # git-LFS reading: its copy is on Drive). With no_restore it was deleted or moved away
     # on purpose; leave it for push to act on and count it.

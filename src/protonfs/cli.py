@@ -1092,6 +1092,178 @@ def _import(ctx, path: tuple[str, ...], dry_run: bool, strict: bool) -> None:
         )
 
 
+@main.command("export")
+@click.argument("path", nargs=-1, required=True)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Show each path's verdict, what would be downloaded, the ignore lines and the git "
+    "commands, and change nothing.",
+)
+@click.option(
+    "--strict",
+    is_flag=True,
+    help="Fail (exit 1) if a PATH pattern matches nothing, instead of skipping it.",
+)
+@click.option(
+    "--trash-remote",
+    is_flag=True,
+    help="Once git tracks the files, move their Drive copies to the Drive trash. By "
+    "default they are kept on Drive, and protonfs no longer syncs them.",
+)
+@_drive_error_boundary
+def export_cmd(path: tuple[str, ...], dry_run: bool, strict: bool, trash_remote: bool) -> None:
+    """Move files this store holds back into git (to git).
+
+    Each PATH may be a file, a directory (the files the store holds under it) or a glob
+    pattern; a quoted pattern (``'**/*.mp4'``) matches the files the store holds,
+    offloaded ones included. Offloaded files are downloaded first. Each file is then
+    verified from a fresh read against its index entry and a fresh Drive listing, so git
+    gets the version Drive holds. Only when every one verifies: their lines leave the
+    import block of this store's ``.gitignore``, ``git add`` stages them, and one literal
+    line per file goes into a block in ``.protonfs/ignore``, so no machine syncs them any
+    more; ``.gitignore`` and ``.protonfs/ignore`` are staged too.
+
+    Nothing is committed and no file is changed or deleted: review with ``git status``
+    and commit. Git is changed for every PATH or for none. Drive copies are kept unless
+    ``--trash-remote``. When other clones pull the commit, git replaces their copy of
+    these files with the committed one; run ``protonfs push`` there first so no local
+    change is lost.
+
+    Directories and patterns skip ``.protonfs/`` and git's own ``.gitignore`` and
+    ``.gitattributes`` files. Refused, with nothing done (exit 1): a path the store does
+    not hold, one git already tracks, one a git rule other than its import line still
+    ignores (the rule is named), one a git-LFS filter would store in LFS, a
+    ``.gitignore``/``.gitattributes``, a path outside the store; a ``.gitignore`` or
+    ``.protonfs/ignore`` with uncommitted changes; a store outside a git work tree. Every
+    refusal is listed at once.
+
+    Exit code: 0 exported (or a dry run with nothing refused); 1 a refusal, a file not
+    downloaded or not verified, a git failure (rolled back), a Drive copy
+    ``--trash-remote`` could not trash, or a Drive/lock error; 2 usage error.
+
+    .. versionadded:: 3.1.0
+    """
+    from protonfs import gitops
+    from protonfs.context import load_context
+
+    ctx = load_context()
+    try:
+        _export(ctx, path, dry_run, strict, trash_remote)
+    except gitops.GitError as exc:
+        raise click.ClickException(f"git failed, nothing exported: {exc}") from exc
+
+
+def _held_under(subpaths: list[str | None], index, tracked: set[str]) -> list[str]:
+    """The files to export for `subpaths`: a store-held file itself, a directory's
+    store-held files git does not already track (``None`` = the whole store), less
+    ``.protonfs/`` and git control files, and any other literal path as given, so the
+    preconditions can refuse it by name."""
+    files: dict[str, None] = {}
+    for sub in subpaths:
+        within = index.paths_within(sub)
+        if sub is not None and within[:1] == [sub]:
+            under = [sub]  # a file named directly: refused by name if it cannot go
+        else:
+            under = [r for r in within if not _git_control(r) and r not in tracked]
+        files.update(dict.fromkeys(under or ([sub] if sub is not None else [])))
+    return list(files)
+
+
+def _export(ctx, path: tuple[str, ...], dry_run: bool, strict: bool, trash_remote: bool) -> None:
+    """The body of :func:`export_cmd`, inside its ``GitError`` boundary."""
+    from protonfs import gitops
+    from protonfs.commands.gitmove import check_export, export_to_git
+    from protonfs.commands.ls import human_size
+    from protonfs.locking import repo_lock
+
+    store_wide = check_export(ctx, []) if not gitops.in_work_tree(ctx.root) else []
+    if store_wide:  # no git, or not in a work tree: refuse before expanding anything
+        for refusal in store_wide:
+            click.echo(f"  REFUSED {refusal.path}: {refusal.reason}")
+        raise click.ClickException("nothing exported")
+    subpaths, unmatched = _resolve_pathspecs(
+        path, lambda p: _expand_pattern_index(list(ctx.index.all()), p)
+    )
+    _report_unmatched(unmatched, strict, "export")
+    files = _held_under(subpaths, ctx.index, gitops.tracked_files(ctx.root))
+    if not files:
+        click.echo("nothing to export")
+        return
+    with repo_lock(ctx.root), _resumable_on_interrupt(ctx, "export"):
+        result = export_to_git(ctx, files, dry_run=dry_run, trash_remote=trash_remote)
+    if result.refusals:
+        if dry_run:
+            refused = {r.path for r in result.refusals}
+            for rel in files:
+                if rel not in refused:
+                    click.echo(f"[dry-run] export {rel}")
+        for refusal in result.refusals:
+            click.echo(f"  REFUSED {refusal.path}: {refusal.reason}")
+        raise click.ClickException(
+            f"nothing exported: {len(result.refusals)} path(s) refused"
+        )
+    if dry_run:
+        for rel in files:
+            click.echo(f"[dry-run] export {rel}")
+        click.echo(
+            f"[dry-run] would download {len(result.to_download)} offloaded file(s); "
+            f"{len(files)} file(s), {human_size(result.total_bytes)} in all"
+        )
+        click.echo(
+            f"[dry-run] would remove {len(result.gitignore_removed)} line(s) from .gitignore"
+        )
+        click.echo(
+            f"[dry-run] would add {len(result.ignore_lines)} line(s) to .protonfs/ignore:"
+        )
+        for line in result.ignore_lines:
+            click.echo(f"[dry-run] {line}")
+        for command in result.git_commands:
+            click.echo(f"[dry-run] {command}")
+        if trash_remote:
+            click.echo(f"[dry-run] would trash {len(files)} Drive copy(ies)")
+        click.echo("[dry-run] each file is verified on Drive when run for real")
+        return
+    # each path counts once: downloaded, already on disk, or failed
+    failed_paths = {f["name"] for f in result.failures if f["kind"] != "git"}
+    transferred = result.pulled.transferred_items if result.pulled else 0
+    skipped = len([
+        rel for rel in files if rel not in result.to_download and rel not in failed_paths
+    ])
+    failed = len(failed_paths)
+    trashed = f" trashed={result.trashed}" if trash_remote else ""
+    click.echo(
+        f"transferred={transferred} skipped={skipped} failed={failed} "
+        f"tracked={result.tracked}{trashed}"
+    )
+    for failure in result.failures:
+        click.echo(f"  FAILED {failure['name']}: {failure['error']}")
+    if result.failures and not result.tracked:
+        raise click.ClickException(
+            f"{len(result.failures)} problem(s); nothing changed in git. Fix them and run "
+            "export again: files already downloaded are not downloaded again."
+        )
+    click.echo(
+        f"removed {len(result.gitignore_removed)} line(s) from .gitignore; added "
+        f"{len(result.ignore_lines)} line(s) to .protonfs/ignore"
+    )
+    click.echo(
+        "staged; review with `git status`, then: "
+        f'git commit -m "chore: move {result.tracked} file(s) from protonfs into git"'
+    )
+    if not trash_remote:
+        click.echo(
+            f"their Drive copies are kept ({human_size(result.total_bytes)}), and protonfs "
+            "no longer syncs them; `protonfs rm PATH` trashes one"
+        )
+    click.echo(
+        "other clones: git replaces their copy of these files with the committed one when "
+        "they pull this commit; run `protonfs push` there first so no local change is lost"
+    )
+    if result.failures:
+        raise click.exceptions.Exit(1)
+
+
 @main.command()
 @click.argument("path", nargs=-1)
 @click.option(

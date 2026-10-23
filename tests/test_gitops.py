@@ -188,3 +188,23 @@ def test_hash_object_applies_the_paths_conversions(tmp_path: Path) -> None:
     assert (store / "t.csv").read_bytes() == b"a\r\nb\r\n"
 
     assert gitops.hash_object(store, "t.csv") == gitops.head_blobs(store, ["t.csv"])["t.csv"]
+
+
+def test_check_ignore_with_judges_a_replaced_store_gitignore_without_writing_it(
+    tmp_path: Path,
+) -> None:
+    store = _repo(tmp_path, {"d/a.mp4": b"a", "d/b.bin": b"b", "d/c.txt": b"c"})
+    repo = store.parent
+    (repo / ".gitignore").write_text("*.mp4\n")
+    (repo / ".git" / "info" / "exclude").write_text("b.bin\n")
+    (store / ".gitignore").write_bytes(b"/d/a.mp4\n/d/c.txt\n")
+
+    hits = gitops.check_ignore_with(store, ["d/a.mp4", "d/b.bin", "d/c.txt"], b"!c.txt\n")
+
+    assert hits["d/a.mp4"] == ".gitignore:1:*.mp4"  # shadowed by the store's own line
+    assert hits["d/b.bin"].endswith("info/exclude:1:b.bin")
+    assert "d/c.txt" not in hits
+    assert (store / ".gitignore").read_bytes() == b"/d/a.mp4\n/d/c.txt\n"  # untouched
+    assert gitops.check_ignore_with(store, ["d/a.mp4"], None) == {
+        "d/a.mp4": ".gitignore:1:*.mp4"
+    }

@@ -77,3 +77,21 @@ The files are still in git history, so the repository is no smaller yet. Removin
 from history is a separate step with ``git filter-repo``, which protonfs does not run.
 Do it only once the import commit is pushed and every clone that needs the files has
 pulled them from Drive.
+
+7. Moving a file back into git
+-------------------------------
+``protonfs export`` is the reverse, for a file that should be versioned again::
+
+    cd products
+    protonfs export --dry-run run01/frame0001.reduced.fits
+    protonfs export run01/frame0001.reduced.fits
+    git commit -m "chore: move 1 file(s) from protonfs into git"
+
+It downloads the file if it was offloaded, checks it is the version Drive holds (push
+it first if you changed it locally), removes its line from the import block in
+``.gitignore``, stages it, and adds a line for it to ``.protonfs/ignore`` so no machine
+syncs it any more. The Drive copy is kept; add ``--trash-remote`` to move it to the
+Drive trash once git has the file.
+
+On other clones, run ``protonfs push`` before pulling the commit: git replaces their
+copy of the file with the committed one.

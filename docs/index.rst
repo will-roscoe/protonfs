@@ -23,7 +23,7 @@ Next steps
 - :doc:`getting-started/guide` -- a task-first "what do I want to do?" index with worked
   walkthroughs.
 - :doc:`getting-started/syncing` -- the push/pull/status sync model in depth.
-- :doc:`getting-started/git-to-store` -- moving committed files out of git into a store.
+- :doc:`getting-started/git-to-store` -- moving committed files out of git into a store, and back with ``export``.
 - :doc:`reference/index` -- every command, option, and behaviour.
 - :doc:`upgrading` -- upgrading protonfs, the proton-drive binary, and repo state.
 - :doc:`stability` -- the 3.x contract and versioning policy.
