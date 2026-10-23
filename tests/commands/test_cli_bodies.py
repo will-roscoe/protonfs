@@ -111,6 +111,30 @@ def test_cli_push_reports_failures_and_exits_1(
     assert "--resolve=remote|local|both" in result.output
 
 
+@pytest.mark.parametrize(
+    "failure",
+    [
+        # proton-drive's own per-file error, carrying no kind
+        {"name": "f", "error": "Error: EACCES: permission denied, open '/s/f'"},
+        {"name": "f", "error": "an LFS pointer", "kind": "lfs-pointer"},
+    ],
+)
+def test_cli_push_does_not_call_a_non_conflict_failure_a_conflict(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, make_fake_drive, failure: dict
+) -> None:
+    _ctx(tmp_path, monkeypatch, make_fake_drive)
+    monkeypatch.setattr(
+        "protonfs.commands.push.push",
+        lambda ctx, path, resolve, dry_run, **kwargs: TransferResult(0, 0, 1, [failure]),
+    )
+
+    result = CliRunner().invoke(main, ["push"])
+
+    assert result.exit_code == 1
+    assert "conflict" not in result.output
+    assert "--resolve" not in result.output
+
+
 def test_cli_push_passes_min_age_and_reports_held_files(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, make_fake_drive
 ) -> None:

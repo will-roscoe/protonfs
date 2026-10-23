@@ -984,3 +984,64 @@ def test_pull_cli_says_how_many_excluded_files_it_left_on_drive(
     assert result.exit_code == 0, result.output
     assert "transferred=1" in result.output
     assert "1 file(s) on Drive were not downloaded" in result.output
+
+
+def _remote_held(ctx, rel: str, content: bytes) -> None:
+    """``rel`` is offloaded here and its Drive copy holds ``content``."""
+    entry = _held_entry(rel)
+    entry.local_state = "metadata-only"
+    ctx.index.set(rel, entry)
+    ctx.drive._remote_content[entry.remote_path] = content
+
+
+def test_pull_finds_a_file_proton_drive_renamed_on_download(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    # proton-drive lands "q?.dat" as "q_.dat"; pull must still put it at "q?.dat"
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.drive = make_fake_drive()
+    _remote_held(ctx, "run/q?.dat", b"question")
+    _remote_held(ctx, "run/t 12:00.dat", b"colon")
+
+    result = pull(ctx, None, resolve=None, dry_run=False)
+
+    assert (result.transferred_items, result.failed_items) == (2, 0), result.failures
+    assert (tmp_path / "run" / "q?.dat").read_bytes() == b"question"
+    assert (tmp_path / "run" / "t 12:00.dat").read_bytes() == b"colon"
+    assert not (tmp_path / "run" / "q_.dat").exists()
+
+
+def test_pull_never_swaps_two_files_that_land_under_one_name(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    # "a?.dat" and "a*.dat" both land as "a_.dat": one call would overwrite one with the
+    # other in staging, so they must go in separate calls
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.drive = make_fake_drive()
+    _remote_held(ctx, "a?.dat", b"question")
+    _remote_held(ctx, "a*.dat", b"star")
+    _remote_held(ctx, "a_.dat", b"underscore")
+
+    result = pull(ctx, None, resolve=None, dry_run=False)
+
+    assert (result.transferred_items, result.failed_items) == (3, 0), result.failures
+    assert (tmp_path / "a?.dat").read_bytes() == b"question"
+    assert (tmp_path / "a*.dat").read_bytes() == b"star"
+    assert (tmp_path / "a_.dat").read_bytes() == b"underscore"
+    assert all(len(call[0]) == 1 for call in ctx.drive.download_calls)
+
+
+def test_pull_resolve_both_fetches_a_renamed_remote_copy(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    from protonfs.commands.pull import _fetch_remote_copies
+
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.drive = make_fake_drive()
+    _remote_held(ctx, "q?.dat", b"theirs")
+
+    assert _fetch_remote_copies(ctx, ["q?.dat"]) == 1
+    assert (tmp_path / "q?.dat.remote").read_bytes() == b"theirs"

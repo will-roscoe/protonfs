@@ -25,7 +25,13 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 
-from protonfs.drive import DriveError, RemoteEntry, RemoteIdentity, TransferResult
+from protonfs.drive import (
+    DriveError,
+    RemoteEntry,
+    RemoteIdentity,
+    TransferResult,
+    downloaded_name,
+)
 
 # proton-drive 0.8.0's failure for an image this host has no codec to thumbnail (#183).
 THUMBNAIL_ERROR = (
@@ -282,7 +288,8 @@ class FakeDrive:
             if name in failed or name in self._download_dropped_files:
                 continue
             content = self._remote_content.get(remote_path, b"downloaded")
-            (Path(local_folder) / name).write_bytes(content)
+            # proton-drive lands a file under a locally safe name (q?.dat -> q_.dat)
+            (Path(local_folder) / downloaded_name(name)).write_bytes(content)
         return result
 
     def _relocate(self, parent: str, name: str, new_parent: str, new_name: str) -> None:
