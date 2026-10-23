@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import datetime
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from protonfs.batching import group_by_parent
@@ -122,9 +122,18 @@ def offload(
         retention candidates); every check below still applies to each of them.
     :param now: the current time, for tests; defaults to :func:`time.time`.
     :returns: an :class:`OffloadResult` summarising freed/kept files and bytes.
+    :raises OSError: when the index cannot be saved before a folder's local copies are
+        deleted (after one retry); that folder's files and every later one stay on disk.
 
     .. versionchanged:: 2.2.0
        Added the settle rule (``min_age``, default one day) and ``only`` (#158).
+
+    .. versionchanged:: 3.1.0
+       Each folder's files are recorded as metadata-only and the index saved before
+       their local copies are deleted, so an interrupted offload never leaves the index
+       saying a deleted file is held here; ``push --deletions trash`` took such a file
+       for a local deletion and trashed its only copy. A save that fails twice raises
+       :exc:`OSError` with that folder's files still on disk.
     """
     from protonfs.reporting import get_reporter
 
@@ -171,6 +180,7 @@ def offload(
         # the default is always on. #158: even then, a file pushed while still unsettled
         # is re-verified, so the listing is fetched lazily for those.
         identities = ctx.drive.remote_identities(remote_parent) if verify else None
+        cleared: list[tuple[str, IndexEntry, int]] = []  # verified, to delete after a save
 
         for rel in rels:
             local_path = ctx.root / rel
@@ -227,34 +237,36 @@ def offload(
                     result.skipped_paths.append(rel)
                     continue
 
+            if dry_run:
+                result.offloaded += 1
+                result.bytes_reclaimed += local_size
+                result.offloaded_paths.append(rel)
+                continue
+            cleared.append((rel, entry, local_size))
+            ctx.index.set(rel, replace(entry, local_state="metadata-only"))
+
+        if not cleared:
+            continue
+        # Save BEFORE deleting: once a local copy is gone, the saved index must already
+        # say the file is on Drive only. Deleting first left a kill (or a failed save)
+        # with the index still saying the file is held here, and `push --deletions trash`
+        # then took it for a local deletion and trashed the only copy, on Drive. A file
+        # still on disk under a metadata-only entry is harmless: it scans as unchanged.
+        # #170: one failed save (a flaky network mount) is retried; a second failure
+        # stops offload with this folder's files still on disk.
+        if not ctx.index.checkpoint():
+            try:
+                ctx.index.save()
+            except OSError:
+                for rel, entry, _size in cleared:
+                    ctx.index.set(rel, entry)
+                raise
+        for rel, _entry, local_size in cleared:
+            reporter.item("x", rel)
+            (ctx.root / rel).unlink()
             result.offloaded += 1
             result.bytes_reclaimed += local_size
             result.offloaded_paths.append(rel)
-
-            if dry_run:
-                continue
-
-            reporter.item("x", rel)
-            local_path.unlink()
-            ctx.index.set(
-                rel,
-                IndexEntry(
-                    size=entry.size,
-                    mtime=entry.mtime,
-                    sha256=entry.sha256,
-                    sha1=entry.sha1,
-                    remote_path=entry.remote_path,
-                    origin_device=entry.origin_device,
-                    local_state="metadata-only",
-                    last_synced=entry.last_synced,
-                ),
-            )
-
-        # #3: persist after each parent group so an interruption resumes from here
-        # rather than re-deleting/re-verifying everything (mirrors push/pull). #170: a
-        # failed one is not fatal; the final save below persists everything.
-        if not dry_run:
-            ctx.index.checkpoint()
     if not dry_run:
         ctx.index.save()
     reporter.done("offloaded", files=result.offloaded, reclaimed=result.bytes_reclaimed)
