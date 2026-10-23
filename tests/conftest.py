@@ -502,6 +502,14 @@ def _reset_protonfs_logger():
 
 
 @pytest.fixture(autouse=True)
+def checkpoint_every_call(monkeypatch):
+    """Make every IndexStore.checkpoint() save, as before 3.1.0 throttled it, so the
+    tests of what each progress save records still see one per folder or batch. Tests
+    of the throttle itself set CHECKPOINT_INTERVAL_S back."""
+    monkeypatch.setattr("protonfs.index.CHECKPOINT_INTERVAL_S", 0.0)
+
+
+@pytest.fixture(autouse=True)
 def no_keyring_bootstrap(monkeypatch):
     """Keep the keyring bootstrap out of every test that does not target it.
 

@@ -80,6 +80,40 @@ class OffloadResult:
             getattr(self, name).extend(getattr(other, name))
 
 
+def _delete_after_saving(
+    ctx: RepoContext, cleared: list[tuple[str, IndexEntry, int]], result, reporter
+) -> None:
+    """Save the index, which already records ``cleared`` as metadata-only, then delete
+    their local copies and count them in ``result``; empties ``cleared``.
+
+    Save BEFORE deleting: once a local copy is gone, the saved index must already say the
+    file is on Drive only. Deleting first left a kill (or a failed save) with the index
+    still saying the file is held here, and ``push --deletions trash`` then took it for a
+    local deletion and trashed the only copy, on Drive. A file still on disk under a
+    metadata-only entry is harmless: it scans as unchanged.
+
+    :raises OSError: when the save fails twice (#170: one failure on a flaky network
+        mount is retried); the entries are put back and nothing is deleted.
+    """
+    try:
+        ctx.index.save()
+    except OSError as exc:
+        reporter.warn(f"index save failed, retrying before deleting anything: {exc}")
+        try:
+            ctx.index.save()
+        except OSError:
+            for rel, entry, _size in cleared:
+                ctx.index.set(rel, entry)
+            raise
+    for rel, _entry, local_size in cleared:
+        reporter.item("x", rel)
+        (ctx.root / rel).unlink()
+        result.offloaded += 1
+        result.bytes_reclaimed += local_size
+        result.offloaded_paths.append(rel)
+    cleared.clear()
+
+
 def _pushed_unsettled(entry: IndexEntry, min_age: float) -> bool:
     """Whether the index entry was written while its file was still inside the settle
     window (last sync less than ``min_age`` after the file's last modification). An
@@ -122,18 +156,19 @@ def offload(
         retention candidates); every check below still applies to each of them.
     :param now: the current time, for tests; defaults to :func:`time.time`.
     :returns: an :class:`OffloadResult` summarising freed/kept files and bytes.
-    :raises OSError: when the index cannot be saved before a folder's local copies are
-        deleted (after one retry); that folder's files and every later one stay on disk.
+    :raises OSError: when the index cannot be saved before a batch of local copies is
+        deleted (after one retry); that batch and every later file stay on disk.
 
     .. versionchanged:: 2.2.0
        Added the settle rule (``min_age``, default one day) and ``only`` (#158).
 
     .. versionchanged:: 3.1.0
-       Each folder's files are recorded as metadata-only and the index saved before
-       their local copies are deleted, so an interrupted offload never leaves the index
-       saying a deleted file is held here; ``push --deletions trash`` took such a file
-       for a local deletion and trashed its only copy. A save that fails twice raises
-       :exc:`OSError` with that folder's files still on disk.
+       Verified files are recorded as metadata-only and the index saved before their
+       local copies are deleted, so an interrupted offload never leaves the index saying
+       a deleted file is held here; ``push --deletions trash`` took such a file for a
+       local deletion and trashed its only copy. Deletions go in batches, one save per
+       :data:`~protonfs.index.CHECKPOINT_INTERVAL_S` rather than one per folder. A save
+       that fails twice raises :exc:`OSError` with the batch's files still on disk.
     """
     from protonfs.reporting import get_reporter
 
@@ -170,6 +205,7 @@ def offload(
         reporter.done("offloaded", files=result.offloaded, reclaimed=result.bytes_reclaimed)
         return result
 
+    cleared: list[tuple[str, IndexEntry, int]] = []  # verified, to delete after a save
     for parent, rels in group_by_parent(candidates).items():
         remote_parent = (
             f"{ctx.config.remote_root}/{parent}" if parent != "." else ctx.config.remote_root
@@ -180,7 +216,6 @@ def offload(
         # the default is always on. #158: even then, a file pushed while still unsettled
         # is re-verified, so the listing is fetched lazily for those.
         identities = ctx.drive.remote_identities(remote_parent) if verify else None
-        cleared: list[tuple[str, IndexEntry, int]] = []  # verified, to delete after a save
 
         for rel in rels:
             local_path = ctx.root / rel
@@ -245,29 +280,13 @@ def offload(
             cleared.append((rel, entry, local_size))
             ctx.index.set(rel, replace(entry, local_state="metadata-only"))
 
-        if not cleared:
-            continue
-        # Save BEFORE deleting: once a local copy is gone, the saved index must already
-        # say the file is on Drive only. Deleting first left a kill (or a failed save)
-        # with the index still saying the file is held here, and `push --deletions trash`
-        # then took it for a local deletion and trashed the only copy, on Drive. A file
-        # still on disk under a metadata-only entry is harmless: it scans as unchanged.
-        # #170: one failed save (a flaky network mount) is retried; a second failure
-        # stops offload with this folder's files still on disk.
-        if not ctx.index.checkpoint():
-            try:
-                ctx.index.save()
-            except OSError:
-                for rel, entry, _size in cleared:
-                    ctx.index.set(rel, entry)
-                raise
-        for rel, _entry, local_size in cleared:
-            reporter.item("x", rel)
-            (ctx.root / rel).unlink()
-            result.offloaded += 1
-            result.bytes_reclaimed += local_size
-            result.offloaded_paths.append(rel)
-    if not dry_run:
+        # Delete in batches, each after a save, at most once per checkpoint interval:
+        # a save per folder rewrote the whole index once per folder.
+        if cleared and ctx.index.checkpoint_due():
+            _delete_after_saving(ctx, cleared, result, reporter)
+    if cleared:
+        _delete_after_saving(ctx, cleared, result, reporter)
+    elif not dry_run:
         ctx.index.save()
     reporter.done("offloaded", files=result.offloaded, reclaimed=result.bytes_reclaimed)
     return result

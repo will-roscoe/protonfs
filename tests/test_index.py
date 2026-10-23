@@ -180,6 +180,7 @@ def test_checkpoint_reports_a_failed_save_instead_of_raising(
     assert store.get("a/b") == _entry()
 
     monkeypatch.undo()
+    monkeypatch.setattr(index_mod, "CHECKPOINT_INTERVAL_S", 0.0)  # undo() reset it too
     assert store.checkpoint() is True
     assert IndexStore(tmp_path).get("a/b") == _entry()
 
@@ -343,3 +344,61 @@ def test_paths_within_finds_a_file_or_a_directory_s_files(tmp_path: Path) -> Non
     store.set("a/e", _entry())
     store.remove("a/b")
     assert store.paths_within("a") == ["a/c/d", "a/e"]
+
+
+def test_checkpoint_saves_at_most_once_per_interval(tmp_path: Path, monkeypatch) -> None:
+    # A whole-index rewrite per folder cost 1.6 s each at 100k entries; progress is
+    # instead persisted at most every CHECKPOINT_INTERVAL_S, and `save` always writes.
+    clock = [1000.0]
+    monkeypatch.setattr(index_mod, "_monotonic", lambda: clock[0])
+    monkeypatch.setattr(index_mod, "CHECKPOINT_INTERVAL_S", 10.0)
+    writes = []
+    real_write = IndexStore._write_atomically
+    monkeypatch.setattr(
+        IndexStore, "_write_atomically",
+        lambda self, data: (writes.append(1), real_write(self, data)),
+    )
+    store = IndexStore(tmp_path)
+    store.set("a", _entry())
+
+    assert store.checkpoint() is True
+    assert writes == []  # nothing is due straight after opening
+    clock[0] += index_mod.CHECKPOINT_INTERVAL_S
+    assert store.checkpoint() is True
+    assert len(writes) == 1
+    assert IndexStore(tmp_path).get("a") is not None
+    store.checkpoint()
+    assert len(writes) == 1  # the interval restarts at every save
+    store.save()
+    assert len(writes) == 2
+
+
+def test_save_writes_compact_json(tmp_path: Path) -> None:
+    store = IndexStore(tmp_path)
+    store.set("a", _entry())
+    store.set("b", _entry())
+    store.save()
+    text = (tmp_path / ".protonfs" / "index.json").read_text()
+    assert text.count("\n") == 1  # one line: the C encoder, and about a fifth fewer bytes
+    assert json.loads(text)["entries"]["a"]["size"] == 100
+
+
+def test_save_makes_the_rename_durable(tmp_path: Path, monkeypatch) -> None:
+    # fsync the temp file, rename it into place, then fsync the directory: without the
+    # last step a power cut can bring the old index back after offload deleted files
+    import os
+    import stat
+
+    calls = []
+    real_fsync, real_replace = os.fsync, os.replace
+
+    def fsync(fd):
+        calls.append("fsync-dir" if stat.S_ISDIR(os.fstat(fd).st_mode) else "fsync-file")
+        return real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", fsync)
+    monkeypatch.setattr(os, "replace", lambda a, b: (calls.append("replace"), real_replace(a, b)))
+    store = IndexStore(tmp_path)
+    store.set("a", _entry())
+    store.save()
+    assert calls == ["fsync-file", "replace", "fsync-dir"]

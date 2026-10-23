@@ -26,6 +26,10 @@ rename is a true same-filesystem atomic operation), flushed and ``fsync``'d, the
 swapped onto the real path with ``os.replace``. A reader — or a crash at any
 point during the write — only ever sees the complete old file or the complete
 new one; a torn or truncated index is not a failure mode this design permits.
+After the rename, ``IndexStore.save`` also ``fsync``'s the directory, so the
+rename itself survives a power cut (best effort: some FUSE and network mounts
+refuse to ``fsync`` a directory). Since 3.1.0 the index is written as compact
+JSON, about a fifth smaller than the indented form and faster to build.
 
 On some network and FUSE mounts (glusterfs, observed) the temp file is
 occasionally gone by the time of the rename. The content is still in memory, so
@@ -56,17 +60,27 @@ Resumable, idempotent push and pull
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 ``push`` and ``pull`` (``src/protonfs/commands/push.py``,
 ``src/protonfs/commands/pull.py``) both group their work by parent directory and
-call ``ctx.index.save()`` after each group completes, not just once at the end.
-Combined with the atomic-write guarantee above, this makes an interrupted run
+record each group in the index once it is confirmed (an upload seen in a Drive
+listing, a download found on disk), not just once at the end. The index is saved
+part-way through at most every ``CHECKPOINT_INTERVAL_S`` (10 s), and always at the
+end. Combined with the atomic-write guarantee above, this makes an interrupted run
 (Ctrl-C, a dropped connection, a killed process) crash-safe: the next invocation
-of the same command sees the index as it stood after the last completed group and
-only acts on what remains, rather than re-doing work already recorded or losing
-track of what happened before the interruption.
+sees the index as it stood at the last save and acts on what remains, repeating at
+most those few seconds of work. Before 3.1.0 the index was saved after every
+group; each save rewrites the whole file (1.6 s at 100,000 entries), so a run over
+thousands of folders spent most of its time saving.
 
-These per-group saves are checkpoints (``IndexStore.checkpoint``): if one fails,
+These progress saves are checkpoints (``IndexStore.checkpoint``): if one fails,
 the failure is logged and the run carries on, because the in-memory index still
 holds everything. The save at the end of the command persists it, and is the one
-that fails the command if it cannot (#170). ``offload`` saves the same way.
+that fails the command if it cannot (#170).
+
+``offload`` is stricter, because deleting a local copy cannot be undone. It records
+the verified files as metadata-only and saves the index *before* deleting them, in
+batches at most every ``CHECKPOINT_INTERVAL_S``; a failed save is retried once, and
+a second failure stops offload with the batch still on disk. An interruption can
+therefore never leave the index saying a deleted file is still held here, which
+``push --deletions trash`` would take for a local deletion of the only copy.
 
 Re-running ``push``/``pull`` on files that are already synced is a no-op — they
 classify as ``locally-indexed`` and are excluded from the transfer set — so
@@ -81,10 +95,12 @@ exponential backoff (bounded by ``PROTONFS_LIST_RETRIES`` /
 ``PROTONFS_LIST_BACKOFF`` / ``PROTONFS_LIST_BACKOFF_CAP``) before giving up on
 that call, so a single wedged directory doesn't blow up an otherwise-healthy
 walk. Beyond that, the walk's own frontier (the queue of directories not yet
-listed) is persisted after each directory via the atomic writer described above
-(``src/protonfs/refreshstate.py``), and metadata-only index entries are seeded
-and saved per-directory as they're discovered
-(``commands/refresh.py:_seed_directory``). If a run is interrupted partway — by
+listed) is persisted via the atomic writer described above
+(``src/protonfs/refreshstate.py``), always together with the index holding the
+metadata-only entries seeded so far (``commands/refresh.py:_seed_directory``), at
+most every ``CHECKPOINT_INTERVAL_S`` and when the walk is interrupted. The
+frontier is never saved ahead of the index, so a resumed walk never skips a
+directory whose entries were not saved. If a run is interrupted partway — by
 a throttle giving up, or by the process dying — the next ``refresh`` invocation
 resumes from the saved frontier instead of restarting the whole tree from the
 root (and re-triggering the same throttle).

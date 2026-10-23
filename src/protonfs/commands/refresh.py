@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import contextlib
 import datetime
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -78,7 +79,10 @@ def refresh(
        under the remote ``.protonfs/`` control directory.
 
     .. versionchanged:: 3.1.0
-       Never seeds a ``.git`` path unless ``.protonfs/include`` names ``.git``.
+       Never seeds a ``.git`` path unless ``.protonfs/include`` names ``.git``. Seeded
+       entries and the walk frontier are saved together, at most once per
+       :data:`~protonfs.index.CHECKPOINT_INTERVAL_S` and when the walk is interrupted,
+       instead of the index after every folder.
 
     .. seealso:: :mod:`protonfs.refreshstate` for the resumable-frontier persistence.
     """
@@ -102,10 +106,8 @@ def refresh(
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
     def _seed_directory(dir_files: list) -> None:
-        # #33: seed metadata-only entries for a directory's remote-only files and persist
-        # immediately, so if a later directory wedges under throttle the progress so far
-        # survives (crash-safe via #1's atomic writes) instead of being lost.
-        seeded_here = False
+        # #33: seed metadata-only entries for a directory's remote-only files; they are
+        # persisted with the frontier by _save_progress, and on an interruption below.
         for file_entry in dir_files:
             full_rel = f"{subpath}/{file_entry.rel_path}" if subpath else file_entry.rel_path
             if is_control_path(full_rel):
@@ -127,10 +129,7 @@ def refresh(
                     ),
                 )
                 result.seeded += 1
-                seeded_here = True
                 reporter.item("seed", full_rel)
-        if persist and seeded_here:
-            ctx.index.save()
 
     # #33 item 2: resume an interrupted walk from its saved frontier. A saved frontier for a
     # different root is stale for this pass (load_frontier returns None). Only touch the
@@ -138,18 +137,35 @@ def refresh(
     saved = refreshstate.load_frontier(ctx.root, remote_root) if persist else None
     result.resumed = saved is not None
 
+    pending_frontier: list = []  # the latest frontier the walk reported, if not yet saved
+
     def _save_progress(frontier: list) -> None:
-        if persist:
+        # The index first, then the frontier, and only together: a resume starts from the
+        # saved frontier, so it must never be past folders whose seeds were not saved. At
+        # most once per checkpoint interval, as each save rewrites the whole index.
+        pending_frontier[:] = [frontier]
+        if persist and ctx.index.checkpoint_due():
+            ctx.index.save()
             refreshstate.save_frontier(ctx.root, remote_root, frontier)
+            pending_frontier.clear()
 
     # #146: note which manifest generation this pass reconciles against BEFORE walking, so
     # the index never claims to be newer than what the walk actually saw.
     manifest_seen = _manifest_before_walk(ctx) if persist and not subpath else None
 
     reporter.phase("walking remote", root=remote_root)
-    entries = ctx.drive.walk(
-        remote_root, on_directory=_seed_directory, frontier=saved, on_progress=_save_progress
-    )
+    try:
+        entries = ctx.drive.walk(
+            remote_root, on_directory=_seed_directory, frontier=saved, on_progress=_save_progress
+        )
+    except BaseException:
+        # #33: keep what this pass seeded, and where it got to, for the next run
+        if persist:
+            with contextlib.suppress(OSError):
+                ctx.index.save()
+                if pending_frontier:
+                    refreshstate.save_frontier(ctx.root, remote_root, pending_frontier[0])
+        raise
     # The pass completed (walk returned) -- drop the frontier so the next refresh starts fresh.
     if persist:
         refreshstate.clear(ctx.root)

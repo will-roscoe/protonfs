@@ -34,6 +34,13 @@ _SAVE_ATTEMPTS = 5
 _SAVE_BACKOFF_S = 0.1
 _VANISHED_ERRNOS = frozenset({errno.ENOENT, errno.ESTALE})
 
+#: Seconds between the progress saves :meth:`IndexStore.checkpoint` makes. Each save
+#: rewrites the whole index (1.6 s and 39 MB at 100,000 entries), so a save per folder
+#: made a run over many folders quadratic; a crash loses at most this much progress,
+#: never data. :meth:`IndexStore.save` always writes.
+CHECKPOINT_INTERVAL_S = 10.0
+_monotonic = time.monotonic  # replaced in tests
+
 # On-disk schema version. Bump this whenever the persisted shape changes, and register a
 # forward migration below so existing repos upgrade transparently on their next save.
 #   v0 = legacy pre-versioning format: the document IS the bare {rel_path: entry} map.
@@ -177,6 +184,7 @@ class IndexStore:
         self._underdelivered: dict[str, dict] = {}
         # A new index holds only what this release records; an existing one is read below.
         self._check_level = CHECK_LEVEL
+        self._last_saved = _monotonic()
         self._load()
 
     def _load(self) -> None:
@@ -239,10 +247,13 @@ class IndexStore:
             document["underdelivered"] = {
                 rel_path: dict(record) for rel_path, record in self._underdelivered.items()
             }
-        data = json.dumps(document, indent=2, sort_keys=True) + "\n"
+        # Compact: json's C encoder handles no `indent`, so this is ~2.5x faster to build
+        # and about a fifth smaller to write (and send, on a network filesystem).
+        data = json.dumps(document, sort_keys=True, separators=(",", ":")) + "\n"
         for attempt in range(_SAVE_ATTEMPTS):
             try:
                 self._write_atomically(data)
+                self._last_saved = _monotonic()
                 return
             except OSError as exc:
                 if exc.errno not in _VANISHED_ERRNOS or attempt == _SAVE_ATTEMPTS - 1:
@@ -256,19 +267,34 @@ class IndexStore:
     def checkpoint(self) -> bool:
         """Save progress part-way through a command, without letting a failure abort it.
 
-        A failed save leaves the in-memory index intact, so the command carries on and
-        its final :meth:`save` persists everything; that one raises if it fails too.
+        Writes only once :data:`CHECKPOINT_INTERVAL_S` has passed since the last save
+        (:meth:`checkpoint_due`); otherwise it does nothing. A failed save leaves the
+        in-memory index intact, so the command carries on and its final :meth:`save`
+        persists everything; that one raises if it fails too.
 
-        :returns: whether the index was saved.
+        :returns: ``False`` when a due save failed, else ``True``.
 
         .. versionadded:: 2.4.0
+
+        .. versionchanged:: 3.1.0
+           Saves at most once per :data:`CHECKPOINT_INTERVAL_S`, not on every call.
         """
+        if not self.checkpoint_due():
+            return True
         try:
             self.save()
         except OSError as exc:
             logger.warning("index progress save failed, will retry at the end: %s", exc)
             return False
         return True
+
+    def checkpoint_due(self) -> bool:
+        """Whether :data:`CHECKPOINT_INTERVAL_S` has passed since the last save, so the
+        next :meth:`checkpoint` writes.
+
+        .. versionadded:: 3.1.0
+        """
+        return _monotonic() - self._last_saved >= CHECKPOINT_INTERVAL_S
 
     def _write_atomically(self, data: str) -> None:
         """Write ``data`` to a fresh temp file beside the index and rename it into place."""
@@ -288,6 +314,19 @@ class IndexStore:
         except BaseException:
             tmp.unlink(missing_ok=True)
             raise
+        # The rename is durable only once the directory entry is: without this a power cut
+        # can bring the old index back even though the new one was written. Best effort,
+        # as some FUSE/network filesystems refuse fsync on a directory.
+        try:
+            dir_fd = os.open(self._path.parent, os.O_RDONLY)
+        except OSError:
+            return
+        try:
+            os.fsync(dir_fd)
+        except OSError:
+            pass
+        finally:
+            os.close(dir_fd)
 
     def get(self, rel_path: str) -> IndexEntry | None:
         """Return the entry for ``rel_path``, or ``None`` if it is not tracked."""
