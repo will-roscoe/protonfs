@@ -8,6 +8,12 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 
 ## [Unreleased]
 
+## [3.2.0] - 2026-10-24
+
+### Features
+
+- setup --remote-root PATH sets up a new store without a prompt (#222)
+
 ## [3.1.1] - 2026-10-23
 
 ### Bug fixes
@@ -810,7 +816,8 @@ the preceding development history and its first tagged release:
   line-matching, git-mutation error wrapping, `pathspec` deprecation, subpath
   prune data-loss fix.
 
-[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v3.1.1...HEAD
+[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v3.2.0...HEAD
+[3.2.0]: https://github.com/will-roscoe/protonfs/compare/v3.1.1...v3.2.0
 [3.1.1]: https://github.com/will-roscoe/protonfs/compare/v3.1.0...v3.1.1
 [3.1.0]: https://github.com/will-roscoe/protonfs/compare/v3.0.0...v3.1.0
 [3.0.0]: https://github.com/will-roscoe/protonfs/compare/v2.6.0...v3.0.0
