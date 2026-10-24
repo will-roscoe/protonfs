@@ -441,6 +441,27 @@ def load_layered_config(repo_root: Path) -> Config | None:
     return Config.from_dict(merged)
 
 
+def resolved_remote_root(repo_root: Path) -> str | None:
+    """Return the ``remote_root`` the store at ``repo_root`` resolves to, across layers.
+
+    Merges the same layers as :func:`load_layered_config` (global, shared, local, env)
+    but needs no ``device_id``, so it also answers for a fresh clone.
+
+    :param repo_root: Root of the repo being synced.
+    :returns: the resolved ``remote_root``; ``None`` when ``repo_root`` is not a store
+        (no shared ``config.json``) or no layer sets one.
+
+    .. versionadded:: 3.2.0
+    """
+    shared_path = config_path(repo_root)
+    if not shared_path.exists():
+        return None
+    merged = _deep_merge(load_global_config(), _read_json_dict(shared_path))
+    merged = _deep_merge(merged, load_local_config(repo_root))
+    merged = _deep_merge(merged, _env_layer())
+    return merged.get("remote_root") or None
+
+
 def migrate_device_id_to_local(repo_root: Path) -> bool:
     """Move a `device_id` living in the (old-layout) shared `config.json` into the
     per-device `config.local.json` (#21). Backward-compat: existing repos that predate
