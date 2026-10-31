@@ -377,6 +377,43 @@ def _report_unmatched(unmatched: list[str], strict: bool, verb: str) -> None:
     )
 
 
+def _glob_known(ctx, pattern: str) -> list[str]:
+    """Expand `pattern` against the local tree and the index together.
+
+    The matcher for the scan-scoped commands (``status``, ``ls``, ``offload``, ``prune``),
+    which act on tracked files wherever they are: on disk, offloaded (index only) or
+    both. A pattern is read as a literal path first: when `pattern` names an existing
+    file or directory, or an indexed path or the directory of one, it is returned as
+    given, so a folder called ``run[7]`` is not mistaken for a glob. Otherwise the result
+    is the union of :func:`_glob_local` and :func:`_expand_pattern_index`.
+    """
+    if (
+        (ctx.root / pattern).exists()
+        or ctx.index.get(pattern) is not None
+        or ctx.index.paths_within(pattern)
+    ):
+        return [pattern]
+    index_keys = list(ctx.index.all())
+    found = set(_glob_local(ctx.root, pattern)) | set(_expand_pattern_index(index_keys, pattern))
+    return sorted(found)
+
+
+def _resolve_scan_paths(ctx, path: tuple[str, ...]) -> list[str | None]:
+    """Expand glob PATHs for a scan-scoped command and normalize them to its subpaths.
+
+    Patterns match via :func:`_glob_known`. Each pattern that matches nothing is reported
+    on stderr as ``no tracked path matches '<pattern>'``. If every given PATH was such a
+    pattern the result is ``[]`` (never ``[None]``, which would widen the command to the
+    whole repo), so the caller has nothing to do.
+
+    .. versionadded:: 3.3.1
+    """
+    subpaths, unmatched = _resolve_pathspecs(path, lambda p: _glob_known(ctx, p))
+    for pattern in unmatched:
+        click.echo(f"warning: no tracked path matches {pattern!r}", err=True)
+    return subpaths
+
+
 def _transfer_summary(result) -> str:
     """Push's ``key=value`` summary line for ``result`` (a :class:`TransferResult`);
     optional keys appear only when non-zero (see docs/stability.rst, Output contract)."""
@@ -619,7 +656,7 @@ def status(path: tuple[str, ...], fmt: str, remote: bool) -> None:
 
     ctx = load_context()
     counts: Counter = Counter()
-    for subpath in _normalize_paths(path):
+    for subpath in _resolve_scan_paths(ctx, path):
         counts.update(compute_status(ctx, subpath, remote=remote))
     code = status_exit_code(counts)
     if fmt == "json":
@@ -757,7 +794,7 @@ def ls(
 
     ctx = load_context()
     console = Console()
-    subpaths = _normalize_paths(path)
+    subpaths = _resolve_scan_paths(ctx, path)
     for subpath in subpaths:
         if len(subpaths) > 1 and fmt == "table":
             console.print(f"[bold]{subpath}:[/bold]")
@@ -1548,7 +1585,9 @@ def offload(
     min_age_s = _parse_min_age(min_age)
     ctx = load_context()
     verify = not no_verify
-    subpaths = _normalize_paths(path)
+    subpaths = _resolve_scan_paths(ctx, path)
+    if not subpaths:
+        return
 
     if not yes and not dry_run:
         shown = ", ".join(f"'{p}'" for p in subpaths if p) or "'.'"
@@ -1621,7 +1660,9 @@ def prune(
 
     min_age_s = _parse_min_age(min_age)
     ctx = load_context()
-    subpaths = _normalize_paths(path)
+    subpaths = _resolve_scan_paths(ctx, path)
+    if not subpaths:
+        return
     if not yes and not dry_run:
         shown = ", ".join(f"'{p}'" for p in subpaths if p) or "'.'"
         click.confirm(
