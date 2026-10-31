@@ -250,6 +250,12 @@ contract (see :doc:`../stability`).
 
    .. versionadded:: 2.5.0
 
+.. envvar:: PROTONFS_CLOCK_SKEW
+
+   Per-key override for :confval:`defaults.clock_skew` (``off``, ``auto`` or seconds).
+
+   .. versionadded:: 3.3.0
+
 .. envvar:: PROTONFS_CLOCK_AHEAD_LIMIT
 
    Seconds this host's clock may run ahead of Proton's before uploads are refused
@@ -257,8 +263,9 @@ contract (see :doc:`../stability`).
    clock (60 s ahead was accepted and 90 s refused when measured), so a fast clock fails
    every upload. Before its first upload, protonfs compares the clock with the ``Date``
    of a Proton API response and stops with the measured offset when it is over this
-   limit; an offset it cannot measure does not stop the upload. Sync the clock (NTP)
-   rather than raising the limit past about 60.
+   limit; an offset it cannot measure does not stop the upload. With
+   :confval:`defaults.clock_skew` set, the corrected offset is what is checked. Sync the
+   clock (NTP) or set ``clock_skew`` rather than raising the limit past about 60.
 
    .. versionadded:: 3.3.0
 
@@ -427,6 +434,27 @@ Configuration file and keys
    :envvar:`PROTONFS_SKIP_THUMBNAILS`.
 
    .. versionadded:: 2.5.0
+
+.. confval:: defaults.clock_skew
+   :type: str
+   :default: off
+
+   How proton-drive's clock is corrected before it signs uploads. Proton rejects a file
+   whose signatures are dated ahead of its own clock, so a host whose clock runs fast
+   fails every upload (see :envvar:`PROTONFS_CLOCK_AHEAD_LIMIT`).
+
+   * ``off``: no correction; an upload from a clock too far ahead is refused.
+   * ``auto``: measure the offset against Proton's clock once per run and run
+     proton-drive on a clock shifted back by it. Right on a shared home directory,
+     where one config file reaches hosts whose clocks differ.
+   * a number: the seconds this host's clock runs ahead of Proton's (negative if it
+     runs behind); proton-drive's clock is shifted back by that much.
+
+   The shift is applied by a ``--preload`` script handed to proton-drive (a Bun build)
+   through ``BUN_OPTIONS``; it changes the time proton-drive signs with, not the system
+   clock. Overridable via :envvar:`PROTONFS_CLOCK_SKEW`.
+
+   .. versionadded:: 3.3.0
 
 .. confval:: defaults.deletions
    :type: str

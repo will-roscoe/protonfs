@@ -204,11 +204,12 @@ see the CHANGELOG for everything else.
   the remote-view states.
 * Config keys: ``defaults.event_log``, ``defaults.progress_style`` (1.3.0);
   ``defaults.manifest`` (2.1.0); ``defaults.batch_size``, ``defaults.skip_thumbnails``
-  (2.5.0); ``defaults.deletions`` (3.0.0).
+  (2.5.0); ``defaults.deletions`` (3.0.0); ``defaults.clock_skew`` (3.3.0).
 * Environment variables: ``PROTONFS_EVENT_LOG``, ``PROTONFS_PROGRESS_STYLE`` (1.3.0);
   ``PROTONFS_MANIFEST``, ``PROTONFS_NO_MANIFEST`` (2.1.0); ``PROTONFS_BATCH_SIZE``,
   ``PROTONFS_SKIP_THUMBNAILS``, ``PROTONFS_TRANSFER_MIN_RATE`` (2.5.0);
-  ``PROTONFS_DRIVE_CACHE_HOME`` (2.6.0); ``PROTONFS_CLOCK_AHEAD_LIMIT`` (3.3.0).
+  ``PROTONFS_DRIVE_CACHE_HOME`` (2.6.0); ``PROTONFS_CLOCK_SKEW``,
+  ``PROTONFS_CLOCK_AHEAD_LIMIT`` (3.3.0).
 * The `Output contract`_ above (summary keys and ``--format json`` keys) is new in the
   3.x contract; the keys themselves shipped with the options that print them.
 
@@ -525,7 +526,8 @@ Known keys for ``config get``/``config set``: :confval:`remote_root`,
 :confval:`device_id`, :confval:`defaults.on_conflict`, :confval:`defaults.low_io`,
 :confval:`defaults.event_log`, :confval:`defaults.progress_style`,
 :confval:`defaults.manifest` (added in 2.1.0), :confval:`defaults.skip_thumbnails` (added
-in 2.5.0), :confval:`defaults.deletions` (added in 3.0.0). Each is defined in the
+in 2.5.0), :confval:`defaults.deletions` (added in 3.0.0), :confval:`defaults.clock_skew`
+(added in 3.3.0). Each is defined in the
 Configuration
 section of :doc:`reference/index`.
 
@@ -541,7 +543,7 @@ Layered configuration, highest precedence first:
    outright.
 #. Built-in defaults (``defaults.on_conflict=skip``, ``defaults.low_io=false``,
    ``defaults.manifest=true``, ``defaults.skip_thumbnails=false``,
-   ``defaults.deletions=keep``,
+   ``defaults.deletions=keep``, ``defaults.clock_skew=off``,
    ``defaults.event_log=false``, ``defaults.progress_style=inline``).
 
 ``config get`` always reports the fully resolved value across all four layers.
@@ -615,6 +617,8 @@ Environment variables
      - Base backoff in seconds between Drive upload/download retries (default ``2``).
    * - :envvar:`PROTONFS_TRANSFER_BACKOFF_CAP`
      - Cap in seconds on the Drive upload/download retry backoff (default ``60``).
+   * - :envvar:`PROTONFS_CLOCK_SKEW`
+     - Per-key override for the resolved :confval:`defaults.clock_skew` config value.
    * - :envvar:`PROTONFS_CLOCK_AHEAD_LIMIT`
      - Seconds this host's clock may run ahead of Proton's before uploads are refused
        (default ``30``).

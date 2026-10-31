@@ -35,6 +35,7 @@ from protonfs.config import (
     save_global_config,
     save_local_config,
 )
+from protonfs.drive import parse_clock_skew
 
 # Keys settable/gettable through this command -- kept in lockstep with the `Config`
 # dataclass shape (#21 asks that it stay stable; this is the only place that needs to
@@ -49,6 +50,7 @@ KNOWN_KEYS = (
     "defaults.manifest",
     "defaults.skip_thumbnails",
     "defaults.deletions",
+    "defaults.clock_skew",
 )
 _BOOL_KEYS = {
     "defaults.low_io", "defaults.event_log", "defaults.manifest", "defaults.skip_thumbnails"
@@ -92,12 +94,14 @@ def _coerce_value(key: str, raw: str):
     """Coerce a raw string CLI value to the type the config key expects.
 
     Boolean keys accept ``1/true/yes/on`` (case-insensitive) as true; choice keys
-    validate against allowed values; every other key is stored as the raw string.
+    validate against allowed values; ``defaults.clock_skew`` must parse with
+    :func:`~protonfs.drive.parse_clock_skew`; every other key is stored as the raw string.
 
     :param key: the config key being set.
     :param raw: the raw string value from the command line.
     :returns: a ``bool`` for boolean keys, else the unchanged string.
-    :raises click.ClickException: when a choice key receives an invalid value.
+    :raises click.ClickException: when a choice key or ``defaults.clock_skew`` receives an
+        invalid value.
     """
     if key in _BOOL_KEYS:
         return raw.strip().lower() in ("1", "true", "yes", "on")
@@ -107,6 +111,11 @@ def _coerce_value(key: str, raw: str):
             raise click.ClickException(
                 f"invalid value {raw!r} for {key}; choose one of {', '.join(choices)}."
             )
+    if key == "defaults.clock_skew":
+        try:
+            parse_clock_skew(raw)
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from exc
     return raw
 
 
