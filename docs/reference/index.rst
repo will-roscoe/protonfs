@@ -250,6 +250,18 @@ contract (see :doc:`../stability`).
 
    .. versionadded:: 2.5.0
 
+.. envvar:: PROTONFS_CLOCK_AHEAD_LIMIT
+
+   Seconds this host's clock may run ahead of Proton's before uploads are refused
+   (default ``30``). Proton rejects a file whose signatures are dated ahead of its own
+   clock (60 s ahead was accepted and 90 s refused when measured), so a fast clock fails
+   every upload. Before its first upload, protonfs compares the clock with the ``Date``
+   of a Proton API response and stops with the measured offset when it is over this
+   limit; an offset it cannot measure does not stop the upload. Sync the clock (NTP)
+   rather than raising the limit past about 60.
+
+   .. versionadded:: 3.3.0
+
 .. envvar:: PROTONFS_BATCH_SIZE
 
    Per-key override for :confval:`defaults.batch_size`. A value below ``1`` counts as

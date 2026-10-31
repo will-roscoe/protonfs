@@ -20,9 +20,12 @@ import re
 import shutil
 import subprocess
 import time
+import urllib.error
+import urllib.request
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 
 from protonfs.logs import backend_passthrough_enabled
@@ -79,6 +82,19 @@ TRANSFER_BACKOFF_CAP_SECONDS = float(os.environ.get("PROTONFS_TRANSFER_BACKOFF_C
 # (bytes per second), the slowest transfer still counted as progress rather than a hang.
 TRANSFER_MIN_RATE = float(os.environ.get("PROTONFS_TRANSFER_MIN_RATE", str(512 * 1024)))
 
+# Proton checks each upload's signatures against its own clock and rejects any dated ahead
+# of it. Measured 31 Oct 2026: signed 60 s ahead went through, 90 s ahead failed. A host
+# whose clock runs fast therefore fails every file, so upload measures the offset first.
+#: Seconds this host's clock may run ahead of Proton's before uploads are refused
+#: (default ``30``, env ``PROTONFS_CLOCK_AHEAD_LIMIT``).
+CLOCK_AHEAD_LIMIT_SECONDS = float(os.environ.get("PROTONFS_CLOCK_AHEAD_LIMIT", "30"))
+PROTON_TIME_URL = "https://drive-api.proton.me/core/v4/tests/ping"
+CLOCK_PROBE_TIMEOUT_SECONDS = 10.0
+_SIGNATURE_TIME_ERRORS = (
+    "Could not verify the nodeKey was used for encrypting",
+    "Signature creation time is in the future",
+)
+
 
 class DriveError(RuntimeError):
     """Base class for every proton-drive failure protonfs surfaces.
@@ -115,6 +131,34 @@ class DriveTransferTimeoutError(DriveError):
 
     .. versionadded:: 2.5.0
     """
+
+
+class DriveClockSkewError(DriveError):
+    """This host's clock runs ahead of Proton's, so Proton rejects every upload it signs.
+
+    Raised by :meth:`DriveClient.upload` before sending anything when the measured offset
+    is over :data:`CLOCK_AHEAD_LIMIT_SECONDS`, or after a call in which every file failed
+    on a signature dated in the future. Not transient: retrying fails the same way until
+    the clock is synced.
+
+    :ivar offset: seconds the clock was measured ahead of Proton's, or ``None`` if the
+        offset could not be measured.
+
+    .. versionadded:: 3.3.0
+    """
+
+    def __init__(self, offset: float | None) -> None:
+        """Build the message for a clock measured ``offset`` seconds ahead.
+
+        :param offset: seconds ahead of Proton's clock, or ``None`` if unmeasured.
+        """
+        self.offset = offset
+        ahead = f"{offset:.0f} s ahead of" if offset is not None else "ahead of"
+        super().__init__(
+            f"this host's clock is {ahead} Proton's servers, and Proton rejects uploads "
+            f"signed in the future (limit {CLOCK_AHEAD_LIMIT_SECONDS:g} s): sync the clock "
+            "(NTP), or set PROTONFS_CLOCK_AHEAD_LIMIT if the measurement is wrong"
+        )
 
 
 class DriveAuthError(DriveError):
@@ -635,6 +679,50 @@ def _retry_with_backoff(
         sleep(delay)
 
 
+def proton_clock_offset(
+    url: str = PROTON_TIME_URL,
+    timeout: float = CLOCK_PROBE_TIMEOUT_SECONDS,
+    opener: Callable = urllib.request.urlopen,
+    clock: Callable[[], float] = time.time,
+) -> float | None:
+    """Return how many seconds this host's clock is ahead of Proton's (negative: behind).
+
+    Reads the ``Date`` header of one ``HEAD`` request to ``url``; an HTTP error status
+    still carries the header. The header has whole-second resolution, so the result is
+    good to about a second plus half the round trip.
+
+    :param url: a Proton endpoint whose response is dated by Proton's clock.
+    :param timeout: request timeout in seconds.
+    :param opener: ``urllib.request.urlopen`` or a stand-in (for tests).
+    :param clock: the local clock, ``time.time`` or a stand-in (for tests).
+    :returns: the offset in seconds, or ``None`` if Proton could not be reached or sent
+        no usable ``Date`` header.
+
+    .. versionadded:: 3.3.0
+    """
+    request = urllib.request.Request(url, method="HEAD")
+    before = clock()
+    try:
+        with opener(request, timeout=timeout) as response:
+            date = response.headers.get("Date")
+    except urllib.error.HTTPError as exc:
+        date = exc.headers.get("Date") if exc.headers else None
+    except (OSError, ValueError):
+        return None
+    after = clock()
+    try:
+        proton = parsedate_to_datetime(date).timestamp() + 0.5 if date else None
+    except (TypeError, ValueError):
+        proton = None
+    return None if proton is None else (before + after) / 2 - proton
+
+
+def _is_signature_time_error(failure: dict) -> bool:
+    """Return True if a transfer failure is Proton refusing a signature dated in the future."""
+    error = str(failure.get("error", ""))
+    return any(marker in error for marker in _SIGNATURE_TIME_ERRORS)
+
+
 def is_thumbnail_failure(failure: dict) -> bool:
     """Whether an upload failure is proton-drive refusing a file it cannot thumbnail.
 
@@ -758,6 +846,21 @@ class DriveClient:
         self._binary = binary or binary_path()
         self._env: dict[str, str] | None = None
         self._renamed_strategies: bool | None = None
+        self._clock_checked = False
+        self._clock_offset: float | None = None
+
+    def _check_clock(self) -> None:
+        """Refuse to upload from a clock running ahead of Proton's; measured once per client.
+
+        :raises DriveClockSkewError: if :func:`proton_clock_offset` puts this host more
+            than :data:`CLOCK_AHEAD_LIMIT_SECONDS` ahead. An unmeasurable offset passes.
+        """
+        if self._clock_checked:
+            return
+        self._clock_offset = proton_clock_offset()
+        if self._clock_offset is not None and self._clock_offset > CLOCK_AHEAD_LIMIT_SECONDS:
+            raise DriveClockSkewError(self._clock_offset)
+        self._clock_checked = True
 
     @property
     def binary(self) -> str:
@@ -1193,12 +1296,19 @@ class DriveClient:
         :returns: the :class:`TransferResult` summary.
         :raises DriveThrottleError: when throttling outlasts the retry budget.
         :raises DriveTransferTimeoutError: when every attempt timed out.
+        :raises DriveClockSkewError: before sending anything, when this host's clock is
+            more than :data:`CLOCK_AHEAD_LIMIT_SECONDS` ahead of Proton's (measured once
+            per client), or when every file in the call failed on a signature dated in
+            the future.
         :raises DriveError: on a non-throttle Drive failure (raised immediately).
 
         .. versionchanged:: 2.5.0
            The timeout scales with the files' total size, a timeout is retried with a
            doubled timeout and reported as :class:`DriveTransferTimeoutError` rather than
            as throttling (#184). Added ``skip_thumbnails`` (#183).
+
+        .. versionchanged:: 3.3.0
+           Checks the clock against Proton's first (:class:`DriveClockSkewError`).
 
         .. seealso:: :meth:`download` for the reverse direction.
         """
@@ -1214,6 +1324,7 @@ class DriveClient:
                 literals.append(literal)
         if not sendable:
             return TransferResult(0, 0, len(unnameable), unnameable)
+        self._check_clock()
         args = ["filesystem", "upload"]
         if file_strategy:
             args += ["-f", self._strategy("upload", "-f", file_strategy)]
@@ -1226,6 +1337,12 @@ class DriveClient:
             args, timeout=timeout, retries=retries, base_delay=base_delay, cap=cap, sleep=sleep,
             payload_bytes=_payload_bytes(sendable),
         )
+        if (
+            result.failures
+            and not result.transferred_items
+            and all(_is_signature_time_error(f) for f in result.failures)
+        ):
+            raise DriveClockSkewError(self._clock_offset)
         if unnameable:
             result.failed_items += len(unnameable)
             result.failures = [*result.failures, *unnameable]

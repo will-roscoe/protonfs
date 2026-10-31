@@ -11,11 +11,13 @@ import protonfs.drive as drive_mod
 from protonfs.drive import (
     DriveAuthError,
     DriveClient,
+    DriveClockSkewError,
     DriveError,
     DriveThrottleError,
     DriveTransferTimeoutError,
     TransferResult,
 )
+from protonfs.drive import proton_clock_offset as REAL_CLOCK_OFFSET
 
 
 def _stub_run(stdout: str, returncode: int = 0, stderr: str = ""):
@@ -1131,11 +1133,16 @@ def test_remote_identities_does_not_shell_out_for_the_version(
 # --- #179: cli-drive@0.8.0 renamed the conflict strategies -----------------------------
 
 
+def _recording(seen: list[list[str]]):
+    """A stand-in transfer that records its argv and reports nothing moved."""
+    return lambda args, **kw: seen.append(args) or TransferResult(0, 0, 0, [])
+
+
 def _transfer_args(monkeypatch: pytest.MonkeyPatch, version: str | None, call) -> list[str]:
     client = DriveClient(binary="/x")
     monkeypatch.setattr(client, "drive_version", lambda: version)
     seen: list[list[str]] = []
-    monkeypatch.setattr(client, "_run_transfer_with_backoff", lambda args, **kw: seen.append(args))
+    monkeypatch.setattr(client, "_run_transfer_with_backoff", _recording(seen))
     call(client)
     return seen[0]
 
@@ -1206,7 +1213,7 @@ def test_drive_version_is_read_once_per_client(monkeypatch) -> None:
     client = DriveClient(binary="/x")
     calls: list[int] = []
     monkeypatch.setattr(client, "drive_version", lambda: calls.append(1) or "0.8.0")
-    monkeypatch.setattr(client, "_run_transfer_with_backoff", lambda args, **kw: None)
+    monkeypatch.setattr(client, "_run_transfer_with_backoff", _recording([]))
     client.upload([Path("a")], "/p", file_strategy="merge")
     client.download(["/p/a"], Path("d"), file_strategy="replace")
     assert len(calls) == 1
@@ -1217,7 +1224,7 @@ def test_unknown_version_is_not_cached(monkeypatch) -> None:
     versions = iter([None, "0.8.0"])
     monkeypatch.setattr(client, "drive_version", lambda: next(versions))
     seen: list[list[str]] = []
-    monkeypatch.setattr(client, "_run_transfer_with_backoff", lambda args, **kw: seen.append(args))
+    monkeypatch.setattr(client, "_run_transfer_with_backoff", _recording(seen))
     client.upload([Path("a")], "/p", file_strategy="merge")
     client.upload([Path("a")], "/p", file_strategy="merge")
     assert (_opt(seen[0], "-f"), _opt(seen[1], "-f")) == ("merge", "create-new-revision")
@@ -1458,3 +1465,142 @@ def test_whole_transfer_failure_names_the_error_not_the_stack_trace(
 )
 def test_downloaded_name_mirrors_proton_drives_local_renaming(name: str, expected: str) -> None:
     assert drive_mod.downloaded_name(name) == expected
+
+
+# --- clock skew: Proton rejects signatures dated ahead of its own clock -------------
+
+_PROTON_DATE = "Fri, 30 Oct 2026 14:21:08 GMT"
+_PROTON_TS = 1793370068.0  # _PROTON_DATE as a Unix time
+
+
+class _Response:
+    def __init__(self, date: str | None) -> None:
+        self.headers = {"Date": date} if date else {}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc) -> None:
+        return None
+
+
+def test_proton_clock_offset_is_local_minus_proton_time() -> None:
+    offset = REAL_CLOCK_OFFSET(
+        opener=lambda request, timeout: _Response(_PROTON_DATE),
+        clock=lambda: _PROTON_TS + 124.5,
+    )
+    # The header truncates to whole seconds, so Proton's time is taken mid-second.
+    assert offset == pytest.approx(124.0)
+
+
+def test_proton_clock_offset_reads_the_date_of_an_http_error() -> None:
+    import urllib.error
+
+    def opener(request, timeout):
+        raise urllib.error.HTTPError(
+            request.full_url, 404, "Not Found", {"Date": _PROTON_DATE}, None
+        )
+
+    offset = REAL_CLOCK_OFFSET(opener=opener, clock=lambda: _PROTON_TS - 106.5)
+    assert offset == pytest.approx(-107.0)
+
+
+@pytest.mark.parametrize("failure", ["unreachable", "no-date"])
+def test_proton_clock_offset_is_none_when_it_cannot_measure(failure: str) -> None:
+    import urllib.error
+
+    def opener(request, timeout):
+        if failure == "unreachable":
+            raise urllib.error.URLError("no route to host")
+        return _Response(None)
+
+    assert REAL_CLOCK_OFFSET(opener=opener, clock=lambda: _PROTON_TS) is None
+
+
+def _upload_client(
+    monkeypatch: pytest.MonkeyPatch, offset: float | None
+) -> tuple[DriveClient, dict]:
+    calls = {"probe": 0, "run": 0}
+
+    def probe() -> float | None:
+        calls["probe"] += 1
+        return offset
+
+    def run(*args, **kwargs):
+        calls["run"] += 1
+        return _stub_run('{"transferredItems":1,"skippedItems":0,"failedItems":0,"failures":[]}')(
+            *args, **kwargs
+        )
+
+    monkeypatch.setattr("protonfs.drive.proton_clock_offset", probe)
+    monkeypatch.setattr("protonfs.drive.shutil.which", lambda _: "/usr/bin/proton-drive")
+    monkeypatch.setattr(subprocess, "run", run)
+    return DriveClient(binary="proton-drive"), calls
+
+
+def test_upload_refuses_before_sending_when_the_clock_is_ahead(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, calls = _upload_client(monkeypatch, 124.0)
+    with pytest.raises(DriveClockSkewError, match="124 s ahead"):
+        client.upload([Path("x")], "/my-files/test")
+    assert calls["run"] == 0
+
+
+@pytest.mark.parametrize("offset", [None, -107.0, 0.0, 29.0])
+def test_upload_goes_ahead_when_the_clock_is_within_the_limit_or_unmeasured(
+    monkeypatch: pytest.MonkeyPatch, offset: float | None
+) -> None:
+    client, calls = _upload_client(monkeypatch, offset)
+    assert client.upload([Path("x")], "/my-files/test").transferred_items == 1
+    assert calls["run"] == 1
+
+
+def test_clock_ahead_limit_comes_from_the_environment_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("protonfs.drive.CLOCK_AHEAD_LIMIT_SECONDS", 200.0)
+    client, calls = _upload_client(monkeypatch, 124.0)
+    client.upload([Path("x")], "/my-files/test")
+    assert calls["run"] == 1
+
+
+def test_clock_is_probed_once_per_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    client, calls = _upload_client(monkeypatch, 0.0)
+    client.upload([Path("x")], "/my-files/test")
+    client.upload([Path("y")], "/my-files/test")
+    assert calls == {"probe": 1, "run": 2}
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        "APICodeError: Could not verify the nodeKey was used for encrypting , contentKeyPacket",
+        "Error: Error generating session key: Could not find valid self-signature in key "
+        "c11158dcd351e604: Signature creation time is in the future",
+    ],
+)
+def test_upload_whose_every_item_failed_on_signature_time_raises_clock_skew(
+    monkeypatch: pytest.MonkeyPatch, error: str
+) -> None:
+    client, _ = _upload_client(monkeypatch, None)
+    payload = (
+        '{"transferredItems":0,"skippedItems":0,"failedItems":2,"failures":['
+        f'{{"name":"a","error":"{error}"}},{{"name":"b","error":"{error}"}}]}}'
+    )
+    monkeypatch.setattr(subprocess, "run", _stub_run(payload, returncode=1))
+    with pytest.raises(DriveClockSkewError, match="signed in the future"):
+        client.upload([Path("a"), Path("b")], "/my-files/test")
+
+
+def test_upload_with_one_signature_failure_among_others_is_a_normal_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, _ = _upload_client(monkeypatch, None)
+    payload = (
+        '{"transferredItems":1,"skippedItems":0,"failedItems":1,"failures":['
+        '{"name":"a","error":"APICodeError: Could not verify the nodeKey was used '
+        'for encrypting"}]}'
+    )
+    monkeypatch.setattr(subprocess, "run", _stub_run(payload, returncode=1))
+    assert client.upload([Path("a"), Path("b")], "/my-files/test").failed_items == 1

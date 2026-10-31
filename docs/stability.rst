@@ -208,7 +208,7 @@ see the CHANGELOG for everything else.
 * Environment variables: ``PROTONFS_EVENT_LOG``, ``PROTONFS_PROGRESS_STYLE`` (1.3.0);
   ``PROTONFS_MANIFEST``, ``PROTONFS_NO_MANIFEST`` (2.1.0); ``PROTONFS_BATCH_SIZE``,
   ``PROTONFS_SKIP_THUMBNAILS``, ``PROTONFS_TRANSFER_MIN_RATE`` (2.5.0);
-  ``PROTONFS_DRIVE_CACHE_HOME`` (2.6.0).
+  ``PROTONFS_DRIVE_CACHE_HOME`` (2.6.0); ``PROTONFS_CLOCK_AHEAD_LIMIT`` (3.3.0).
 * The `Output contract`_ above (summary keys and ``--format json`` keys) is new in the
   3.x contract; the keys themselves shipped with the options that print them.
 
@@ -615,6 +615,9 @@ Environment variables
      - Base backoff in seconds between Drive upload/download retries (default ``2``).
    * - :envvar:`PROTONFS_TRANSFER_BACKOFF_CAP`
      - Cap in seconds on the Drive upload/download retry backoff (default ``60``).
+   * - :envvar:`PROTONFS_CLOCK_AHEAD_LIMIT`
+     - Seconds this host's clock may run ahead of Proton's before uploads are refused
+       (default ``30``).
    * - :envvar:`PROTONFS_KEYRING_PASSWORD`
      - Supplies the password for the protonfs-owned keyring bootstrap, instead of
        generating one.

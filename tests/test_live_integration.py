@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from protonfs.drive import DriveClient
+from protonfs.drive import DriveClient, proton_clock_offset
 
 REMOTE = os.environ.get("PROTONFS_TEST_REMOTE")
 
@@ -172,3 +172,9 @@ def test_live_trash_list_shows_trashed_item(tmp_path: Path, live_dir) -> None:
 
     # Restore it so live_dir's trash-on-teardown cleanup still applies to a live node.
     client.restore([remote_file])
+
+
+def test_proton_clock_offset_measures_against_proton() -> None:
+    offset = proton_clock_offset()
+    assert offset is not None, "Proton sent no usable Date header: PROTON_TIME_URL is stale"
+    assert abs(offset) < 24 * 3600
