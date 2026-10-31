@@ -8,6 +8,12 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 
 ## [Unreleased]
 
+## [3.3.1] - 2026-10-31
+
+### Bug fixes
+
+- **paths**: expand quoted glob PATHs in status, ls, offload and prune (#225)
+
 ## [3.3.0] - 2026-10-31
 
 ### Features
@@ -826,7 +832,8 @@ the preceding development history and its first tagged release:
   line-matching, git-mutation error wrapping, `pathspec` deprecation, subpath
   prune data-loss fix.
 
-[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v3.3.0...HEAD
+[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v3.3.1...HEAD
+[3.3.1]: https://github.com/will-roscoe/protonfs/compare/v3.3.0...v3.3.1
 [3.3.0]: https://github.com/will-roscoe/protonfs/compare/v3.2.0...v3.3.0
 [3.2.0]: https://github.com/will-roscoe/protonfs/compare/v3.1.1...v3.2.0
 [3.1.1]: https://github.com/will-roscoe/protonfs/compare/v3.1.0...v3.1.1
