@@ -29,6 +29,7 @@ from email.utils import parsedate_to_datetime
 from pathlib import Path
 
 from protonfs.logs import backend_passthrough_enabled
+from protonfs.secretservice import state_dir
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +91,22 @@ TRANSFER_MIN_RATE = float(os.environ.get("PROTONFS_TRANSFER_MIN_RATE", str(512 *
 CLOCK_AHEAD_LIMIT_SECONDS = float(os.environ.get("PROTONFS_CLOCK_AHEAD_LIMIT", "30"))
 PROTON_TIME_URL = "https://drive-api.proton.me/core/v4/tests/ping"
 CLOCK_PROBE_TIMEOUT_SECONDS = 10.0
+# proton-drive is a Bun build and signs with Date's time; Bun runs a --preload script
+# (passed in BUN_OPTIONS) before the CLI's own code, so this shifts every Date it makes.
+_CLOCK_SHIM_JS = """\
+const SKEW = Number(process.env.PROTONFS_CLOCK_SKEW_MS || 0);
+if (SKEW) {
+  const RealDate = Date;
+  function SkewDate(...args) {
+    if (!new.target) return new RealDate(RealDate.now() + SKEW).toString();
+    return args.length ? new RealDate(...args) : new RealDate(RealDate.now() + SKEW);
+  }
+  SkewDate.prototype = RealDate.prototype;
+  Object.setPrototypeOf(SkewDate, RealDate);
+  SkewDate.now = () => RealDate.now() + SKEW;
+  globalThis.Date = SkewDate;
+}
+"""
 _SIGNATURE_TIME_ERRORS = (
     "Could not verify the nodeKey was used for encrypting",
     "Signature creation time is in the future",
@@ -157,7 +174,7 @@ class DriveClockSkewError(DriveError):
         super().__init__(
             f"this host's clock is {ahead} Proton's servers, and Proton rejects uploads "
             f"signed in the future (limit {CLOCK_AHEAD_LIMIT_SECONDS:g} s): sync the clock "
-            "(NTP), or set PROTONFS_CLOCK_AHEAD_LIMIT if the measurement is wrong"
+            "(NTP) or set defaults.clock_skew to auto"
         )
 
 
@@ -717,6 +734,41 @@ def proton_clock_offset(
     return None if proton is None else (before + after) / 2 - proton
 
 
+def parse_clock_skew(value: str | float | None) -> str | float:
+    """Return a ``clock_skew`` setting as ``"off"``, ``"auto"`` or seconds (a float).
+
+    :param value: ``"off"``, ``"auto"`` (case and surrounding space ignored), or the
+        seconds this host's clock runs ahead of Proton's, as a number or numeric string
+        (negative: behind).
+    :returns: ``"off"``, ``"auto"``, or the seconds as a float.
+    :raises ValueError: for anything else.
+
+    .. versionadded:: 3.3.0
+    """
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in ("off", "auto"):
+            return text
+        try:
+            return float(text)
+        except ValueError:
+            pass
+    raise ValueError(f"clock_skew must be 'off', 'auto' or a number of seconds, not {value!r}")
+
+
+def _clock_shim() -> Path:
+    """Write the proton-drive clock shim to protonfs's state dir and return its path."""
+    path = state_dir() / "clock_skew.js"
+    if not path.exists() or path.read_text() != _CLOCK_SHIM_JS:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        tmp.write_text(_CLOCK_SHIM_JS)
+        os.replace(tmp, path)
+    return path
+
+
 def _is_signature_time_error(failure: dict) -> bool:
     """Return True if a transfer failure is Proton refusing a signature dated in the future."""
     error = str(failure.get("error", ""))
@@ -837,30 +889,53 @@ class DriveClient:
     API throttling with bounded exponential backoff.
     """
 
-    def __init__(self, binary: str | None = None) -> None:
+    def __init__(self, binary: str | None = None, clock_skew: str | float = "off") -> None:
         """Construct a client bound to a proton-drive binary.
 
         :param binary: an explicit binary path, or ``None`` to resolve via
             :func:`binary_path` (``$PROTONFS_DRIVE_BIN`` or the default).
+        :param clock_skew: the ``defaults.clock_skew`` setting: ``"off"``, ``"auto"`` or
+            seconds this host's clock runs ahead of Proton's (see
+            :func:`parse_clock_skew`). Anything but ``"off"`` runs proton-drive on a clock
+            shifted back by that much.
+        :raises ValueError: if ``clock_skew`` is not one of those.
         """
         self._binary = binary or binary_path()
         self._env: dict[str, str] | None = None
         self._renamed_strategies: bool | None = None
-        self._clock_checked = False
+        self._clock_skew = parse_clock_skew(clock_skew)
+        self._clock_measured = False
         self._clock_offset: float | None = None
+        self._clock_correction = 0.0
+
+    def _measure_clock(self) -> None:
+        """Measure Proton's clock once per client and fix the correction ``clock_skew`` asks for."""
+        if self._clock_measured:
+            return
+        self._clock_measured = True
+        self._clock_offset = proton_clock_offset()
+        if self._clock_skew == "auto":
+            self._clock_correction = self._clock_offset or 0.0
+        elif not isinstance(self._clock_skew, str):
+            self._clock_correction = self._clock_skew
+
+    def _residual_offset(self) -> float | None:
+        """Seconds proton-drive's (corrected) clock runs ahead of Proton's, if measured."""
+        if self._clock_offset is None:
+            return None
+        return self._clock_offset - self._clock_correction
 
     def _check_clock(self) -> None:
         """Refuse to upload from a clock running ahead of Proton's; measured once per client.
 
-        :raises DriveClockSkewError: if :func:`proton_clock_offset` puts this host more
-            than :data:`CLOCK_AHEAD_LIMIT_SECONDS` ahead. An unmeasurable offset passes.
+        :raises DriveClockSkewError: if :func:`proton_clock_offset`, less any
+            ``clock_skew`` correction, puts this host more than
+            :data:`CLOCK_AHEAD_LIMIT_SECONDS` ahead. An unmeasurable offset passes.
         """
-        if self._clock_checked:
-            return
-        self._clock_offset = proton_clock_offset()
-        if self._clock_offset is not None and self._clock_offset > CLOCK_AHEAD_LIMIT_SECONDS:
-            raise DriveClockSkewError(self._clock_offset)
-        self._clock_checked = True
+        self._measure_clock()
+        residual = self._residual_offset()
+        if residual is not None and residual > CLOCK_AHEAD_LIMIT_SECONDS:
+            raise DriveClockSkewError(residual)
 
     @property
     def binary(self) -> str:
@@ -888,7 +963,19 @@ class DriveClient:
         from protonfs.credstore import drive_env
 
         if self._env is None:
-            self._env = drive_env()
+            env = drive_env()
+            if self._clock_skew != "off":
+                self._measure_clock()
+                shift_ms = round(-self._clock_correction * 1000)
+                if shift_ms:
+                    preload = f"--preload {_clock_shim()}"
+                    existing = env.get("BUN_OPTIONS", "").strip()
+                    env = {
+                        **env,
+                        "BUN_OPTIONS": f"{existing} {preload}" if existing else preload,
+                        "PROTONFS_CLOCK_SKEW_MS": str(shift_ms),
+                    }
+            self._env = env
         return self._env
 
     def _invoke(self, args: list[str], timeout: float | None = None) -> subprocess.CompletedProcess:
@@ -1342,7 +1429,7 @@ class DriveClient:
             and not result.transferred_items
             and all(_is_signature_time_error(f) for f in result.failures)
         ):
-            raise DriveClockSkewError(self._clock_offset)
+            raise DriveClockSkewError(self._residual_offset())
         if unnameable:
             result.failed_items += len(unnameable)
             result.failures = [*result.failures, *unnameable]

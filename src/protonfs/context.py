@@ -83,4 +83,8 @@ def load_context(start: Path | None = None) -> RepoContext:
         raise click.ClickException(
             "protonfs is not set up in this directory. Run `protonfs setup` first."
         )
-    return RepoContext(root=root, config=config, index=IndexStore(root), drive=DriveClient())
+    try:
+        drive = DriveClient(clock_skew=config.defaults.clock_skew)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    return RepoContext(root=root, config=config, index=IndexStore(root), drive=drive)

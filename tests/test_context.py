@@ -36,3 +36,20 @@ def test_load_context_returns_populated_context(tmp_path: Path) -> None:
     assert ctx.config.remote_root == "/my-files/test"
     assert ctx.index is not None
     assert ctx.drive is not None
+
+
+def test_load_context_reports_a_bad_clock_skew_without_a_traceback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    init_config(tmp_path, "/my-files/test")
+    monkeypatch.setenv("PROTONFS_CLOCK_SKEW", "sometimes")
+    with pytest.raises(click.ClickException, match="clock_skew must be"):
+        load_context(tmp_path)
+
+
+def test_load_context_passes_clock_skew_to_the_drive_client(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    init_config(tmp_path, "/my-files/test")
+    monkeypatch.setenv("PROTONFS_CLOCK_SKEW", "auto")
+    assert load_context(tmp_path).drive._clock_skew == "auto"

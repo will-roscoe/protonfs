@@ -1604,3 +1604,111 @@ def test_upload_with_one_signature_failure_among_others_is_a_normal_result(
     )
     monkeypatch.setattr(subprocess, "run", _stub_run(payload, returncode=1))
     assert client.upload([Path("a"), Path("b")], "/my-files/test").failed_items == 1
+
+
+# --- clock_skew: run proton-drive on a corrected clock ----------------------------------
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("off", "off"), ("auto", "auto"), (" AUTO ", "auto"),
+        ("124", 124.0), ("-3.5", -3.5), (60, 60.0),
+    ],
+)
+def test_parse_clock_skew_accepts_off_auto_or_seconds(value, expected) -> None:
+    assert drive_mod.parse_clock_skew(value) == expected
+
+
+@pytest.mark.parametrize("value", ["sometimes", "", None, "12s"])
+def test_parse_clock_skew_rejects_anything_else(value) -> None:
+    with pytest.raises(ValueError, match="clock_skew"):
+        drive_mod.parse_clock_skew(value)
+
+
+def _skew_client(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, clock_skew, offset: float | None
+) -> tuple[DriveClient, list[dict]]:
+    envs: list[dict] = []
+
+    def run(args, capture_output, text, **kwargs):
+        envs.append(kwargs["env"])
+        return subprocess.CompletedProcess(
+            args, 0, stdout='{"transferredItems":1,"skippedItems":0,"failedItems":0,"failures":[]}',
+            stderr="",
+        )
+
+    monkeypatch.setattr("protonfs.drive.proton_clock_offset", lambda: offset)
+    monkeypatch.setattr("protonfs.drive.state_dir", lambda: tmp_path)
+    monkeypatch.setattr("protonfs.drive.shutil.which", lambda _: "/usr/bin/proton-drive")
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.delenv("BUN_OPTIONS", raising=False)
+    return DriveClient(binary="proton-drive", clock_skew=clock_skew), envs
+
+
+def test_auto_clock_skew_runs_proton_drive_on_the_measured_correction(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    client, envs = _skew_client(monkeypatch, tmp_path, "auto", 124.4)
+    client.upload([Path("x")], "/my-files/test")
+    env = envs[0]
+    shim = tmp_path / "clock_skew.js"
+    assert env["BUN_OPTIONS"] == f"--preload {shim}"
+    assert env["PROTONFS_CLOCK_SKEW_MS"] == "-124400"
+    assert "PROTONFS_CLOCK_SKEW_MS" in shim.read_text()
+
+
+def test_fixed_clock_skew_is_applied_and_the_rest_checked(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    client, envs = _skew_client(monkeypatch, tmp_path, "120", 124.0)
+    client.upload([Path("x")], "/my-files/test")
+    assert envs[0]["PROTONFS_CLOCK_SKEW_MS"] == "-120000"
+
+
+def test_fixed_clock_skew_that_leaves_the_clock_ahead_is_refused(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    client, envs = _skew_client(monkeypatch, tmp_path, "20", 124.0)
+    with pytest.raises(DriveClockSkewError, match="104 s ahead"):
+        client.upload([Path("x")], "/my-files/test")
+    assert envs == []
+
+
+def test_fixed_clock_skew_applies_when_the_offset_cannot_be_measured(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    client, envs = _skew_client(monkeypatch, tmp_path, "124", None)
+    client.upload([Path("x")], "/my-files/test")
+    assert envs[0]["PROTONFS_CLOCK_SKEW_MS"] == "-124000"
+
+
+@pytest.mark.parametrize(("clock_skew", "offset"), [("auto", None), ("off", 10.0), ("0", 0.0)])
+def test_no_preload_when_there_is_nothing_to_correct(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, clock_skew, offset
+) -> None:
+    client, envs = _skew_client(monkeypatch, tmp_path, clock_skew, offset)
+    client.upload([Path("x")], "/my-files/test")
+    assert "BUN_OPTIONS" not in envs[0] and "PROTONFS_CLOCK_SKEW_MS" not in envs[0]
+
+
+def test_clock_skew_keeps_existing_bun_options(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    client, envs = _skew_client(monkeypatch, tmp_path, "auto", 124.0)
+    monkeypatch.setenv("BUN_OPTIONS", "--smol")
+    client.upload([Path("x")], "/my-files/test")
+    assert envs[0]["BUN_OPTIONS"] == f"--smol --preload {tmp_path / 'clock_skew.js'}"
+
+
+def test_correction_also_covers_listings_before_any_upload(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    client, envs = _skew_client(monkeypatch, tmp_path, "auto", 124.0)
+    monkeypatch.setattr(
+        subprocess, "run",
+        lambda args, capture_output, text, **kw: envs.append(kw["env"])
+        or subprocess.CompletedProcess(args, 0, stdout="[]", stderr=""),
+    )
+    client.list("/my-files/test")
+    assert envs[0]["PROTONFS_CLOCK_SKEW_MS"] == "-124000"
