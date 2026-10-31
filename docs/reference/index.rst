@@ -539,6 +539,26 @@ status
 .. click:: protonfs.cli:status
    :prog: protonfs status
 
+.. _scan-patterns:
+
+**Glob patterns in scan-scoped commands.** ``status``, ``ls``, ``offload`` and ``prune``
+also expand a quoted ``PATH`` pattern (``'mload005e_*'``) themselves, so a scheduled
+``prune`` re-matches new run directories on every run. A pattern matches the local
+tree *and* the index together (so a directory that is already offloaded is found
+too), with the same segment rules as :ref:`push <push-patterns>`. An existing literal
+path wins: when ``run[7]`` exists on disk or in the index it names that folder and is
+not read as a pattern. A pattern that matches nothing prints
+``warning: no tracked path matches 'mload005e_*'`` on stderr and the command does
+nothing; it never widens to the whole repo. ``rm``, ``restore`` and ``refresh`` take
+their ``PATH`` literally: ``rm`` and ``restore`` change Drive and act only on what is
+named, and ``refresh`` exists to find paths the index does not yet hold, so there is
+nothing for a pattern to match against.
+
+.. versionchanged:: 3.3.1
+   ``status``, ``ls``, ``offload`` and ``prune`` expand quoted glob ``PATH`` patterns.
+   Before, they treated the pattern as a literal path, so a scheduled
+   ``prune "mload005e_*"`` considered nothing and reported success.
+
 .. versionchanged:: 1.1.0
    Added ``--format`` (``plain``/``json``) and multiple ``PATH`` pathspecs.
 
@@ -971,6 +991,8 @@ Examples::
     protonfs prune sim/ --keep 10 --min-age 1d   # the defaults, spelled out
     protonfs prune --dry-run                      # what would be offloaded
     protonfs prune 'mload*' --keep 3 --no-push
+
+``PATH`` patterns are expanded as described under :ref:`status <scan-patterns>`.
 
 .. _cmd-rm:
 
