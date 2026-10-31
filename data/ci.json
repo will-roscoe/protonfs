@@ -1,0 +1,66 @@
+{
+  "builds": {
+    "Linux": {
+      "arm64": "passing",
+      "x86_64": "passing"
+    },
+    "macOS": {
+      "arm64": "passing",
+      "x86_64": "passing"
+    }
+  },
+  "coverage": 96.5,
+  "docstrings": 93.4,
+  "lint": {
+    "gates": [
+      "ruff",
+      "interrogate",
+      "readme-sync"
+    ],
+    "status": "passing"
+  },
+  "python": [
+    {
+      "status": "passing",
+      "version": "3.9"
+    },
+    {
+      "status": "passing",
+      "version": "3.10"
+    },
+    {
+      "status": "passing",
+      "version": "3.11"
+    },
+    {
+      "status": "passing",
+      "version": "3.12"
+    },
+    {
+      "status": "passing",
+      "version": "3.13"
+    },
+    {
+      "status": "passing",
+      "version": "3.14"
+    },
+    {
+      "status": "passing",
+      "version": "3.15"
+    }
+  ],
+  "run": {
+    "commit": "ddf07b56a0f46e572dee79dfb7ac6c2389d97e04",
+    "id": "41251687957",
+    "url": "https://github.com/will-roscoe/protonfs/actions/runs/41251687957"
+  },
+  "source": "ci",
+  "tests": {
+    "duration_s": 35.95,
+    "failed": 0,
+    "passed": 1490,
+    "skipped": 20,
+    "total": 1510
+  },
+  "updated": "2026-10-31T23:22:12Z"
+}
