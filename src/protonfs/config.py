@@ -63,6 +63,7 @@ _ENV_DEFAULTS_OVERRIDES = {
     "batch_size": "PROTONFS_BATCH_SIZE",
     "manifest": "PROTONFS_MANIFEST",
     "skip_thumbnails": "PROTONFS_SKIP_THUMBNAILS",
+    "clock_skew": "PROTONFS_CLOCK_SKEW",
     # deletions has no environment override on purpose: trashing is destructive, and one
     # exported variable would switch it on for every repo on the machine (#197).
 }
@@ -100,6 +101,11 @@ class Defaults:
         ``"keep"`` (the default) leaves Drive's copy, ``"trash"`` moves it to the Drive
         trash (see :data:`DELETION_POLICIES`); overridable per-repo or per push
         (``--deletions``), with no environment override.
+    :ivar clock_skew: How proton-drive's clock is corrected before it signs uploads:
+        ``"off"`` (the default), ``"auto"`` (shift it by the offset measured against
+        Proton's clock on each run), or the seconds this host's clock runs ahead of
+        Proton's; overridable per-repo or via ``$PROTONFS_CLOCK_SKEW``. See
+        :func:`protonfs.drive.parse_clock_skew`.
 
     .. versionchanged:: 1.3.0
        Added the ``event_log`` and ``progress_style`` defaults.
@@ -115,6 +121,9 @@ class Defaults:
 
     .. versionchanged:: 3.0.0
        Added the ``deletions`` default (#197).
+
+    .. versionchanged:: 3.3.0
+       Added the ``clock_skew`` default.
     """
 
     on_conflict: str = "skip"
@@ -125,6 +134,7 @@ class Defaults:
     manifest: bool = True
     skip_thumbnails: bool = False
     deletions: str = "keep"
+    clock_skew: str = "off"
 
 
 @dataclass
@@ -194,6 +204,7 @@ class Config:
                 manifest=defaults_data.get("manifest", True),
                 skip_thumbnails=defaults_data.get("skip_thumbnails", False),
                 deletions=defaults_data.get("deletions", "keep"),
+                clock_skew=defaults_data.get("clock_skew", "off"),
             ),
         )
 

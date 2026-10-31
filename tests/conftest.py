@@ -536,6 +536,17 @@ def no_real_proton_drive(request, monkeypatch, tmp_path_factory):
 
 
 @pytest.fixture(autouse=True)
+def no_clock_probe(request, monkeypatch):
+    """Keep upload's clock check off the network: Proton's clock reads the same as ours.
+
+    Tests of the check patch ``protonfs.drive.proton_clock_offset`` themselves;
+    ``test_live_*`` modules measure the real offset.
+    """
+    if not request.node.path.name.startswith("test_live"):
+        monkeypatch.setattr("protonfs.drive.proton_clock_offset", lambda: 0.0)
+
+
+@pytest.fixture(autouse=True)
 def checkpoint_every_call(monkeypatch):
     """Make every IndexStore.checkpoint() save, as before 3.1.0 throttled it, so the
     tests of what each progress save records still see one per folder or batch. Tests

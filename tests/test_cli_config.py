@@ -88,3 +88,18 @@ def test_config_set_deletions_accepts_keep_or_trash_only(tmp_path) -> None:
     assert config_get(tmp_path, "defaults.deletions") == "trash"
     with pytest.raises(click.ClickException):
         config_set(tmp_path, "defaults.deletions", "delete")
+
+
+def test_config_set_clock_skew_accepts_off_auto_or_seconds_only(tmp_path) -> None:
+    import click
+
+    from protonfs.commands.config import config_get, config_set
+    from protonfs.config import init_config
+
+    init_config(tmp_path, "/my-files/test")
+    config_set(tmp_path, "defaults.clock_skew", "auto")
+    assert config_get(tmp_path, "defaults.clock_skew") == "auto"
+    config_set(tmp_path, "defaults.clock_skew", "124")
+    assert config_get(tmp_path, "defaults.clock_skew") == "124"
+    with pytest.raises(click.ClickException, match="clock_skew"):
+        config_set(tmp_path, "defaults.clock_skew", "sometimes")

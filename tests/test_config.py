@@ -329,3 +329,17 @@ def test_deletions_defaults_to_keep_and_reads_only_from_config(monkeypatch, tmp_
     init_config(tmp_path, "/my-files/test")
     monkeypatch.setenv("PROTONFS_DELETIONS", "trash")
     assert load_layered_config(tmp_path).defaults.deletions == "keep"
+
+
+def test_clock_skew_defaults_to_off_and_is_read_from_dict() -> None:
+    from protonfs.config import Config, Defaults
+    assert Defaults().clock_skew == "off"
+    cfg = Config.from_dict({"remote_root": "/x", "defaults": {"clock_skew": "auto"}})
+    assert cfg.defaults.clock_skew == "auto"
+
+
+def test_env_overrides_clock_skew(monkeypatch, tmp_path) -> None:
+    from protonfs.config import init_config, load_layered_config
+    init_config(tmp_path, "/my-files/test")
+    monkeypatch.setenv("PROTONFS_CLOCK_SKEW", "124")
+    assert load_layered_config(tmp_path).defaults.clock_skew == "124"
