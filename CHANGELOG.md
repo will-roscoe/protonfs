@@ -8,6 +8,16 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 
 ## [Unreleased]
 
+## [3.3.0] - 2026-10-31
+
+### Features
+
+- handle a host clock running ahead of Proton's (refuse, or correct with clock_skew) (#223)
+
+### Build
+
+- **ci**: test Python 3.14 and 3.15 (#224)
+
 ## [3.2.0] - 2026-10-24
 
 ### Features
@@ -816,7 +826,8 @@ the preceding development history and its first tagged release:
   line-matching, git-mutation error wrapping, `pathspec` deprecation, subpath
   prune data-loss fix.
 
-[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v3.2.0...HEAD
+[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v3.3.0...HEAD
+[3.3.0]: https://github.com/will-roscoe/protonfs/compare/v3.2.0...v3.3.0
 [3.2.0]: https://github.com/will-roscoe/protonfs/compare/v3.1.1...v3.2.0
 [3.1.1]: https://github.com/will-roscoe/protonfs/compare/v3.1.0...v3.1.1
 [3.1.0]: https://github.com/will-roscoe/protonfs/compare/v3.0.0...v3.1.0
