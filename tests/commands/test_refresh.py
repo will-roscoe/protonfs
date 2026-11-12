@@ -185,6 +185,36 @@ def test_refresh_subpath_seeds_reprefixed_paths(tmp_path: Path, make_fake_drive)
     assert entry.remote_path == "/my-files/test/run5/dump_0002"
 
 
+def test_refresh_file_subpath_walks_its_folder_and_keeps_to_the_file(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    # `pull --refresh 'run5/*'` refreshes each matched file as its own subpath, and
+    # proton-drive cannot list a file ("Invalid link type. Expected: folder, found:
+    # file"). The file's folder is listed instead, and only that file is considered.
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    for name in ("a.ev", "b.ev"):
+        ctx.index.set(f"run5/{name}", _seeded_entry(f"/my-files/test/run5/{name}"))
+    fake = make_fake_drive(
+        walk_by_root={
+            "/my-files/test/run5": [
+                RemoteEntry("a.ev", is_dir=False, size=999),
+                RemoteEntry("b.ev", is_dir=False, size=999),
+                RemoteEntry("c.ev", is_dir=False, size=5),
+            ]
+        }
+    )
+    ctx.drive = fake
+
+    result = refresh(ctx, "run5/a.ev", prune=True)
+
+    assert fake.walk_roots == ["/my-files/test/run5"]
+    assert result.changed_paths == ["run5/a.ev"]   # b.ev changed too, but was not asked for
+    assert result.seeded == 0                      # nor c.ev
+    assert ctx.index.get("run5/c.ev") is None
+    assert result.remote_deleted == 0
+
+
 def test_refresh_subpath_prune_leaves_out_of_scope_index_entries(
     tmp_path: Path, make_fake_drive
 ) -> None:

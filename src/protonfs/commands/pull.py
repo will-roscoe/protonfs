@@ -273,12 +273,15 @@ def pull(
     no_restore: bool = False,
     only: set[str] | None = None,
 ) -> TransferResult:
-    """Download remote-only (and, with ``resolve``, diverged) files into the tree.
+    """Download remote-only (and, with ``resolve``, remote-changed or diverged) files.
 
     Without ``resolve``, pull is conservative: it only brings down files absent
     locally and never overwrites a local file, so it cannot clobber a local edit. A
     live remote walk (needed to attribute a direction to diverged files) is paid for
-    only when a ``resolve`` policy is supplied.
+    only when a ``resolve`` policy is supplied. With one, a file Drive changed while
+    the local copy still matches the index (``remote-modified``) is downloaded over the
+    local copy under every policy, since no local edit is at risk; ``resolve`` itself
+    decides only files changed on both sides.
 
     A file this machine held that is now gone locally is restored, unless ``no_restore``
     is set: then it is left alone (it was deleted, or moved away, on purpose) and counted
@@ -313,7 +316,9 @@ def pull(
         is saved once per folder, not once per file. Not combinable with ``refresh`` or
         ``resolve``, whose Drive walks are scoped to ``subpath``.
     :returns: a :class:`~protonfs.drive.TransferResult` of what was fetched/skipped;
-        ``local_deleted_items`` counts the files ``no_restore`` left alone.
+        ``local_deleted_items`` counts the files ``no_restore`` left alone, and
+        ``remote_modified_items`` the files ``refresh`` found changed on Drive that a pull
+        without ``resolve`` left alone.
     :raises protonfs.drive.DriveError: on a Drive or lock failure.
     :raises ValueError: when ``only`` is combined with ``subpath``, ``refresh`` or
         ``resolve``.
@@ -323,6 +328,13 @@ def pull(
        than N. Never downloads a file the store's ``.protonfs/ignore``/``include`` rules
        exclude (which covers ``.git`` and files ``protonfs export`` moved into git), and
        counts them in ``excluded_items``.
+
+    .. versionchanged:: 3.3.2
+       With ``resolve``, downloads ``remote-modified`` files again, as documented; 3.0.0
+       to 3.3.1 dropped them because they exist on disk. Also downloads
+       ``remote-changed`` files (metadata-only, with a newer copy on Drive), which no
+       earlier release did under ``resolve``. With ``refresh`` and no ``resolve``, counts
+       the ``remote-modified`` files it left alone in ``remote_modified_items``.
 
     .. seealso:: :func:`protonfs.commands.push.push` for the upload direction.
     """
@@ -347,12 +359,13 @@ def pull(
         low_io=ctx.config.defaults.low_io, reporter=reporter,
         hash_cache=ctx.hash_cache, only=only,
     )
+    refreshed = None
     if refresh:
         from protonfs.commands.refresh import refresh as refresh_index
 
         # Reuse the scan we just did; on a dry run seed only in memory so the preview
         # is accurate without persisting metadata-only entries to index.json.
-        refresh_index(ctx, subpath, prune=False, persist=not dry_run, local=local)
+        refreshed = refresh_index(ctx, subpath, prune=False, persist=not dry_run, local=local)
 
     # A live remote view (a walk) is only needed to attribute direction to diverged files,
     # so it is paid for only when a --resolve policy is given. Without --resolve, pull stays
@@ -367,18 +380,26 @@ def pull(
     if only is not None:
         diff_entries = [e for e in diff_entries if e.rel_path in only]
 
-    # Safe to bring down as-is: absent locally (remote-only / metadata-only), plus -- when we
-    # have a remote view -- files the remote changed while the local copy stayed in sync.
+    # Safe to bring down as-is: absent locally (remote-only / metadata-only, and -- with a
+    # remote view -- a metadata-only file whose Drive copy changed since it was recorded).
     to_pull = [
         e.rel_path
         for e in diff_entries
-        if e.state in (SyncState.REMOTE_ONLY, SyncState.METADATA_ONLY)
+        if e.state in (SyncState.REMOTE_ONLY, SyncState.METADATA_ONLY, SyncState.REMOTE_CHANGED)
     ]
-    if resolve is not None:
-        to_pull += [e.rel_path for e in diff_entries if e.state == SyncState.REMOTE_MODIFIED]
     # A path still on disk was only hidden from the scan (now ignored, say): it is not
     # absent, and downloading over it would overwrite it.
     to_pull = [rel for rel in to_pull if not (ctx.root / rel).exists()]
+    # With a remote view, also a file Drive changed while the local copy stayed in sync:
+    # replacing it loses no local edit. It is on disk by definition (the scan found it), so
+    # it must not go through the filter above.
+    remote_modified: list[str] = []
+    if resolve is not None:
+        to_pull += [e.rel_path for e in diff_entries if e.state == SyncState.REMOTE_MODIFIED]
+    elif refreshed is not None:
+        # Without --resolve pull never overwrites a local file, so it leaves alone the ones
+        # the refresh just found (its changed paths that are on disk); count them.
+        remote_modified = [rel for rel in refreshed.changed_paths if rel in local]
     # What the store's rules exclude is never downloaded: an include allowlist means
     # "only these here", a .git path must not land in a live repository, and a file
     # `export` moved into git (listed in .protonfs/ignore) must not come back. Their
@@ -419,6 +440,7 @@ def pull(
         return TransferResult(
             previewed, len(resolve_local), len(unresolved), failures,
             local_deleted_items=len(local_deleted), excluded_items=len(excluded),
+            remote_modified_items=len(remote_modified),
         )
 
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
@@ -430,6 +452,7 @@ def pull(
         total = TransferResult(0, 0, 0, [])
     total.local_deleted_items = len(local_deleted)
     total.excluded_items = len(excluded)
+    total.remote_modified_items = len(remote_modified)
     total.transferred_items += _fetch_remote_copies(ctx, resolve_both)
     total.skipped_items += len(resolve_local)  # local kept; stays queued for the next push
     for rel in unresolved:

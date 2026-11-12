@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import contextlib
 import datetime
+import posixpath
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -58,7 +59,8 @@ def refresh(
     progress; the walk itself is resumable from a saved BFS frontier.
 
     :param ctx: the loaded repo context.
-    :param subpath: repo-root-relative subtree to refresh, or ``None`` for everything.
+    :param subpath: repo-root-relative subtree or single file to refresh, or ``None`` for
+        everything. A file is refreshed through its folder's listing, kept to that file.
     :param prune: when true, remove index entries whose remote file has been deleted.
     :param persist: when false (a dry-run preview), make no on-disk changes and leave
         no resume-state behind.
@@ -85,15 +87,28 @@ def refresh(
        :data:`~protonfs.index.CHECKPOINT_INTERVAL_S` and when the walk is interrupted,
        instead of the index after every folder.
 
+    .. versionchanged:: 3.3.2
+       A ``subpath`` naming a file is refreshed through its folder's listing; it used to
+       be listed as a folder, which proton-drive refuses, so ``pull --refresh 'run/*'``
+       failed with "unparseable output from proton-drive: '['".
+
     .. seealso:: :mod:`protonfs.refreshstate` for the resumable-frontier persistence.
     """
     from protonfs.reporting import get_reporter
 
     reporter = reporter or get_reporter()
 
+    # `scope` is what the caller asked about; `walked` is the folder listed for it. A
+    # subpath naming a file (`pull --refresh 'run/*'` passes each matched file) is
+    # refreshed through its folder's listing, kept to that file: proton-drive cannot
+    # list a file ("Invalid link type. Expected: folder, found: file").
+    scope = walked = subpath
+    if subpath and (ctx.index.get(subpath) is not None or (ctx.root / subpath).is_file()):
+        walked = posixpath.dirname(subpath) or None
+
     remote_root = ctx.config.remote_root
-    if subpath:
-        remote_root = f"{remote_root}/{subpath}"
+    if walked:
+        remote_root = f"{remote_root}/{walked}"
 
     # `local` may be supplied by a caller (e.g. pull --refresh) that already scanned
     # the same tree, so we don't pay for a second recursive walk + re-hash. Scan BEFORE
@@ -110,7 +125,9 @@ def refresh(
         # #33: seed metadata-only entries for a directory's remote-only files; they are
         # persisted with the frontier by _save_progress, and on an interruption below.
         for file_entry in dir_files:
-            full_rel = f"{subpath}/{file_entry.rel_path}" if subpath else file_entry.rel_path
+            full_rel = f"{walked}/{file_entry.rel_path}" if walked else file_entry.rel_path
+            if not within_subpath(full_rel, scope):
+                continue  # a file's folder was listed for it; its other files were not asked for
             if is_control_path(full_rel):
                 continue  # #146: the remote manifest lives here; it is not data
             if ignore.matches(full_rel):
@@ -152,7 +169,7 @@ def refresh(
 
     # #146: note which manifest generation this pass reconciles against BEFORE walking, so
     # the index never claims to be newer than what the walk actually saw.
-    manifest_seen = _manifest_before_walk(ctx) if persist and not subpath else None
+    manifest_seen = _manifest_before_walk(ctx) if persist and not scope else None
 
     reporter.phase("walking remote", root=remote_root)
     try:
@@ -189,15 +206,16 @@ def refresh(
     remote = {e.rel_path: e for e in entries if not e.is_dir}
     # rel_paths from the walk are relative to remote_root; if a subpath was given,
     # re-prefix so keys match the index's repo-root-relative rel_paths.
-    if subpath:
-        remote = {f"{subpath}/{rel}": entry for rel, entry in remote.items()}
+    if walked:
+        remote = {f"{walked}/{rel}": entry for rel, entry in remote.items()}
+    remote = {rel: entry for rel, entry in remote.items() if within_subpath(rel, scope)}
 
     diff_entries = classify(local, ctx.index, remote)
 
     for entry in diff_entries:
         # A subpath-scoped walk only saw files under `subpath`; index entries outside
         # it were never checked, so their absence from `remote` is not a deletion.
-        if not within_subpath(entry.rel_path, subpath):
+        if not within_subpath(entry.rel_path, scope):
             continue
         # REMOTE_CHANGED is a metadata-only entry whose remote size moved; REMOTE_MODIFIED
         # is a locally-present file whose remote copy diverged. Both are "the remote changed

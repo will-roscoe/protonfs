@@ -220,6 +220,9 @@ class TransferResult:
     :ivar trashed: the repo-relative paths counted in ``trashed_items``.
     :ivar excluded_items: files pull left on Drive because the store's
         ``.protonfs/ignore``/``include`` rules exclude them. Populated by pull.
+    :ivar remote_modified_items: files pull left alone that Drive changed while the local
+        copy still matches the index, because it ran without ``resolve``; known only when
+        it refreshed first. Populated by pull.
 
     .. versionchanged:: 1.7.0
        Added ``adopted_items`` for the push self-heal-adopt path.
@@ -234,6 +237,9 @@ class TransferResult:
 
     .. versionchanged:: 3.1.0
        Added ``excluded_items``.
+
+    .. versionchanged:: 3.3.2
+       Added ``remote_modified_items``.
     """
 
     transferred_items: int
@@ -247,6 +253,7 @@ class TransferResult:
     excluded_items: int = 0
     trashed_items: int = 0
     trashed: list[str] = field(default_factory=list)
+    remote_modified_items: int = 0
 
     @classmethod
     def from_json(cls, data: dict) -> TransferResult:

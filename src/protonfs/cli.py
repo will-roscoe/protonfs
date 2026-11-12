@@ -466,6 +466,7 @@ def _accumulate_transfer(total, part) -> None:
     total.trashed_items += part.trashed_items
     total.excluded_items += part.excluded_items
     total.trashed += part.trashed
+    total.remote_modified_items += part.remote_modified_items
 
 
 def _verify_index(repair: bool) -> None:
@@ -1403,6 +1404,10 @@ def pull(
 
     .. versionchanged:: 3.0.0
        Added ``--no-restore`` (#197).
+
+    .. versionchanged:: 3.3.2
+       ``--resolve`` downloads files changed only on Drive again (3.0.0 to 3.3.1 left
+       them alone). Without it, ``--refresh`` reports how many such files it left alone.
     """
     from protonfs import manifest
     from protonfs.commands.pull import pull as pull_files
@@ -1484,6 +1489,12 @@ def pull(
         click.echo(
             f"  -> {result.excluded_items} file(s) on Drive were not downloaded: this "
             "store's .protonfs/ignore or .protonfs/include excludes them."
+        )
+    if result.remote_modified_items:
+        click.echo(
+            f"  -> {result.remote_modified_items} file(s) changed on Drive but not here were "
+            "left alone: pull replaces a local file only with --resolve. Run `protonfs pull "
+            "--resolve remote PATH` to bring them down."
         )
     for failure in result.failures:
         click.echo(f"  FAILED {failure['name']}: {failure['error']}")

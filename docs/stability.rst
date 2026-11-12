@@ -343,6 +343,9 @@ flag/argument name; these names, not just their presence, are frozen.
        one is still restored). Since 3.1.0, a file the store's
        ``.protonfs/ignore``/``include`` rules exclude is never downloaded, nor indexed
        by ``--refresh``; how many were left on Drive is reported on its own line.
+       Since 3.3.2, ``--resolve`` (any policy) downloads files changed only on Drive
+       again, and ``--refresh`` without ``--resolve`` reports how many of those it left
+       alone on its own line.
      - ``0`` all transferred/skipped (including the "index empty, run refresh first"
        early-exit message -- which since 2.1.0 appears only when the remote has no
        manifest to seed the index from -- and a pattern that matched nothing, which is
