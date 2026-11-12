@@ -1,6 +1,7 @@
 # tests/commands/test_pull.py
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -9,6 +10,7 @@ from protonfs.commands.pull import pull
 from protonfs.config import init_config
 from protonfs.context import load_context
 from protonfs.drive import RemoteEntry, TransferResult
+from protonfs.ignore import IgnoreMatcher
 from protonfs.index import IndexEntry
 
 
@@ -426,6 +428,174 @@ def test_pull_no_resolve_reports_conflict_and_does_not_touch(
     assert result.failures[0]["kind"] == "conflict"
     assert (tmp_path / "run1" / "dump").read_bytes() == b"LOCAL-EDIT"  # untouched
     assert result.transferred_items == 0
+
+
+# --- a file changed only on Drive (remote-modified) --------------------------------------
+# The FakeDrive serves b"downloaded" for every download, so that is the newer remote copy.
+_NEWER = b"downloaded"
+
+
+def _remote_modified_setup(tmp_path: Path, make_fake_drive):
+    """``run1/run.sink`` is on disk exactly as the index recorded it, and Drive lists a
+    newer copy (another host rewrote it) -> classify() sees REMOTE_MODIFIED."""
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    (tmp_path / "run1").mkdir()
+    (tmp_path / "run1" / "run.sink").write_bytes(b"OLD")
+    ctx.index.set(
+        "run1/run.sink",
+        IndexEntry(
+            size=3,
+            mtime=1.0,
+            sha256=hashlib.sha256(b"OLD").hexdigest(),
+            sha1=hashlib.sha1(b"OLD").hexdigest(),
+            remote_path="/my-files/test/run1/run.sink",
+            origin_device="d1",
+            local_state="present",
+            last_synced="2026-07-08T00:00:00+00:00",
+        ),
+    )
+    ctx.drive = make_fake_drive(
+        walk_entries=[
+            RemoteEntry(
+                "run1/run.sink",
+                is_dir=False,
+                size=len(_NEWER),
+                claimed_size=len(_NEWER),
+                sha1=hashlib.sha1(_NEWER).hexdigest(),
+            )
+        ]
+    )
+    return ctx
+
+
+@pytest.mark.parametrize("resolve", ["remote", "local", "both"])
+def test_pull_resolve_downloads_a_file_changed_only_on_drive(
+    tmp_path: Path, make_fake_drive, resolve: str
+) -> None:
+    # The local copy is unchanged since the last sync, so no local edit is at risk and
+    # every policy brings Drive's copy down. 3.0.0-3.3.1 dropped it because it exists on
+    # disk, while refresh still counted it as changed.
+    ctx = _remote_modified_setup(tmp_path, make_fake_drive)
+
+    result = pull(ctx, None, resolve=resolve, dry_run=False)
+
+    assert (result.transferred_items, result.skipped_items, result.failed_items) == (1, 0, 0)
+    assert (tmp_path / "run1" / "run.sink").read_bytes() == _NEWER
+    assert not (tmp_path / "run1" / "run.sink.remote").exists()  # nothing to merge
+    entry = ctx.index.get("run1/run.sink")
+    assert entry.sha256 == hashlib.sha256(_NEWER).hexdigest()
+    assert entry.sha1 == hashlib.sha1(_NEWER).hexdigest()
+    assert entry.size == len(_NEWER)
+    assert entry.local_state == "present"
+
+
+def test_pull_resolve_dry_run_counts_a_file_changed_only_on_drive(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    ctx = _remote_modified_setup(tmp_path, make_fake_drive)
+
+    result = pull(ctx, None, resolve="remote", dry_run=True)
+
+    assert result.transferred_items == 1
+    assert ctx.drive.download_calls == []
+    assert (tmp_path / "run1" / "run.sink").read_bytes() == b"OLD"
+
+
+def test_pull_resolve_downloads_an_offloaded_file_changed_on_drive(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    # remote-changed: a metadata-only entry whose Drive copy no longer matches it. A bare
+    # pull downloads it (it classifies metadata-only without a walk); so must --resolve.
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    _metadata_only(ctx, "run1/run.ev")
+    ctx.drive = make_fake_drive(
+        walk_entries=[
+            RemoteEntry("run1/run.ev", is_dir=False, size=len(_NEWER), claimed_size=len(_NEWER))
+        ]
+    )
+
+    result = pull(ctx, None, resolve="remote", dry_run=False)
+
+    assert result.transferred_items == 1
+    assert (tmp_path / "run1" / "run.ev").read_bytes() == _NEWER
+    entry = ctx.index.get("run1/run.ev")
+    assert (entry.size, entry.local_state) == (len(_NEWER), "present")
+
+
+@pytest.mark.parametrize("state", ["remote-only", "metadata-only", "remote-changed"])
+def test_pull_resolve_never_overwrites_a_path_hidden_from_the_scan(
+    tmp_path: Path, monkeypatch, make_fake_drive, state: str
+) -> None:
+    # The scan skips ignored paths and non-files, so a path it did not report can still
+    # be on disk. Each state here is "absent locally" only because of that; downloading
+    # would overwrite whatever is there. Hidden by wrapping the scan, so this pins the
+    # on-disk check itself rather than the ignore rules.
+    import protonfs.commands.pull as pull_mod
+
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    (tmp_path / "run1").mkdir()
+    (tmp_path / "run1" / "kept").write_bytes(b"local bytes")
+    if state != "remote-only":
+        _metadata_only(ctx, "run1/kept")  # size 4, no sha1
+    size = len(_NEWER) if state == "remote-changed" else 4
+    ctx.drive = make_fake_drive(
+        walk_entries=[RemoteEntry("run1/kept", is_dir=False, size=size, claimed_size=size)]
+    )
+    real_scan = pull_mod.scan
+
+    def scan_without_kept(*args, **kwargs):
+        found = real_scan(*args, **kwargs)
+        found.pop("run1/kept", None)
+        return found
+
+    monkeypatch.setattr(pull_mod, "scan", scan_without_kept)
+    local = scan_without_kept(tmp_path, Path("."), IgnoreMatcher.from_file(tmp_path), ctx.index)
+    found = pull_mod.classify(local, ctx.index, pull_mod._remote_view(ctx, None))
+    assert [e.state.value for e in found] == [state]  # the state under test
+
+    result = pull(ctx, None, resolve="remote", dry_run=False)
+
+    assert result.transferred_items == 0
+    assert ctx.drive.download_calls == []
+    assert (tmp_path / "run1" / "kept").read_bytes() == b"local bytes"
+
+
+def test_pull_refresh_without_resolve_leaves_a_file_changed_only_on_drive_and_counts_it(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    # A bare pull never overwrites a local file. With --refresh it has just learnt which
+    # local files Drive has a newer copy of, so it counts the ones it left alone.
+    ctx = _remote_modified_setup(tmp_path, make_fake_drive)
+
+    result = pull(ctx, None, resolve=None, dry_run=False, refresh=True)
+
+    assert result.transferred_items == 0
+    assert result.remote_modified_items == 1
+    assert ctx.drive.download_calls == []
+    assert (tmp_path / "run1" / "run.sink").read_bytes() == b"OLD"
+
+
+def test_cli_pull_refresh_without_resolve_names_the_files_changed_on_drive(
+    tmp_path: Path, monkeypatch, make_fake_drive
+) -> None:
+    from click.testing import CliRunner
+
+    from protonfs.cli import main
+
+    ctx = _remote_modified_setup(tmp_path, make_fake_drive)
+    ctx.index.save()
+    monkeypatch.setattr("protonfs.context.load_context", lambda *a, **k: ctx)
+
+    result = CliRunner().invoke(main, ["pull", "--refresh"])
+
+    assert result.exit_code == 0, result.output
+    assert "transferred=0" in result.output
+    assert "1 file(s) changed on Drive" in result.output
+    assert "--resolve remote" in result.output
+    assert (tmp_path / "run1" / "run.sink").read_bytes() == b"OLD"
 
 
 def _metadata_only_entry(remote_path: str) -> IndexEntry:

@@ -894,10 +894,17 @@ the move on Drive (or, with ``--deletions trash``, the deletion). A ``PATH`` giv
 literally that names one such file is still restored; a pattern is not. A path the
 scan skipped that still exists on disk (now ignored, say) is never downloaded over.
 A file the store's ``.protonfs/ignore``/``include`` rules exclude is never downloaded
-at all, and ``pull`` reports how many it left on Drive.
+at all, and ``pull`` reports how many it left on Drive. With ``--refresh`` and no
+``--resolve``, ``pull`` reports how many files the refresh found changed on Drive while
+the local copy is unchanged; it leaves them alone, and ``--resolve remote`` brings them
+down.
 
 .. versionchanged:: 3.0.0
    Added ``--no-restore``.
+
+.. versionchanged:: 3.3.2
+   ``--resolve`` downloads ``remote-modified`` files again (3.0.0 to 3.3.1 left them
+   alone), and ``--refresh`` without ``--resolve`` reports how many it left alone.
 
 ``--refresh`` seeds the index from a fresh remote listing before pulling (metadata
 only, no download) — useful on a machine whose index doesn't yet know everything
