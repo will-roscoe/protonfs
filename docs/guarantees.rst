@@ -423,6 +423,10 @@ exits non-zero rather than guessing.
   suffix (deliberately **not** indexed — it is scratch for a manual merge), and
   leave the original local file alone.
 
+With any policy, a file that changed only on Drive (``remote-modified``: the local
+copy still matches the index) is downloaded over the local copy, since no local edit
+is at stake; the policy decides only ``both-modified`` files.
+
 Plain ``conflict`` entries (no remote view available to attribute direction) are
 **never** resolved by ``--resolve`` — they are reported regardless, because
 there is no proof of what "remote" even means for them without a live listing.
