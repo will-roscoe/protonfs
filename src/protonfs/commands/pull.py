@@ -41,6 +41,10 @@ CONFLICT_ERROR = "local and remote diverged; re-run with --resolve=remote|local|
 # tagged with this so the CLI can tell them apart from genuine conflicts.
 UNDERDELIVERED_KIND = "under-delivered"
 UNDERDELIVERED_ERROR = "claimed transferred but not found locally after download (under-delivered)"
+UNMATCHED_ERROR = (
+    "downloaded copy does not match Drive's listed size or sha1; the local file was left "
+    "as it was (under-delivered)"
+)
 
 
 def _names_a_file(ctx: RepoContext, subpath: str) -> bool:
@@ -128,15 +132,56 @@ def _apart_by_landed_name(batch: list[str], landed: dict[str, str]) -> list[list
     return calls
 
 
+def _incoming_size(ctx: RepoContext, rel: str, remote: dict[str, RemoteEntry] | None) -> int:
+    """Bytes ``rel``'s download moves: Drive's size when the walk listed it, else the
+    indexed size (which, for a file being replaced, is the old copy's)."""
+    listed = remote.get(rel) if remote is not None else None
+    if listed is not None:
+        return listed.claimed_size if listed.claimed_size is not None else listed.size
+    entry = ctx.index.get(rel)
+    return entry.size if entry else 0
+
+
+def _staged_digests(staged: Path, listed: RemoteEntry | None) -> tuple[str, str] | None:
+    """Return the ``(sha256, sha1)`` of a staged download that matches Drive's listing.
+
+    :param staged: the file the download left in its staging directory; it must exist.
+    :param listed: the file's entry from the walk, or ``None`` when pull took none. Its
+        ``claimed_size`` and ``sha1`` are checked when Drive reports them.
+    :returns: the digests, or ``None`` when the staged file's size or sha1 differs from
+        the listing (a short or wrong copy).
+    """
+    if (
+        listed is not None
+        and listed.claimed_size is not None
+        and staged.stat().st_size != listed.claimed_size
+    ):
+        return None
+    sha256, sha1 = hash_file_digests(staged)
+    if listed is not None and listed.sha1 and listed.sha1 != sha1:
+        return None
+    return sha256, sha1
+
+
 def _download_and_index(
-    ctx: RepoContext, rels: list[str], now: str, reporter, progress_total: int = 0
+    ctx: RepoContext,
+    rels: list[str],
+    now: str,
+    reporter,
+    progress_total: int = 0,
+    remote: dict[str, RemoteEntry] | None = None,
 ) -> TransferResult:
     """Download `rels` (grouped by parent) with overwrite, updating the index to present.
 
     Shared by the clean bring-down (remote-only / metadata-only), the safe remote-moved
     bring-down (local unchanged), and --resolve=remote (remote wins over a local edit).
-    Reports ``reporter.progress(done, progress_total)`` and ``reporter.item("v", rel)``
-    per downloaded batch.
+    Each file downloads into a fresh staging directory and replaces the local path only
+    when it landed there, was not reported failed, and matches its ``remote`` listing
+    (see :func:`_staged_digests`); otherwise the local path is left as it was and the
+    file is counted failed (``under-delivered`` when it did not land or did not match).
+    ``remote`` (the walk, under ``--resolve``) also sizes each call's timeout from
+    Drive's copy rather than the indexed one. Reports ``reporter.progress(done,
+    progress_total)`` per batch and ``reporter.item("v", rel)`` per delivered file.
     """
     total = TransferResult(0, 0, 0, [])
     done = 0
@@ -158,12 +203,9 @@ def _download_and_index(
             for call in _apart_by_landed_name(batch, landed)
         ]
         for batch in calls:
-            remote_paths = []
-            payload = 0  # #184: sizes the download's timeout
-            for rel in batch:
-                entry = ctx.index.get(rel)
-                remote_paths.append(_remote_path(ctx, rel))
-                payload += entry.size if entry else 0
+            remote_paths = [_remote_path(ctx, rel) for rel in batch]
+            # #184: sizes the download's timeout
+            payload = sum(_incoming_size(ctx, rel, remote) for rel in batch)
             # Download into a staging directory and move each file into the tree only
             # once the transfer returns. Downloading straight to the destination left a
             # TRUNCATED file there when a pull was interrupted, and the next pull could
@@ -172,16 +214,53 @@ def _download_and_index(
             # remote copy (#141). Staging lives under .protonfs/, which the scan skips,
             # and on the same filesystem, so the move is a rename.
             tmp = Path(tempfile.mkdtemp(dir=staging))
+            delivered, undelivered = [], []
             try:
                 # "replace": pull intentionally brings remote content down, overwriting any
                 # local copy at the destination (that is what remote-wins / remote-moved mean).
                 result = ctx.drive.download(
                     remote_paths, tmp, file_strategy="replace", payload_bytes=payload or None
                 )
+                failed_names = {f["name"] for f in result.failures}
+                # #132: do NOT trust result.transferred_items. Only what landed in this
+                # call's own staging directory proves a download: the destination may still
+                # hold the old copy. A file not reported failed that is missing there, or
+                # does not match the walk's listing, is under-delivered; it is left
+                # unindexed and the local path untouched, so the next pull retries it.
                 for rel in batch:
-                    landed_file = tmp / landed[rel]
-                    if landed_file.exists():
-                        landed_file.replace(ctx.root / rel)
+                    if landed[rel] in failed_names:
+                        continue
+                    staged = tmp / landed[rel]
+                    listed = remote.get(rel) if remote is not None else None
+                    digests = _staged_digests(staged, listed) if staged.is_file() else None
+                    if digests is None:
+                        undelivered.append({
+                            "name": Path(rel).name,
+                            "error": UNMATCHED_ERROR if staged.is_file() else UNDERDELIVERED_ERROR,
+                            "kind": UNDERDELIVERED_KIND,
+                            "path": rel,
+                        })
+                        continue
+                    downloaded_path = ctx.root / rel
+                    staged.replace(downloaded_path)
+                    stat = downloaded_path.stat()
+                    prior = ctx.index.get(rel)
+                    default_remote = f"{ctx.config.remote_root}/{rel}"
+                    ctx.index.set(
+                        rel,
+                        IndexEntry(
+                            size=stat.st_size,
+                            mtime=stat.st_mtime,
+                            sha256=digests[0],
+                            sha1=digests[1],
+                            remote_path=prior.remote_path if prior else default_remote,
+                            origin_device=prior.origin_device if prior else "unknown",
+                            local_state="present",
+                            last_synced=now,
+                        ),
+                    )
+                    total.transferred_items += 1
+                    delivered.append(rel)
             finally:
                 shutil.rmtree(tmp, ignore_errors=True)
             # proton-drive names a failure by its landed name only; a call is one folder
@@ -194,50 +273,12 @@ def _download_and_index(
                 name = Path(rel).name if rel else f["name"]
                 failures.append({**f, "name": name, "path": rel})
             total.skipped_items += result.skipped_items
-            total.failed_items += result.failed_items
-            total.failures += failures
+            total.failed_items += result.failed_items + len(undelivered)
+            total.failures += failures + undelivered
             done += len(batch)
             reporter.progress(done, progress_total or len(rels))
-            failed_names = {f["name"] for f in result.failures}
-            for rel in batch:
-                if landed[rel] not in failed_names:
-                    reporter.item("v", rel)
-
-            # #132: do NOT trust result.transferred_items -- verify each non-failed
-            # candidate actually landed locally before counting it transferred and
-            # indexing it. A file proton-drive did not report as a failure but that is
-            # absent afterward is a silent under-delivery: report it as failed and leave
-            # it unindexed so the next pull retries it, mirroring #22 on push.
-            for rel in batch:
-                name = Path(rel).name
-                if landed[rel] in failed_names:
-                    continue
-                downloaded_path = ctx.root / rel
-                if not downloaded_path.exists():
-                    total.failed_items += 1
-                    total.failures.append({
-                        "name": name, "error": UNDERDELIVERED_ERROR,
-                        "kind": UNDERDELIVERED_KIND, "path": rel,
-                    })
-                    continue
-                stat = downloaded_path.stat()
-                prior = ctx.index.get(rel)
-                default_remote = f"{ctx.config.remote_root}/{rel}"
-                sha256, sha1 = hash_file_digests(downloaded_path)
-                ctx.index.set(
-                    rel,
-                    IndexEntry(
-                        size=stat.st_size,
-                        mtime=stat.st_mtime,
-                        sha256=sha256,
-                        sha1=sha1,
-                        remote_path=prior.remote_path if prior else default_remote,
-                        origin_device=prior.origin_device if prior else "unknown",
-                        local_state="present",
-                        last_synced=now,
-                    ),
-                )
-                total.transferred_items += 1
+            for rel in delivered:
+                reporter.item("v", rel)
         # #3: persist after each parent group so an interrupted pull resumes from here
         # rather than restarting. Crash-safe once composed with #1's atomic writes.
         # #170: a failed one is not fatal; pull's final save persists everything.
@@ -336,6 +377,16 @@ def pull(
        earlier release did under ``resolve``. With ``refresh`` and no ``resolve``, counts
        the ``remote-modified`` files it left alone in ``remote_modified_items``.
 
+    .. versionchanged:: 3.3.3
+       With ``resolve``, restores a file this machine held that is gone locally
+       (``local-deleted``), as without it; earlier releases left it. A download counts
+       in ``transferred_items`` only when the file landed in staging and, with
+       ``resolve``, matches the walk's plaintext size and sha1; otherwise the local file
+       is left as it was and the file counts in ``failed_items`` (``under-delivered``).
+       Earlier releases counted a dropped download of a file already on disk as
+       transferred, and moved a reported-failed download's partial file into place. With
+       ``resolve``, a download's timeout is sized from Drive's copy, not the indexed one.
+
     .. seealso:: :func:`protonfs.commands.push.push` for the upload direction.
     """
     from protonfs.reporting import get_reporter
@@ -381,12 +432,13 @@ def pull(
         diff_entries = [e for e in diff_entries if e.rel_path in only]
 
     # Safe to bring down as-is: absent locally (remote-only / metadata-only, and -- with a
-    # remote view -- a metadata-only file whose Drive copy changed since it was recorded).
-    to_pull = [
-        e.rel_path
-        for e in diff_entries
-        if e.state in (SyncState.REMOTE_ONLY, SyncState.METADATA_ONLY, SyncState.REMOTE_CHANGED)
-    ]
+    # remote view -- a metadata-only file whose Drive copy changed since it was recorded,
+    # or a held file gone locally, which the walk calls local-deleted, not remote-only).
+    absent = (
+        SyncState.REMOTE_ONLY, SyncState.METADATA_ONLY, SyncState.REMOTE_CHANGED,
+        SyncState.LOCAL_DELETED,
+    )
+    to_pull = [e.rel_path for e in diff_entries if e.state in absent]
     # A path still on disk was only hidden from the scan (now ignored, say): it is not
     # absent, and downloading over it would overwrite it.
     to_pull = [rel for rel in to_pull if not (ctx.root / rel).exists()]
@@ -412,7 +464,7 @@ def pull(
     local_deleted: list[str] = []
     if no_restore:
         gone = held_and_gone(diff_entries, ctx.index, ctx.root)
-        local_deleted = sorted(gone)   # with a remote view these were never pullable anyway
+        local_deleted = sorted(gone)
         to_pull = [rel for rel in to_pull if rel not in gone]
 
     # Diverged on both sides (a remote copy exists to reconcile against): resolvable.
@@ -446,7 +498,9 @@ def pull(
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
     if to_pull:
         reporter.phase("downloading", files=len(to_pull))
-        total = _download_and_index(ctx, to_pull, now, reporter, progress_total=len(to_pull))
+        total = _download_and_index(
+            ctx, to_pull, now, reporter, progress_total=len(to_pull), remote=remote
+        )
         reporter.progress(len(to_pull), len(to_pull), force=True)
     else:
         total = TransferResult(0, 0, 0, [])

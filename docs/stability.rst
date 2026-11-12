@@ -346,6 +346,10 @@ flag/argument name; these names, not just their presence, are frozen.
        Since 3.3.2, ``--resolve`` (any policy) downloads files changed only on Drive
        again, and ``--refresh`` without ``--resolve`` reports how many of those it left
        alone on its own line.
+       Since 3.3.3, ``--resolve`` (any policy) restores files this machine held that are
+       gone locally, as a bare ``pull`` does, and a download that did not land, or does
+       not match Drive's listed size and sha1, leaves the local file as it was and is a
+       failure, not a transfer.
      - ``0`` all transferred/skipped (including the "index empty, run refresh first"
        early-exit message -- which since 2.1.0 appears only when the remote has no
        manifest to seed the index from -- and a pattern that matched nothing, which is

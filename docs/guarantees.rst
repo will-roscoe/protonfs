@@ -72,7 +72,12 @@ Resumable, idempotent push and pull
 ``push`` and ``pull`` (``src/protonfs/commands/push.py``,
 ``src/protonfs/commands/pull.py``) both group their work by parent directory and
 record each group in the index once it is confirmed (an upload seen in a Drive
-listing, a download found on disk), not just once at the end. The index is saved
+listing, a download found in its own staging directory), not just once at the end.
+A download is checked there, before it replaces anything: a file proton-drive
+reported failed, did not deliver, or (when ``pull --resolve`` has a Drive listing)
+delivered with a plaintext size or sha1 other than the listing's is never moved into
+place, so the local file stays as it was, and it counts as failed
+(``under-delivered`` when it did not land or did not match). The index is saved
 part-way through at most every ``CHECKPOINT_INTERVAL_S`` (10 s), and always at the
 end. Combined with the atomic-write guarantee above, this makes an interrupted run
 (Ctrl-C, a dropped connection, a killed process) crash-safe: the next invocation
@@ -425,7 +430,9 @@ exits non-zero rather than guessing.
 
 With any policy, a file that changed only on Drive (``remote-modified``: the local
 copy still matches the index) is downloaded over the local copy, since no local edit
-is at stake; the policy decides only ``both-modified`` files.
+is at stake; the policy decides only ``both-modified`` files. A file this machine
+held that is gone locally (``local-deleted``) is restored under any policy, as a bare
+``pull`` restores it, unless ``--no-restore`` is given.
 
 Plain ``conflict`` entries (no remote view available to attribute direction) are
 **never** resolved by ``--resolve`` — they are reported regardless, because
