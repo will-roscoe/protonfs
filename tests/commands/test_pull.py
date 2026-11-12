@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -175,6 +176,27 @@ def test_pull_no_restore_with_a_remote_view_counts_what_it_left_alone(
 
     assert ctx.drive.download_calls == []
     assert result.local_deleted_items == 1
+
+
+@pytest.mark.parametrize("resolve", ["remote", "local", "both"])
+def test_pull_resolve_restores_a_file_deleted_locally(
+    tmp_path: Path, make_fake_drive, resolve: str
+) -> None:
+    # the walk classifies it local-deleted rather than remote-only; no local edit is at
+    # stake, so every policy restores it as a bare pull does
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.index.set("gone/dump_0001", _held_entry("gone/dump_0001"))
+    ctx.drive = make_fake_drive(
+        walk_entries=[RemoteEntry("gone/dump_0001", is_dir=False, size=10, claimed_size=10)]
+    )
+
+    result = pull(ctx, None, resolve=resolve, dry_run=False)
+
+    assert (result.transferred_items, result.failed_items) == (1, 0), result.failures
+    assert result.local_deleted_items == 0
+    assert (tmp_path / "gone" / "dump_0001").read_bytes() == b"downloaded"
+    assert ctx.index.get("gone/dump_0001").local_state == "present"
 
 
 def test_cli_pull_no_restore_reports_and_a_named_file_still_comes_back(
@@ -365,8 +387,15 @@ def _diverged_setup(tmp_path: Path):
 
 
 def _both_modified_walk():
-    # remote copy of run1/dump with a sha1 differing from the index -> remote diverged
-    return [RemoteEntry("run1/dump", is_dir=False, size=9, claimed_size=9, sha1="remote-sha1")]
+    # remote copy of run1/dump with a sha1 differing from the index -> remote diverged; it
+    # describes what the FakeDrive serves, since a download must match its listing
+    served = b"downloaded"
+    return [
+        RemoteEntry(
+            "run1/dump", is_dir=False, size=len(served), claimed_size=len(served),
+            sha1=hashlib.sha1(served).hexdigest(),
+        )
+    ]
 
 
 def test_pull_resolve_remote_overwrites_local(tmp_path: Path, make_fake_drive) -> None:
@@ -500,6 +529,83 @@ def test_pull_resolve_dry_run_counts_a_file_changed_only_on_drive(
     assert result.transferred_items == 1
     assert ctx.drive.download_calls == []
     assert (tmp_path / "run1" / "run.sink").read_bytes() == b"OLD"
+
+
+def _assert_old_copy_kept(tmp_path: Path, ctx, result, before: IndexEntry) -> None:
+    """The download of ``run1/run.sink`` failed: counted as such, the old copy and its
+    index entry exactly as they were."""
+    assert (result.transferred_items, result.failed_items) == (0, 1), result.failures
+    assert result.failures[0]["path"] == "run1/run.sink"
+    assert (tmp_path / "run1" / "run.sink").read_bytes() == b"OLD"
+    assert ctx.index.get("run1/run.sink") == before
+
+
+def test_pull_resolve_never_counts_a_dropped_download_of_a_file_already_here(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    # proton-drive claims the transfer but nothing lands. The old copy is still at the
+    # destination, so finding a file there afterward proves nothing about the download.
+    ctx = _remote_modified_setup(tmp_path, make_fake_drive)
+    ctx.drive._download_dropped_files = {"run.sink"}
+    before = replace(ctx.index.get("run1/run.sink"))
+
+    result = pull(ctx, None, resolve="remote", dry_run=False)
+
+    _assert_old_copy_kept(tmp_path, ctx, result, before)
+    assert result.failures[0]["kind"] == "under-delivered"
+
+
+def test_pull_resolve_keeps_the_local_copy_when_the_download_does_not_match_drive(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    # a short copy lands (a dropped link mid-file): Drive's listing gives the size and
+    # sha1 the download must have, and this one has neither
+    ctx = _remote_modified_setup(tmp_path, make_fake_drive)
+    ctx.drive._remote_content["/my-files/test/run1/run.sink"] = _NEWER[:4]
+    before = replace(ctx.index.get("run1/run.sink"))
+
+    result = pull(ctx, None, resolve="remote", dry_run=False)
+
+    _assert_old_copy_kept(tmp_path, ctx, result, before)
+    assert result.failures[0]["kind"] == "under-delivered"
+
+
+def test_pull_resolve_never_moves_a_failed_download_over_the_local_copy(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    # proton-drive reports the file failed but leaves part of it behind in staging
+    ctx = _remote_modified_setup(tmp_path, make_fake_drive)
+    before = replace(ctx.index.get("run1/run.sink"))
+
+    def failed_with_a_partial(remote_paths, local_folder, **kwargs):
+        (Path(local_folder) / "run.sink").write_bytes(b"part")
+        return TransferResult(0, 0, 1, [{"name": "run.sink", "error": "connection reset"}])
+
+    ctx.drive.download = failed_with_a_partial
+
+    result = pull(ctx, None, resolve="remote", dry_run=False)
+
+    _assert_old_copy_kept(tmp_path, ctx, result, before)
+
+
+def test_pull_resolve_sizes_an_overwrite_timeout_from_the_drive_copy(
+    tmp_path: Path, make_fake_drive
+) -> None:
+    # #184 sizes a download's timeout from its payload. The index holds the size of the
+    # copy being replaced (3 bytes); Drive's copy is the one that has to move.
+    ctx = _remote_modified_setup(tmp_path, make_fake_drive)
+    payloads = []
+    real_download = ctx.drive.download
+
+    def spy(remote_paths, local_folder, **kwargs):
+        payloads.append(kwargs.get("payload_bytes"))
+        return real_download(remote_paths, local_folder, **kwargs)
+
+    ctx.drive.download = spy
+
+    pull(ctx, None, resolve="remote", dry_run=False)
+
+    assert payloads == [len(_NEWER)]
 
 
 def test_pull_resolve_downloads_an_offloaded_file_changed_on_drive(
