@@ -466,6 +466,7 @@ def test_root_view_sections(usage_cache, clock):
     assert Counter(d.calls) == Counter({
         ("size", "/my-files"): 1, ("list", "/devices"): 1,
         ("size", "/devices/laptop"): 1, ("size", "/devices/desk"): 1,
+        ("list_trash", "/trash"): 1,  # root() runs the automatic trash pass
     })
 
     d.calls.clear()

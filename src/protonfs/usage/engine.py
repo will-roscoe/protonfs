@@ -39,6 +39,7 @@ from .model import Breakdown, Entry, GapKind, NodeState
 from .paths import DU_SECTIONS, is_within, join, parent_of, relative, split
 from .policy import RefreshPolicy
 from .source import DriveSource, RawEntry
+from .trash import TrashFigure, TrashSummary, figure_for, run_trash_pass
 
 _SCOPE_KEY = "scope"
 _DEVICES_KEY = "devices"
@@ -287,6 +288,10 @@ class UsageEngine:
             listing adds a ``/devices`` entry with state ``ERROR`` and keeps any cached
             device list.
 
+        Side effect: when no trash summary is stored or it is stale under ``policy``, runs
+        the trash pass (``filesystem list /trash`` plus breakdowns) and stores the summary;
+        read it with :meth:`trash_summary`. Nothing runs under ``policy.never``.
+
         .. versionadded:: 3.4.0
         """
         entries: list[Entry] = []
@@ -316,6 +321,7 @@ class UsageEngine:
         if x_photos is not Exclusion.HIDE:
             entries.append(Entry("photos", PHOTOS_PATH, "section", None, None, None, None,
                                  NodeState.UNMEASURED, x_photos, None, True, None))
+        self._refresh_trash(policy)
         measured = [e for e in entries if e.size is not None]
         sizes = [e.size for e in measured if e.size is not None]
         times = [e.at for e in measured if e.at is not None]
@@ -332,6 +338,45 @@ class UsageEngine:
             oldest,
             max(times) if times else None,
         )
+
+    def trash_summary(self) -> TrashSummary | None:
+        """Return the stored trash summary, or ``None`` if no trash pass has run.
+
+        No Drive calls. :meth:`root` runs and stores the pass when it is missing or stale.
+
+        .. versionadded:: 3.4.0
+        """
+        stored = self.cache.trash()
+        if stored is None:
+            return None
+        try:
+            return TrashSummary.from_json(stored[0])
+        except ValueError:
+            return None
+
+    def trash_for(self, path: str) -> TrashFigure:
+        """Return the trash bytes whose original parent is within ``path``.
+
+        No Drive calls; see :func:`protonfs.usage.trash.figure_for`. The figure is a lower
+        bound unless ``complete``; its ``unchecked_bytes`` says how much of the subtree
+        was not broken down.
+
+        :param path: escaped Drive path, or ``"/"``.
+        :returns: the figure.
+
+        .. versionadded:: 3.4.0
+        """
+        return figure_for(self, path)
+
+    def _refresh_trash(self, policy: RefreshPolicy) -> None:
+        """Run and store the trash pass when none is stored or it is stale under ``policy``."""
+        stored = self.cache.trash()
+        if stored is not None and not policy.is_stale(stored[1], self.clock()):
+            return
+        if policy.never:
+            return
+        summary = run_trash_pass(self, policy)
+        self.cache.put_trash(summary.to_json(), summary.at)
 
     def used_total(self) -> int | None:
         """Return the cached ``/my-files`` figure plus every cached device figure.
