@@ -79,6 +79,8 @@ class RefreshPolicy:
 def parse_size(text: str) -> int:
     """Return a size in bytes from ``500GB``, ``3TB`` (decimal), ``2TiB`` (binary) or bytes.
 
+    .. versionadded:: 3.4.0
+
     :param text: the size text.
     :returns: the number of bytes.
     :raises ValueError: if the text is not a number with an optional known unit.
