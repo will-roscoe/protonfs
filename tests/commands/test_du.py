@@ -353,3 +353,12 @@ def test_du_trash_cells_filled_after_root_pass(du):
     folders = [r for r in _rows(res) if r["kind"] == "folder"]
     assert folders and all(r["in_trash"] is not None for r in folders)
     assert "In trash needs" not in du("/my-files").stderr
+
+
+def test_du_root_cache_only_with_nothing_cached_is_partial(du, drive):
+    """/devices unmeasured without a user exclusion is partial: exit 3, no Drive calls."""
+    res = du("/", "--refresh", "never", "--json")
+    assert res.exit_code == 3, res.output
+    assert drive.calls == []
+    states = {r["path"]: r["state"] for r in _rows(res)}
+    assert states["/devices"] == "unmeasured" and states["/"] == "partial"
