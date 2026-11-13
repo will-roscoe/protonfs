@@ -92,8 +92,11 @@ after the threshold has passed is re-checked then:
 ``--refresh never``
    Answer from the cache alone, with no Drive calls at all.
 
-A stale folder whose total and item count haven't changed is re-stamped without being
-re-listed, so re-checking a large unchanged tree costs one call.
+Re-checking a stale folder costs two calls: its total is re-sized and it is re-listed
+(a listing is the only way to see what moved to the trash). Its subfolders' totals are
+reused rather than re-sized when the folder's total, item count, subfolder set and file
+bytes are all unchanged, so an unchanged tree is not walked again. With ``--refresh 0``
+nothing is reused.
 
 Excluding folders
 -----------------
