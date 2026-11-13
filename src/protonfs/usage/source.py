@@ -70,6 +70,7 @@ class DriveSource(Protocol):
 
         :param path: escaped Drive path.
         :param expected_entries: a hint for sizing the call timeout.
+        :returns: the children, in listing order.
         :raises DriveError: when the path is missing or the call fails.
         """
         ...
@@ -78,6 +79,7 @@ class DriveSource(Protocol):
         """Return the folder total at ``path``, trashed descendants included.
 
         :param path: escaped Drive path.
+        :returns: bytes and node count beneath ``path``.
         :raises DriveError: when the path is missing or the output is malformed.
         """
         ...
@@ -86,6 +88,7 @@ class DriveSource(Protocol):
         """Return the top-level trashed nodes (folders carry ``size=None``).
 
         :param timeout: per-call timeout in seconds.
+        :returns: the trashed nodes.
         :raises subprocess.TimeoutExpired: when the listing exceeds ``timeout``.
         """
         ...
@@ -96,6 +99,9 @@ def list_timeout(expected_entries: int | None) -> float:
 
     ``30 + 0.06 * n`` capped at 3600; :data:`~protonfs.drive.LIST_TIMEOUT_SECONDS` when
     ``expected_entries`` is ``None``.
+
+    :param expected_entries: direct entries the folder is expected to hold, or ``None``.
+    :returns: the timeout in seconds.
 
     .. versionadded:: 3.4.0
     """
@@ -110,6 +116,9 @@ def normalise_entry(raw: dict) -> RawEntry:
     A ``type`` of ``"folder"``, or any non-file type carrying ``rootFolderUid`` (device
     rows have ``type`` set to the OS name), is a folder. An undecryptable name becomes
     the ``uid`` with ``decrypted=False``.
+
+    :param raw: one entry dict from proton-drive's JSON listing.
+    :returns: the normalised entry.
 
     .. versionadded:: 3.4.0
     """
