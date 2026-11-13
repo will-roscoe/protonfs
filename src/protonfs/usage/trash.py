@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING
 from ..drive import DriveError
 from .excludes import ExcludeRules
 from .model import GapKind
-from .paths import is_within
+from .paths import child_path, is_within
 from .policy import RefreshPolicy
 
 if TYPE_CHECKING:
@@ -32,9 +32,8 @@ if TYPE_CHECKING:
 #: Seconds allowed for the ``filesystem list /trash`` call.
 DEFAULT_TIMEOUT = 300.0
 
-# Threshold 0 without the fingerprint shortcut: trashing a node leaves every ancestor's
-# (size, descendants) unchanged, so a restamped listing would still show the trashed node as
-# live and hide its bytes from the remainder.
+# Threshold 0 without the shortcut: the parent is re-listed and every child folder re-sized
+# in one pass, so the remainder is measured fresh rather than from reused child sizes.
 _FULL = RefreshPolicy(0.0, allow_shortcut=False)
 
 
@@ -254,13 +253,7 @@ def figure_for(engine: UsageEngine, path: str) -> TrashFigure:
 def _roots(engine: UsageEngine, path: str) -> list[str]:
     if path != "/":
         return [path]
-    from .engine import _segment
-    from .paths import join
-
-    out = ["/my-files"]
-    for name, uid, decrypted in engine._cached_devices() or []:
-        out.append(join("/devices", _segment(name, uid, decrypted)))
-    return out
+    return ["/my-files", *(engine.device_paths() or [])]
 
 
 def _unchecked(engine: UsageEngine, path: str) -> tuple[int | None, int | None]:
@@ -268,8 +261,6 @@ def _unchecked(engine: UsageEngine, path: str) -> tuple[int | None, int | None]:
 
     The first item is ``None`` when any such folder has no known size.
     """
-    from .engine import _row_path
-
     size = engine.used_total() if path == "/" else _size(engine, path)
     total = 0
     unknown = False
@@ -287,8 +278,8 @@ def _unchecked(engine: UsageEngine, path: str) -> tuple[int | None, int | None]:
         for row in snap.rows:
             if row.kind == "file":
                 continue
-            child = _row_path(p, row)
-            if engine.cache.snapshot(child) is None:
+            child = child_path(p, row.name, row.uid, row.decrypted)
+            if not engine.cache.has_snapshot(child):
                 if row.size is None:
                     unknown = True
                 else:
@@ -305,8 +296,6 @@ def _size(engine: UsageEngine, path: str) -> int | None:
 
 def _cached_gaps(engine: UsageEngine, path: str) -> int:
     """Sum the ``in_trash`` remainders of the valid cached listings under ``path``."""
-    from .engine import _row_path
-
     never = RefreshPolicy(None)
     known = 0
     stack = _roots(engine, path)
@@ -318,5 +307,7 @@ def _cached_gaps(engine: UsageEngine, path: str) -> int:
         bd = engine.breakdown(p, never, ExcludeRules(), target=p)
         if bd.gap_kind is GapKind.TRASH and bd.gap is not None:
             known += bd.gap
-        stack.extend(_row_path(p, r) for r in snap.rows if r.kind == "folder")
+        stack.extend(
+            child_path(p, r.name, r.uid, r.decrypted) for r in snap.rows if r.kind == "folder"
+        )
     return known

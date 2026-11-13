@@ -88,6 +88,38 @@ def join(parent: str, segment: str) -> str:
     return "/" + esc if parent == "/" else parent + "/" + esc
 
 
+def node_segment(name: str, uid: str | None, decrypted: bool) -> str:
+    """Return the plain (unescaped) path segment that addresses a listed node.
+
+    That is ``name``, or the node ``uid`` when the name could not be decrypted (``name``
+    itself if the uid is unknown).
+
+    :param name: the listed name.
+    :param uid: the node uid, if known.
+    :param decrypted: whether ``name`` is the decrypted name.
+    :returns: the segment, ready for :func:`join`.
+
+    .. versionadded:: 3.4.0
+    """
+    return name if decrypted else (uid or name)
+
+
+def child_path(parent: str, name: str, uid: str | None, decrypted: bool) -> str:
+    """Return the escaped Drive path of a listed child of ``parent``.
+
+    Same as ``join(parent, node_segment(name, uid, decrypted))``.
+
+    :param parent: escaped Drive path of the folder that listed the child.
+    :param name: the child's listed name (plain).
+    :param uid: the child's uid, if known.
+    :param decrypted: whether ``name`` is the decrypted name.
+    :returns: the child's escaped Drive path.
+
+    .. versionadded:: 3.4.0
+    """
+    return join(parent, node_segment(name, uid, decrypted))
+
+
 def split(path: str) -> list[str]:
     """Return the unescaped, non-empty segments of a Drive path (``[]`` for ``/``).
 

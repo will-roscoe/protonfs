@@ -222,6 +222,31 @@ class UsageCache:
             tuple(Row(*r[:8], bool(r[8])) for r in rows),
         )
 
+    def has_snapshot(self, path: str) -> bool:
+        """Return whether a snapshot of ``path`` is stored (valid or not), without its rows.
+
+        .. versionadded:: 3.4.0
+        """
+        with self._lock:
+            r = self._db.execute(
+                "SELECT 1 FROM snapshots WHERE path=? LIMIT 1", (path,)
+            ).fetchone()
+        return r is not None
+
+    def has_data(self) -> bool:
+        """Return whether any figure, snapshot or trash summary is stored.
+
+        Passes and metadata do not count.
+
+        .. versionadded:: 3.4.0
+        """
+        with self._lock:
+            r = self._db.execute(
+                "SELECT EXISTS(SELECT 1 FROM figures) OR EXISTS(SELECT 1 FROM snapshots) "
+                "OR EXISTS(SELECT 1 FROM trash)"
+            ).fetchone()
+        return bool(r[0])
+
     def _insert_row(self, conn: sqlite3.Connection, parent: str, ord_: int, row: Row) -> None:
         conn.execute(
             "INSERT INTO rows VALUES(?,?,?,?,?,?,?,?,?,?,?)",

@@ -6,16 +6,21 @@ Its main entry points are :meth:`UsageEngine.breakdown` (one folder),
 :meth:`UsageEngine.tree` (to a depth), :meth:`UsageEngine.walk` (a whole subtree) and
 :meth:`UsageEngine.root` (the account view).
 
-A breakdown is refreshed as a unit: the folder's ``size``, its listing and every child
-folder's ``size`` are fetched in one pass and share that pass's id. The remainder
-``size - Σ children`` is labelled ``in trash`` only when every input comes from that pass
-and every counted child has a figure (see :class:`~protonfs.usage.model.GapKind`).
+A breakdown is refreshed as a unit: the folder's ``size`` and listing are fetched in one
+pass, with every child folder's ``size`` (or, when nothing about the folder's direct
+children changed, the previous pass's child sizes), and all of them share that pass's id.
+The remainder ``size - Σ children`` is labelled ``in trash`` only when every input comes
+from that pass and every counted child has a figure (see
+:class:`~protonfs.usage.model.GapKind`). Call :meth:`UsageEngine.check_account` once
+before answering, so a cache written for another account is never shown.
 
 .. code-block:: python
 
     engine = UsageEngine(CliDriveSource(client), UsageCache(default_cache_path()))
-    bd = engine.breakdown("/my-files/sph-dev", RefreshPolicy.parse("5d"),
-                          ExcludeRules(), target="/my-files/sph-dev")
+    policy = RefreshPolicy.parse("5d")
+    engine.check_account(policy)
+    bd = engine.breakdown("/my-files/sph-dev", policy, ExcludeRules(),
+                          target="/my-files/sph-dev")
     print(bd.size, bd.gap, bd.gap_kind)
 
 .. versionadded:: 3.4.0
@@ -36,7 +41,15 @@ from ..drive import DriveError, SizeResult
 from .cache import Figure, Row, Snapshot, UsageCache
 from .excludes import ExcludeRules, Exclusion
 from .model import Breakdown, Entry, GapKind, NodeState
-from .paths import DU_SECTIONS, is_within, join, parent_of, relative, split
+from .paths import (
+    DU_SECTIONS,
+    child_path,
+    is_within,
+    node_segment,
+    parent_of,
+    relative,
+    split,
+)
 from .policy import RefreshPolicy
 from .source import DriveSource, RawEntry
 from .trash import TrashFigure, TrashSummary, figure_for, run_trash_pass
@@ -57,13 +70,8 @@ def _error_text(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {text}" if text else type(exc).__name__
 
 
-def _segment(name: str, uid: str | None, decrypted: bool) -> str:
-    """Return the plain path segment for a node: its name, or its uid if undecryptable."""
-    return name if decrypted else (uid or name)
-
-
 def _row_path(parent: str, row: Row) -> str:
-    return join(parent, _segment(row.name, row.uid, row.decrypted))
+    return child_path(parent, row.name, row.uid, row.decrypted)
 
 
 def _measurable(path: str) -> bool:
@@ -131,11 +139,14 @@ class UsageEngine:
         """Return ``path`` split into its listed children plus a labelled remainder.
 
         Uses the cached snapshot when it is fresh under ``policy`` (or ``policy.never``);
-        otherwise runs one pass: ``size(path)``, then either a re-stamp of the cached
-        listing (when the ``(size, descendants)`` fingerprint is unchanged and the
-        policy allows the shortcut) or a fresh listing plus ``size`` of every child folder
-        that ``rules`` do not exclude. Excluded folders get no Drive calls; their cached
-        figure, if any, is shown. ``"/"`` returns :meth:`root`; a path outside
+        otherwise runs one pass: ``size(path)``, a fresh listing, and ``size`` of every
+        child folder that ``rules`` do not exclude. The child-folder sizes of the cached
+        snapshot are reused instead (re-stamped into the pass) only when
+        ``policy.allow_shortcut``, the snapshot is valid, the ``(size, descendants)``
+        fingerprint of ``path`` is unchanged, and the fresh listing has the same
+        child-folder uids and the same summed file bytes; a stale unchanged folder then
+        costs one ``size`` and one ``list``. Excluded folders get no Drive calls; their
+        cached figure, if any, is shown. ``"/"`` returns :meth:`root`; a path outside
         ``/my-files`` and ``/devices`` is ``UNMEASURED`` with no calls; a path that
         ``rules`` exclude is answered from the cache with state ``EXCLUDED``.
 
@@ -280,43 +291,60 @@ class UsageEngine:
 
         :param policy: refresh policy for the device list and each figure.
         :param rules: freeze/hide rules relative to ``/``.
-        :returns: a ``LISTED`` breakdown at ``"/"`` whose entries all have kind
-            ``"section"``: ``/my-files`` and each ``/devices/<name>`` (``SIZED`` when
-            measured), then ``/photos`` (always ``UNMEASURED``). ``size`` is the sum of the
-            measured entries (``None`` if none is), ``at`` and ``oldest_at`` the oldest of
-            their times, and ``gap`` is ``None`` with ``gap_kind`` ``NONE``. A failed device
-            listing adds a ``/devices`` entry with state ``ERROR`` and keeps any cached
-            device list.
+        :returns: a breakdown at ``"/"`` whose entries all have kind ``"section"``:
+            ``/my-files`` and each ``/devices/<name>`` (``SIZED`` when measured), then
+            ``/photos`` (always ``UNMEASURED``). When the device list is unknown (nothing
+            cached and no listing made, e.g. under ``never`` or ``-x devices``) a
+            ``/devices`` entry stands in, ``UNMEASURED`` (``EXCLUDED`` when frozen); a
+            failed device listing adds a ``/devices`` entry with state ``ERROR`` and keeps
+            any cached device list. ``size`` is the sum of the measured entries (``None``
+            if none is), ``at`` and ``oldest_at`` the oldest of their times, and ``gap`` is
+            ``None`` with ``gap_kind`` ``NONE``. ``state`` is ``PARTIAL`` when a section
+            other than ``/photos`` is hidden or has no figure, so ``size`` understates
+            "used"; otherwise ``LISTED``.
 
-        Side effect: when no trash summary is stored or it is stale under ``policy``, runs
-        the trash pass (``filesystem list /trash`` plus breakdowns) and stores the summary;
-        read it with :meth:`trash_summary`. Nothing runs under ``policy.never``.
+        Side effect: when no trash summary is stored, the stored one is partial, or it is
+        stale under ``policy``, runs the trash pass (``filesystem list /trash`` plus
+        breakdowns) and stores the summary; read it with :meth:`trash_summary`. Nothing
+        runs under ``policy.never``.
 
         .. versionadded:: 3.4.0
         """
         entries: list[Entry] = []
+        partial = False
         x_devices = rules.match("devices", True)
-        devices: list[tuple[str, str | None, bool]] = []
+        devices: list[tuple[str, str | None, bool]] | None = None
         devices_error = None
-        if x_devices is not Exclusion.HIDE:
+        if x_devices is Exclusion.HIDE:
+            partial = True
+        else:
             # Listed first so that a volume-scope change clears the cache before any
             # cached figure is read.
             devices, devices_error = self._device_list(
                 policy, frozen=x_devices is Exclusion.FREEZE
             )
         x_my = rules.match("my-files", True)
-        if x_my is not Exclusion.HIDE:
+        if x_my is Exclusion.HIDE:
+            partial = True
+        else:
             entries.append(self._section_entry("/my-files", policy, x_my))
         if devices_error is not None:
             entries.append(Entry("devices", "/devices", "section", None, None, None, None,
                                  NodeState.ERROR, x_devices, None, True, devices_error))
-        for name, uid, decrypted in devices:
-            dpath = join("/devices", _segment(name, uid, decrypted))
+        elif devices is None and x_devices is not Exclusion.HIDE:
+            state = (NodeState.EXCLUDED if x_devices is Exclusion.FREEZE
+                     else NodeState.UNMEASURED)
+            entries.append(Entry("devices", "/devices", "section", None, None, None, None,
+                                 state, x_devices, None, True, None))
+        for name, uid, decrypted in devices or []:
+            dpath = child_path("/devices", name, uid, decrypted)
             x = rules.match(relative(dpath, "/"), True)
             if x is Exclusion.HIDE:
+                partial = True
                 continue
             entry = self._section_entry(dpath, policy, x)
             entries.append(replace(entry, name=name, uid=uid, decrypted=decrypted))
+        partial = partial or any(e.size is None for e in entries)
         x_photos = rules.match("photos", True)
         if x_photos is not Exclusion.HIDE:
             entries.append(Entry("photos", PHOTOS_PATH, "section", None, None, None, None,
@@ -331,7 +359,7 @@ class UsageEngine:
             sum(sizes) if sizes else None,
             sum(e.descendants or 0 for e in measured) if measured else None,
             oldest,
-            NodeState.LISTED,
+            NodeState.PARTIAL if partial else NodeState.LISTED,
             tuple(entries),
             None,
             GapKind.NONE,
@@ -369,14 +397,34 @@ class UsageEngine:
         return figure_for(self, path)
 
     def _refresh_trash(self, policy: RefreshPolicy) -> None:
-        """Run and store the trash pass when none is stored or it is stale under ``policy``."""
-        stored = self.cache.trash()
-        if stored is not None and not policy.is_stale(stored[1], self.clock()):
-            return
+        """Run and store the trash pass unless a complete, fresh summary is stored.
+
+        A stored summary whose listing was partial (timed out or failed) is always stale.
+        """
         if policy.never:
             return
+        stored = self.cache.trash()
+        if stored is not None and not policy.is_stale(stored[1], self.clock()):
+            summary = self.trash_summary()
+            if summary is not None and summary.partial is None:
+                return
         summary = run_trash_pass(self, policy)
         self.cache.put_trash(summary.to_json(), summary.at)
+
+    def device_paths(self) -> list[str] | None:
+        """Return the escaped Drive paths of the devices in the cached device list.
+
+        No Drive calls; :meth:`root` caches the list.
+
+        :returns: one ``/devices/<name>`` path per device (possibly empty), or ``None``
+            when no device list is cached.
+
+        .. versionadded:: 3.4.0
+        """
+        devices = self._cached_devices()
+        if devices is None:
+            return None
+        return [child_path("/devices", n, u, d) for n, u, d in devices]
 
     def used_total(self) -> int | None:
         """Return the cached ``/my-files`` figure plus every cached device figure.
@@ -387,16 +435,39 @@ class UsageEngine:
         .. versionadded:: 3.4.0
         """
         fig = self.cache.figure("/my-files")
-        devices = self._cached_devices()
+        devices = self.device_paths()
         if fig is None or fig.size is None or devices is None:
             return None
         total = fig.size
-        for name, uid, decrypted in devices:
-            dfig = self.cache.figure(join("/devices", _segment(name, uid, decrypted)))
+        for dpath in devices:
+            dfig = self.cache.figure(dpath)
             if dfig is None or dfig.size is None:
                 return None
             total += dfig.size
         return total
+
+    def check_account(self, policy: RefreshPolicy) -> bool:
+        """Clear the cache if it belongs to a different account; run once before answering.
+
+        Unless ``policy.never`` or this engine has already read a volume scope from a
+        listing, lists ``/my-files`` (one call) and compares its scope with the cached
+        one. A different scope, or a cache that holds figures, snapshots or a trash
+        summary but has no recorded scope, clears the whole cache; an empty cache just
+        records the scope. A failed or empty listing changes nothing, and the next listing
+        that carries a scope checks again.
+
+        :param policy: the run's refresh policy.
+        :returns: whether the cache was cleared.
+
+        .. versionadded:: 3.4.0
+        """
+        if policy.never or self._scope_checked:
+            return False
+        try:
+            raw = self._list("/my-files", None)
+        except Exception:  # noqa: BLE001 - unverified; the next listing checks again
+            return False
+        return self._check_scope(raw)
 
     # ------------------------------------------------------------- breakdown pass
 
@@ -427,29 +498,22 @@ class UsageEngine:
             return Breakdown(path, None, None, None, NodeState.ERROR, (), None, GapKind.NONE,
                              None, None, text)
         self._errors.pop(path, None)
-        fingerprint = (measured.size, measured.descendants)
-        if (
-            snap is not None
-            and not snap.invalid
-            and policy.allow_shortcut
-            and fingerprint == tuple(snap.fingerprint)
-            and self._complete(snap, path, rules, target)
-        ):
-            self._restamp(snap, pass_id, now)
-        else:
-            expected = snap.width if snap is not None else measured.descendants
-            try:
-                raw = self._list(path, expected)
-            except Exception as exc:  # noqa: BLE001 - reported as an ERROR breakdown
-                self._record_figure(path, measured, now, pass_id)
-                return Breakdown(path, measured.size, measured.descendants, now,
-                                 NodeState.ERROR, (), None, GapKind.NONE, now, now,
-                                 _error_text(exc))
-            if self._check_scope(raw) and not restarted:
-                return self._breakdown(path, policy, rules, target, restarted=True)
-            self._store_pass(path, snap, raw, measured, rules, target, now, pass_id)
+        expected = snap.width if snap is not None else measured.descendants
+        try:
+            raw = self._list(path, expected)
+        except Exception as exc:  # noqa: BLE001 - reported as an ERROR breakdown
+            self._record_figure(path, measured, now, pass_id)
+            return Breakdown(path, measured.size, measured.descendants, now,
+                             NodeState.ERROR, (), None, GapKind.NONE, now, now,
+                             _error_text(exc))
+        if self._check_scope(raw) and not restarted:
+            return self._breakdown(path, policy, rules, target, restarted=True)
+        # Built from this pass's listing and the snapshot object checked above, never
+        # from whatever another writer stored meanwhile.
+        written = self._store_pass(path, snap, raw, measured, policy, rules, target, now,
+                                   pass_id)
         self._record_figure(path, measured, now, pass_id)
-        return self._assemble(path, self.cache.snapshot(path), rules, target)
+        return self._assemble(path, written, rules, target)
 
     def _live_folder_rows(
         self, snap: Snapshot, path: str, rules: ExcludeRules, target: str
@@ -478,30 +542,39 @@ class UsageEngine:
             for r in self._live_folder_rows(snap, path, rules, target)
         )
 
-    def _complete(self, snap: Snapshot, path: str, rules: ExcludeRules, target: str) -> bool:
-        """Whether every folder a pass would size has a figure from the snapshot's pass.
+    @staticmethod
+    def _reusable_rows(
+        snap: Snapshot | None,
+        raw: Sequence[RawEntry],
+        measured: SizeResult,
+        policy: RefreshPolicy,
+    ) -> dict[str, Row]:
+        """Return the cached child-folder rows, by uid, whose sizes this pass may reuse.
 
-        Only then may an unchanged fingerprint vouch for the whole listing.
+        Empty unless the policy allows the shortcut, ``snap`` is valid, the folder's
+        fingerprint is unchanged, and ``raw`` has the same child-folder uids and the same
+        summed file bytes as ``snap``. Trashing, restoring, adding or removing a direct
+        child changes the uid set or the file bytes, and any change below a child changes
+        the fingerprint, so only bytes shifting between siblings go unseen. Only rows
+        measured in ``snap``'s own pass are returned.
         """
-        return all(
-            r.size is not None and r.pass_id == snap.pass_id
-            for r in self._live_folder_rows(snap, path, rules, target)
-        )
-
-    def _restamp(self, snap: Snapshot, pass_id: int, now: float) -> None:
-        """Move the snapshot and its same-pass rows to ``pass_id``/``now``.
-
-        Rows from another pass (cached figures of excluded folders) keep their own stamp,
-        so a re-stamp never makes an older figure look as if this pass measured it.
-        """
-        if all(r.pass_id == snap.pass_id for r in snap.rows):
-            self.cache.restamp(snap.path, pass_id, now)
-            return
-        rows = tuple(
-            replace(r, at=now, pass_id=pass_id) if r.pass_id == snap.pass_id else r
-            for r in snap.rows
-        )
-        self.cache.put_snapshot(replace(snap, at=now, pass_id=pass_id, rows=rows))
+        if snap is None or snap.invalid or not policy.allow_shortcut:
+            return {}
+        if tuple(snap.fingerprint) != (measured.size, measured.descendants):
+            return {}
+        old = [r.uid for r in snap.rows if r.kind == "folder"]
+        new = [e.uid for e in raw if e.kind == "folder"]
+        if None in old or None in new or len(set(old)) != len(old) or set(old) != set(new):
+            return {}
+        old_bytes = sum(r.size or 0 for r in snap.rows if r.kind != "folder")
+        new_bytes = sum(e.size or 0 for e in raw if e.kind != "folder")
+        if old_bytes != new_bytes or len(new) != len(old):
+            return {}
+        return {
+            r.uid: r for r in snap.rows
+            if r.kind == "folder" and r.uid is not None and r.size is not None
+            and r.pass_id == snap.pass_id
+        }
 
     def _store_pass(
         self,
@@ -509,17 +582,26 @@ class UsageEngine:
         snap: Snapshot | None,
         raw: Sequence[RawEntry],
         measured: SizeResult,
+        policy: RefreshPolicy,
         rules: ExcludeRules,
         target: str,
         now: float,
         pass_id: int,
-    ) -> None:
-        """Size the live child folders, then write the snapshot and the child figures."""
-        children = [(e, join(path, _segment(e.name, e.uid, e.decrypted))) for e in raw]
-        to_size = [
+    ) -> Snapshot:
+        """Size or reuse the live child folders, then write the snapshot and child figures.
+
+        Returns the snapshot written (one ``put_snapshot``).
+        """
+        children = [(e, child_path(path, e.name, e.uid, e.decrypted)) for e in raw]
+        reusable = self._reusable_rows(snap, raw, measured, policy)
+        live = {
             p for e, p in children
             if e.kind == "folder"
             and rules.match(relative(p, target), True) is Exclusion.NONE
+        }
+        to_size = [
+            p for e, p in children
+            if p in live and (e.uid is None or e.uid not in reusable)
         ]
         results = self._parallel(self._size, to_size)
         sized: dict[str, SizeResult] = {}
@@ -531,7 +613,7 @@ class UsageEngine:
                 sized[p] = res
         rows: list[Row] = []
         for e, p in children:
-            name = _segment(e.name, e.uid, e.decrypted)
+            name = node_segment(e.name, e.uid, e.decrypted)
             if e.kind != "folder":
                 rows.append(Row(name, "file", e.uid, e.size, None, now, pass_id, e.mtime,
                                 e.decrypted))
@@ -539,6 +621,11 @@ class UsageEngine:
             if p in sized:
                 res = sized[p]
                 rows.append(Row(name, "folder", e.uid, res.size, res.descendants, now,
+                                pass_id, e.mtime, e.decrypted))
+                continue
+            if p in live and e.uid is not None and e.uid in reusable:
+                old = reusable[e.uid]
+                rows.append(Row(name, "folder", e.uid, old.size, old.descendants, now,
                                 pass_id, e.mtime, e.decrypted))
                 continue
             fig = None if p in failed else self.cache.figure(p)
@@ -553,14 +640,16 @@ class UsageEngine:
             or (snap.uid if snap is not None else None)
             or self._uid_from_parent(path)
         )
-        self.cache.put_snapshot(Snapshot(
+        written = Snapshot(
             path, uid, now, pass_id, (measured.size, measured.descendants), len(raw), False,
             tuple(rows),
-        ))
+        )
+        self.cache.put_snapshot(written)
         for p, res in sized.items():
             self._errors.pop(p, None)
             self._record_figure(p, res, now, pass_id, check_parent=False)
         self._errors.update(failed)
+        return written
 
     def _record_figure(
         self, path: str, result: SizeResult, now: float, pass_id: int, *, check_parent: bool = True
@@ -626,7 +715,7 @@ class UsageEngine:
         elif row.size is None:
             error = self._errors.get(child)
             state = NodeState.ERROR if error is not None else NodeState.UNMEASURED
-        elif self.cache.snapshot(child) is not None:
+        elif self.cache.has_snapshot(child):
             state = NodeState.LISTED
         else:
             state = NodeState.SIZED
@@ -637,14 +726,17 @@ class UsageEngine:
         segs = split(path)
         found = self._parent_row(path) if segs else None
         row = found[1] if found is not None else None
-        snap = self.cache.snapshot(path) if segs else None
-        uid = row.uid if row is not None else (snap.uid if snap is not None else None)
+        listed = bool(segs) and self.cache.has_snapshot(path)
+        uid = row.uid if row is not None else None
+        if uid is None and listed:
+            snap = self.cache.snapshot(path)
+            uid = snap.uid if snap is not None else None
         if fig is None or fig.size is None:
             size = descendants = at = None
             state = NodeState.UNMEASURED
         else:
             size, descendants, at = fig.size, fig.descendants, fig.at
-            state = NodeState.LISTED if snap is not None else NodeState.SIZED
+            state = NodeState.LISTED if listed else NodeState.SIZED
         return Entry(
             row.name if row is not None else (segs[-1] if segs else "/"),
             path, "folder", uid, size, descendants, at, state, Exclusion.NONE,
@@ -662,8 +754,15 @@ class UsageEngine:
 
     @staticmethod
     def _subfolders(bd: Breakdown) -> list[str]:
+        """Entries worth breaking down next: measured, non-excluded, measurable folders.
+
+        Skips files, excluded entries, ``ERROR`` and ``UNMEASURED`` entries (a failed
+        child, the ``/devices`` placeholder, ``/photos``) and paths ``size`` cannot take.
+        """
+        skip = (NodeState.ERROR, NodeState.UNMEASURED)
         return [e.path for e in bd.entries
-                if e.kind != "file" and e.exclusion is Exclusion.NONE]
+                if e.kind != "file" and e.exclusion is Exclusion.NONE
+                and e.state not in skip and _measurable(e.path)]
 
     def _parent_row(self, path: str) -> tuple[str, Row] | None:
         """Return ``(parent_path, row)`` for ``path`` in its parent's snapshot, if cached."""
@@ -695,18 +794,21 @@ class UsageEngine:
 
     def _device_list(
         self, policy: RefreshPolicy, *, frozen: bool
-    ) -> tuple[list[tuple[str, str | None, bool]], str | None]:
-        """Return ``(devices, error)``: the cached list, re-listed when stale."""
+    ) -> tuple[list[tuple[str, str | None, bool]] | None, str | None]:
+        """Return ``(devices, error)``: the cached list, re-listed when stale.
+
+        ``devices`` is ``None`` when no list is cached and none was fetched.
+        """
         now = self.clock()
         cached = self._cached_devices()
         at_text = self.cache.get_meta(_DEVICES_AT_KEY)
         at = float(at_text) if at_text else None
         if policy.never or frozen or (cached is not None and not policy.is_stale(at, now)):
-            return (cached or []), None
+            return cached, None
         try:
             raw = self._list("/devices", None)
         except Exception as exc:  # noqa: BLE001 - reported as an ERROR entry
-            return (cached or []), _error_text(exc)
+            return cached, _error_text(exc)
         self._check_scope(raw)
         devices = [(e.name, e.uid, e.decrypted) for e in raw if e.kind == "folder"]
         self.cache.set_meta(_DEVICES_KEY, json.dumps(devices))
@@ -716,8 +818,9 @@ class UsageEngine:
     def _check_scope(self, raw: Sequence[RawEntry]) -> bool:
         """Compare the first listed volume scope with the cached one; True if it wiped.
 
-        Runs once per engine, on the first listing that carries a scope. A cache with no
-        recorded scope just records it; a different recorded scope clears the cache.
+        Runs once per engine, on the first listing that carries a scope. A different
+        recorded scope, or cached data with no recorded scope (its account is unknown),
+        clears the cache; an empty cache just records the scope.
         """
         if self._scope_checked:
             return False
@@ -731,11 +834,12 @@ class UsageEngine:
             stored = self.cache.get_meta(_SCOPE_KEY)
             if stored == scope:
                 return False
-            if stored is not None:
+            wipe = stored is not None or self.cache.has_data()
+            if wipe:
                 self.cache.clear()
                 self._errors.clear()
             self.cache.set_meta(_SCOPE_KEY, scope)
-            return stored is not None
+            return wipe
 
     # ---------------------------------------------------------------- source calls
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 import threading
 from collections import Counter
 from dataclasses import replace
@@ -10,6 +11,7 @@ from tests.usage.treedrive import TreeDrive
 
 from protonfs.drive import DriveError, DriveLockError
 from protonfs.usage import paths
+from protonfs.usage.cache import Figure, UsageCache
 from protonfs.usage.engine import UsageEngine
 from protonfs.usage.excludes import ExcludeRules, Exclusion
 from protonfs.usage.model import GapKind, NodeState
@@ -107,7 +109,7 @@ def test_cache_hit_makes_no_calls(usage_cache, clock):
     assert second == first
 
 
-def test_stale_unchanged_fingerprint_restamps(usage_cache, clock):
+def test_stale_unchanged_tree_costs_one_size_one_list(usage_cache, clock):
     d = _tree()
     eng = UsageEngine(d, usage_cache, clock=clock)
     eng.breakdown(F, FIVE_DAYS, NO_RULES, target=F)
@@ -117,13 +119,79 @@ def test_stale_unchanged_fingerprint_restamps(usage_cache, clock):
 
     bd = eng.breakdown(F, FIVE_DAYS, NO_RULES, target=F)
 
-    assert d.calls == [("size", F)]
+    assert d.calls == [("size", F), ("list", F)]
     snap = usage_cache.snapshot(F)
     assert snap.at == clock.now and snap.pass_id != old_pass
     assert all(r.pass_id == snap.pass_id and r.at == clock.now for r in snap.rows)
     assert usage_cache.figure(F).pass_id == snap.pass_id
+    assert _by_name(bd)["c2"].size == 2300
     assert bd.at == bd.oldest_at == clock.now
     assert bd.gap_kind is GapKind.NONE
+
+
+def test_trashed_child_folder_is_seen_after_threshold(usage_cache, clock):
+    """Trashing leaves size(F) unchanged; only the re-listing reveals it (R10)."""
+    d = _tree()
+    eng = UsageEngine(d, usage_cache, clock=clock)
+    eng.breakdown(F, FIVE_DAYS, NO_RULES, target=F)
+    d.trash(F + "/c1")
+    d.calls.clear()
+    clock.advance(6 * DAY)
+
+    bd = eng.breakdown(F, FIVE_DAYS, NO_RULES, target=F)
+
+    assert Counter(d.calls) == _full_pass(F, [F + "/c2"])  # set changed: re-size all
+    assert "c1" not in _by_name(bd)
+    assert bd.gap == 1000
+    assert bd.gap_kind is GapKind.TRASH
+
+
+def test_trashed_direct_file_is_seen_after_threshold(usage_cache, clock):
+    d = _tree()
+    eng = UsageEngine(d, usage_cache, clock=clock)
+    eng.breakdown(F, FIVE_DAYS, NO_RULES, target=F)
+    d.trash(F + "/f1")
+    d.calls.clear()
+    clock.advance(6 * DAY)
+
+    bd = eng.breakdown(F, FIVE_DAYS, NO_RULES, target=F)
+
+    assert Counter(d.calls) == _full_pass(F, [F + "/c1", F + "/c2"])  # file bytes changed
+    assert "f1" not in _by_name(bd)
+    assert bd.gap == 100 and bd.gap_kind is GapKind.TRASH
+
+
+def test_deep_change_resizes_children(usage_cache, clock):
+    d = _tree()
+    eng = UsageEngine(d, usage_cache, clock=clock)
+    eng.breakdown(F, FIVE_DAYS, NO_RULES, target=F)
+    d.add_file(F + "/c2/deep/new", 9)
+    d.calls.clear()
+    clock.advance(6 * DAY)
+
+    bd = eng.breakdown(F, FIVE_DAYS, NO_RULES, target=F)
+
+    assert Counter(d.calls) == _full_pass(F, [F + "/c1", F + "/c2"])  # fingerprint changed
+    assert _by_name(bd)["c2"].size == 2309
+    assert bd.gap_kind is GapKind.NONE
+
+
+def test_deep_trash_reuses_child_sizes(usage_cache, clock):
+    """Trash below a child stays inside that child's size, so F's sizes are reused."""
+    d = _tree()
+    eng = UsageEngine(d, usage_cache, clock=clock)
+    eng.breakdown(F, FIVE_DAYS, NO_RULES, target=F)
+    d.trash(F + "/c2/deep")
+    d.calls.clear()
+    clock.advance(6 * DAY)
+
+    bd = eng.breakdown(F, FIVE_DAYS, NO_RULES, target=F)
+
+    assert d.calls == [("size", F), ("list", F)]
+    assert _by_name(bd)["c2"].size == 2300
+    assert bd.gap == 0 and bd.gap_kind is GapKind.NONE
+    sub = eng.breakdown(F + "/c2", FIVE_DAYS, NO_RULES, target=F)
+    assert sub.gap == 300 and sub.gap_kind is GapKind.TRASH
 
 
 def test_refresh_zero_disables_shortcut(usage_cache, clock):
@@ -208,8 +276,8 @@ def test_freeze_child_with_cached_figure_is_unreconciled(usage_cache, clock):
     assert eng.breakdown(F, ZERO, NO_RULES, target=F).gap_kind is GapKind.TRASH
 
 
-def test_freeze_cached_figure_survives_fingerprint_restamp(usage_cache, clock):
-    """A restamp must not promote a frozen row from an older pass into the new pass."""
+def test_freeze_cached_figure_keeps_its_age_when_sizes_are_reused(usage_cache, clock):
+    """Reusing child sizes must not promote a frozen row from an older pass."""
     d = _sim_tree()
     eng = UsageEngine(d, usage_cache, clock=clock)
     eng.breakdown(F, FIVE_DAYS, NO_RULES, target=F)
@@ -223,7 +291,7 @@ def test_freeze_cached_figure_survives_fingerprint_restamp(usage_cache, clock):
 
     bd = eng.breakdown(F, FIVE_DAYS, rules, target=F)
 
-    assert d.calls == [("size", F)]
+    assert d.calls == [("size", F), ("list", F)]  # "other" reused, "sim" frozen
     assert _by_name(bd)["sim"].at == t1
     assert bd.gap_kind is GapKind.UNRECONCILED
 
@@ -331,7 +399,7 @@ def test_error_hole_is_retried_within_threshold(usage_cache, clock):
 
     bd = eng.breakdown(F, FIVE_DAYS, NO_RULES, target=F)
 
-    assert Counter(d.calls) == _full_pass(F, [F + "/c1", F + "/c2"])
+    assert Counter(d.calls) == _full_pass(F, [F + "/c1"])  # c2's size is reused
     assert _by_name(bd)["c1"].state is NodeState.SIZED
     assert bd.gap_kind is GapKind.NONE
 
@@ -449,7 +517,7 @@ def test_root_view_sections(usage_cache, clock):
     d.add_file("/devices/laptop/a", 7)
     d.add_device("desk")
     eng = UsageEngine(d, usage_cache, clock=clock)
-    assert eng.used_total() is None
+    assert eng.used_total() is None and eng.device_paths() is None
 
     bd = eng.root(FIVE_DAYS, NO_RULES)
 
@@ -460,7 +528,8 @@ def test_root_view_sections(usage_cache, clock):
     assert (by["/devices/desk"].size, by["/devices/desk"].state) == (0, NodeState.SIZED)
     assert by["/photos"].state is NodeState.UNMEASURED and by["/photos"].size is None
     assert all(e.kind == "section" for e in bd.entries)
-    assert bd.path == "/" and bd.size == 157
+    assert bd.path == "/" and bd.size == 157 and bd.state is NodeState.LISTED
+    assert set(eng.device_paths()) == {"/devices/laptop", "/devices/desk"}
     assert bd.gap is None and bd.gap_kind is GapKind.NONE
     assert eng.used_total() == 157
     assert Counter(d.calls) == Counter({
@@ -473,6 +542,7 @@ def test_root_view_sections(usage_cache, clock):
     assert eng.root(FIVE_DAYS, NO_RULES) == bd and d.calls == []
     hidden = eng.root(FIVE_DAYS, ExcludeRules(hide=["devices"]))
     assert {e.path for e in hidden.entries} == {"/my-files", "/photos"}
+    assert hidden.state is NodeState.PARTIAL and hidden.size == 150
     assert eng.breakdown("/", FIVE_DAYS, NO_RULES, target="/") == bd
     assert d.calls == []
 
@@ -533,3 +603,184 @@ def test_names_with_slash_and_glob_chars(usage_cache, clock):
     assert ("list", F + "/a\\/b") in d.calls and child.state is NodeState.LISTED
     frozen = eng.breakdown(F, ZERO, ExcludeRules(freeze=["a/b"]), target=F)
     assert _by_name(frozen)["a/b"].exclusion is Exclusion.FREEZE
+
+
+class _RaceSource:
+    """Wraps a source; runs ``hook`` (once, when set) just before ``size(path)``."""
+
+    def __init__(self, inner: TreeDrive, path: str) -> None:
+        self.inner = inner
+        self.path = path
+        self.hook = None
+        self.concurrency = inner.concurrency
+
+    def size(self, path):
+        if path == self.path and self.hook is not None:
+            hook, self.hook = self.hook, None
+            hook()
+        return self.inner.size(path)
+
+    def list_dir(self, path, *, expected_entries=None):
+        return self.inner.list_dir(path, expected_entries=expected_entries)
+
+    def list_trash(self, *, timeout):
+        return self.inner.list_trash(timeout=timeout)
+
+
+def test_concurrent_writer_cannot_promote_old_rows(usage_cache, clock):
+    """Two engines on one cache file: B stores a mixed-pass snapshot during A's size(F).
+
+    A must build its snapshot from its own listing and sizes, never adopt B's rows.
+    """
+    d = _sim_tree()
+    race = _RaceSource(d, F)
+    eng_a = UsageEngine(race, usage_cache, clock=clock)
+    eng_a.breakdown(F, FIVE_DAYS, NO_RULES, target=F)
+    d.trash(F + "/f")
+    clock.advance(6 * DAY)
+    other = UsageCache(usage_cache.path)
+    seen_by_b = []
+    try:
+        eng_b = UsageEngine(d, other, clock=clock)
+        race.hook = lambda: seen_by_b.append(
+            eng_b.breakdown(F, ZERO, ExcludeRules(freeze=["sim"]), target=F)
+        )
+        d.calls.clear()
+
+        bd = eng_a.breakdown(F, FIVE_DAYS, NO_RULES, target=F)
+    finally:
+        other.close()
+
+    assert seen_by_b[0].gap_kind is GapKind.UNRECONCILED  # B's frozen set is mixed
+    assert ("size", F + "/sim") in d.calls  # only A sizes sim: B froze it
+    assert bd.gap == 1 and bd.gap_kind is GapKind.TRASH
+    assert _by_name(bd)["sim"].at == clock.now
+    assert usage_cache.figure(F + "/sim").at == clock.now
+    stored = usage_cache.snapshot(F)
+    assert all(r.pass_id == stored.pass_id for r in stored.rows)
+
+
+def _root_tree() -> TreeDrive:
+    d = TreeDrive()
+    d.add_file("/my-files/f", 100)
+    d.add_file("/my-files/d/x", 50)
+    d.add_device("laptop")
+    d.add_file("/devices/laptop/a", 7)
+    d.add_device("desk")
+    return d
+
+
+def test_root_unknown_device_list_is_partial(usage_cache, clock, tmp_path):
+    d = _root_tree()
+    eng = UsageEngine(d, usage_cache, clock=clock)
+    eng.figure("/my-files", FIVE_DAYS)
+    d.calls.clear()
+
+    bd = eng.root(NEVER, NO_RULES)
+
+    assert d.calls == []
+    by = {e.path: e for e in bd.entries}
+    assert set(by) == {"/my-files", "/devices", "/photos"}
+    assert by["/devices"].state is NodeState.UNMEASURED and by["/devices"].size is None
+    assert bd.state is NodeState.PARTIAL and bd.size == 150
+
+    empty = UsageCache(tmp_path / "empty.sqlite")
+    try:
+        frozen = UsageEngine(d, empty, clock=clock).root(
+            FIVE_DAYS, ExcludeRules(freeze=["devices"])
+        )
+    finally:
+        empty.close()
+    assert not _touches(d.calls, "/devices")
+    dev = {e.path: e for e in frozen.entries}["/devices"]
+    assert dev.state is NodeState.EXCLUDED and dev.exclusion is Exclusion.FREEZE
+    assert dev.size is None
+    assert frozen.state is NodeState.PARTIAL and frozen.size == 150
+
+
+def test_tree_and_walk_at_root_skip_unmeasurable_entries(usage_cache, clock):
+    d = _root_tree()
+    d.fail_next("list", "/devices", DriveError("devices unavailable"), times=2)
+    eng = UsageEngine(d, usage_cache, clock=clock)
+
+    out = eng.tree("/", FIVE_DAYS, NO_RULES, maxdepth=2)
+
+    assert set(out) == {"/", "/my-files"}
+    devices = {e.path: e for e in out["/"].entries}["/devices"]
+    assert devices.state is NodeState.ERROR and out["/"].state is NodeState.PARTIAL
+    assert eng.walk("/", FIVE_DAYS, NO_RULES) == 3  # /, /my-files, /my-files/d
+    assert ("size", "/devices") not in d.calls
+    assert d.calls.count(("list", "/devices")) == 2  # only root()'s own attempts
+    assert not _touches(d.calls, "/photos")
+
+
+def test_partial_trash_summary_is_retried(usage_cache, clock):
+    d = _root_tree()
+    d.fail_next("list_trash", "/trash", subprocess.TimeoutExpired("proton-drive", 300))
+    eng = UsageEngine(d, usage_cache, clock=clock)
+    eng.root(FIVE_DAYS, NO_RULES)
+    assert eng.trash_summary().partial == "trash listing timed out after 300 s"
+
+    eng.root(NEVER, NO_RULES)
+    assert d.calls.count(("list_trash", "/trash")) == 1
+    eng.root(FIVE_DAYS, NO_RULES)  # same moment: partial is stale anyway
+    assert d.calls.count(("list_trash", "/trash")) == 2
+    assert eng.trash_summary().partial is None
+    eng.root(FIVE_DAYS, NO_RULES)  # complete and fresh: not re-run
+    assert d.calls.count(("list_trash", "/trash")) == 2
+
+
+def test_check_account_clears_old_account_with_fresh_figures(usage_cache, clock):
+    d1 = TreeDrive(scope="vol-1")
+    d1.add_file(F + "/old/x", 10)
+    UsageEngine(d1, usage_cache, clock=clock).breakdown(F, FIVE_DAYS, NO_RULES, target=F)
+    d2 = TreeDrive(scope="vol-2")
+    d2.add_file(F + "/new/y", 30)
+    eng = UsageEngine(d2, usage_cache, clock=clock)  # every figure is still fresh
+
+    assert eng.check_account(FIVE_DAYS) is True
+
+    assert d2.calls == [("list", "/my-files")]
+    assert usage_cache.figure(F + "/old") is None and usage_cache.snapshot(F) is None
+    assert usage_cache.get_meta("scope") == "vol-2"
+    bd = eng.breakdown(F, FIVE_DAYS, NO_RULES, target=F)
+    assert [e.name for e in bd.entries] == ["new"]
+    d2.calls.clear()
+    assert eng.check_account(FIVE_DAYS) is False and d2.calls == []
+
+
+def test_check_account_same_scope_or_never_keeps_cache(usage_cache, clock):
+    d = _tree()
+    eng = UsageEngine(d, usage_cache, clock=clock)
+    assert eng.check_account(FIVE_DAYS) is False  # empty cache: scope just recorded
+    assert usage_cache.get_meta("scope") == "vol-1"
+    eng.breakdown(F, FIVE_DAYS, NO_RULES, target=F)
+
+    later = UsageEngine(d, usage_cache, clock=clock)
+    d.calls.clear()
+    assert later.check_account(NEVER) is False and d.calls == []
+    assert later.check_account(FIVE_DAYS) is False
+    assert d.calls == [("list", "/my-files")]
+    assert usage_cache.snapshot(F) is not None
+
+
+def test_unscoped_data_counts_as_another_account(usage_cache, clock):
+    usage_cache.put_figure(F + "/stray", Figure(1, 0, clock.now, None))
+    d = _tree()
+    eng = UsageEngine(d, usage_cache, clock=clock)
+
+    assert eng.check_account(FIVE_DAYS) is True
+
+    assert usage_cache.figure(F + "/stray") is None
+    assert usage_cache.get_meta("scope") == "vol-1"
+
+
+def test_unscoped_data_found_by_a_breakdown_restarts_it(usage_cache, clock):
+    usage_cache.put_figure(F + "/stray", Figure(1, 0, clock.now, None))
+    d = _tree()
+
+    bd = UsageEngine(d, usage_cache, clock=clock).breakdown(F, FIVE_DAYS, NO_RULES, target=F)
+
+    assert usage_cache.figure(F + "/stray") is None
+    assert d.calls.count(("size", F)) == 2 and d.calls.count(("list", F)) == 2
+    assert bd.gap_kind is GapKind.NONE and bd.size == 3450

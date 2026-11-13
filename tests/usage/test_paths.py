@@ -8,10 +8,12 @@ from protonfs.config import Config, save_config
 from protonfs.usage.paths import (
     Target,
     TargetError,
+    child_path,
     escape_name,
     is_remote,
     is_within,
     join,
+    node_segment,
     parent_of,
     relative,
     resolve_target,
@@ -120,3 +122,12 @@ def test_resolve_target_symlink_out_of_store(tmp_path: Path) -> None:
     (store / "link").symlink_to(outside)
     with pytest.raises(TargetError, match="link"):
         resolve_target(str(store / "link" / "x"), cwd=tmp_path)
+
+
+def test_node_segment_and_child_path() -> None:
+    assert node_segment("a/b", "u1", True) == "a/b"
+    assert node_segment("garbled", "u1", False) == "u1"
+    assert node_segment("garbled", None, False) == "garbled"
+    assert child_path("/my-files/F", "a/b", "u1", True) == "/my-files/F/a\\/b"
+    assert child_path("/devices", "x", "u2", False) == "/devices/u2"
+    assert child_path("/", "my-files", None, True) == "/my-files"

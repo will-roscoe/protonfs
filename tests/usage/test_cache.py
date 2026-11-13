@@ -189,3 +189,26 @@ def test_locked_database_is_not_wiped(tmp_path):
     c3 = UsageCache(p)
     assert c3.figure("/a") == Figure(1, 1, 1.0, 1)
     c3.close()
+
+
+def test_has_snapshot_without_loading_rows(cache):
+    assert cache.has_snapshot("/a") is False
+    cache.put_snapshot(_snap())
+    assert cache.has_snapshot("/a") is True
+    cache.invalidate("/a")
+    assert cache.has_snapshot("/a") is True  # invalid snapshots still exist
+    assert cache.has_snapshot("/a/sub") is False
+
+
+def test_has_data_ignores_passes_and_meta(cache):
+    cache.new_pass(1.0)
+    cache.set_meta("scope", "vol-1")
+    assert cache.has_data() is False
+    cache.put_trash("{}", 2.0)
+    assert cache.has_data() is True
+    cache.clear()
+    cache.put_figure("/a", Figure(1, 0, 1.0, 1))
+    assert cache.has_data() is True
+    cache.clear()
+    cache.put_snapshot(_snap())
+    assert cache.has_data() is True
