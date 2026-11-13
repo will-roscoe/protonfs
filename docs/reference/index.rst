@@ -343,6 +343,28 @@ contract (see :doc:`../stability`).
 
    .. versionadded:: 1.9.0
 
+.. envvar:: PROTONFS_DU_REFRESH
+
+   Override for :confval:`du.refresh`: the age past which ``protonfs du`` re-checks a
+   cached figure (a duration such as ``5d`` or ``2h45m``, ``0`` for fresh values only, or
+   ``never`` for cache only).
+
+   .. versionadded:: 3.4.0
+
+.. envvar:: PROTONFS_PLAN_SIZE
+
+   Override for :confval:`du.plan_size`.
+
+   .. versionadded:: 3.4.0
+
+.. envvar:: PROTONFS_DU_CACHE
+
+   Path of the ``protonfs du`` cache database. Default:
+   ``$XDG_CACHE_HOME/protonfs/du.sqlite`` (``~/.cache/protonfs/du.sqlite``). It is
+   separate from proton-drive's own cache (:envvar:`PROTONFS_DRIVE_CACHE_HOME`).
+
+   .. versionadded:: 3.4.0
+
 Configuration file and keys
 -----------------------------
 
@@ -469,6 +491,28 @@ Configuration file and keys
    :ref:`push --deletions <push-deletions>` for the guards.
 
    .. versionadded:: 3.0.0
+
+.. confval:: du.refresh
+   :type: str
+   :default: 5d
+
+   How old a cached ``protonfs du`` figure may be before it is re-checked: a duration
+   (``5d``, ``2h45m``, ``1w``, ``1mo``, ``1y``), ``0`` for fresh values only, or ``never``
+   for cache only. Global config only (``protonfs config set --global du.refresh 2d``),
+   overridden by :envvar:`PROTONFS_DU_REFRESH` and per run by ``du --refresh``.
+
+   .. versionadded:: 3.4.0
+
+.. confval:: du.plan_size
+   :type: str
+   :default: unset
+
+   Your Proton plan's **shared** storage total (Mail, Drive and the rest draw on it), for
+   ``protonfs du``'s ``%Plan`` column, e.g. ``3TB`` or ``500GB`` (decimal) or ``2TiB``
+   (binary). Proton's CLI cannot report it, so it has to be set by hand. Global config
+   only, overridden by :envvar:`PROTONFS_PLAN_SIZE`.
+
+   .. versionadded:: 3.4.0
 
 .. _reference-subcommands:
 
