@@ -194,14 +194,28 @@ def test_du_listen_without_gui_is_usage_error(du):
         assert du("/my-files", *flag).exit_code == 2
 
 
+@pytest.fixture()
+def gui_calls(monkeypatch):
+    """Replace ``run_gui`` with a recorder so ``--gui`` never starts a server."""
+    calls = []
+
+    def fake(target, options, *, stdout, stderr):
+        calls.append((target, options))
+        return 0
+
+    monkeypatch.setattr("protonfs.webui.server.run_gui", fake)
+    return calls
+
+
 @pytest.mark.parametrize(
     "extra",
     [["-d", "2"], ["-d", "-2"], ["--maxdepth", "2"], ["-D"], ["-x", "sub"], ["-X", "sub"],
      ["--refresh", "1h"], ["/my-files"]],
 )
-def test_du_gui_allowed_flags_reach_gui_path(du, extra):
-    res = du("--gui", *extra)
-    assert res.exit_code == 2 and "later task" in res.output
+def test_du_gui_allowed_flags_reach_gui_path(du, gui_calls, extra):
+    res = du("--gui", *extra) if "/my-files" in extra else du("--gui", "/my-files", *extra)
+    assert res.exit_code == 0, res.output
+    assert len(gui_calls) == 1 and gui_calls[0][1].gui
 
 
 @pytest.mark.parametrize(
@@ -211,11 +225,12 @@ def test_du_gui_allowed_flags_reach_gui_path(du, extra):
 )
 def test_du_gui_forbidden_flags(du, extra):
     res = du("--gui", *extra)
-    assert res.exit_code == 2 and "later task" not in res.output
+    assert res.exit_code == 2
 
 
-def test_du_gui_alone_is_later_task(du):
-    assert "later task" in du("--gui").output
+def test_du_gui_exit_code_is_run_guis(du, monkeypatch):
+    monkeypatch.setattr("protonfs.webui.server.run_gui", lambda *a, **k: 4)
+    assert du("--gui", "/my-files").exit_code == 4
 
 
 def test_du_mindepth_alone_stays_bounded(du):

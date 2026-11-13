@@ -837,7 +837,9 @@ def ls(
 @click.option("--json", "as_json", is_flag=True, help="Shorthand for --format json.")
 @click.option("-p", "--show-progress", "progress", is_flag=True,
               help="Report Drive calls on stderr as they happen.")
-@click.option("--gui", is_flag=True, help="Open the web UI (not available yet).")
+@click.option("--gui", is_flag=True,
+              help="Serve a local web UI (loopback, token in the printed URL) "
+              "instead of printing a report.")
 @click.option("--listen", default=None, help="With --gui: address to listen on.")
 @click.option("--port", default=None, help="With --gui: port number, or auto.")
 @click.option("--log", default=None, help="With --gui: log directory, file or device.")
@@ -865,12 +867,14 @@ def du(path, exclude_updates, exclude, mindepth, maxdepth, depth, dirs_only, ref
         as_json=as_json, progress=progress, gui=gui, listen=listen, port=port, log=log,
         n_paths=len(path),
     )
-    if gui:
-        raise click.UsageError("--gui arrives in a later task")
     try:
         targets = [resolve_target(a, Path.cwd()) for a in (path or (None,))]
     except TargetError as exc:
         raise click.ClickException(str(exc)) from exc
+    if gui:
+        from protonfs.webui.server import run_gui
+
+        sys.exit(run_gui(targets[0].remote, options, stdout=sys.stdout, stderr=sys.stderr))
     code = run_du(targets, options)
     if code:
         sys.exit(code)
