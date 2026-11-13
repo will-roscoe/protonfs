@@ -90,6 +90,9 @@ Every ``protonfs`` command follows the same top-level convention:
   conflict, a config problem) or a command-specific non-zero outcome documented below.
   A user declining a confirmation prompt (no ``--yes``/``--force``) also exits ``1``.
 
+``du`` adds ``3`` (partial results; see its row under `Command surface`_): the output is
+printed in full, but a row failed to measure or the trash pass was incomplete.
+
 ``status`` and ``auth status`` layer additional meaning onto exit code ``1``/``2`` for
 unattended callers, documented in the table below.
 
@@ -170,6 +173,21 @@ view:
 The same rules apply: no key is renamed, removed or redefined within 3.x, and new keys
 may appear.
 
+**``du --format json``** (added in 3.4.0) prints one object per target (a list of objects
+when several PATHs are given) with the keys ``target``, ``generated_at`` (Unix time),
+``used_total`` (bytes or ``null``), ``plan_size`` (bytes or ``null``), ``trash`` and
+``rows``. ``trash`` is ``null`` when no trash pass has run, else an object with ``at``,
+``known`` (bytes measured, a lower bound unless ``complete``), ``complete``, ``partial``
+(reason text or ``null``) and ``unresolved_folders``. Each row has the keys ``depth``,
+``path``, ``name``, ``kind`` (``file``, ``folder``, ``section`` or ``gap``), ``size``,
+``descendants``, ``pct_parent``, ``pct_used``, ``pct_plan`` (percent 0 to 100, or
+``null``), ``in_trash``, ``in_trash_complete``, ``unchecked_bytes``, ``checked_at``
+(Unix time), ``age_seconds``, ``state`` (``listed``, ``sized``, ``excluded``,
+``unmeasured``, ``error`` or ``gap``), ``exclusion`` (``none``, ``freeze``, ``hide``) and
+``gap_kind`` (``none``, ``in_trash``, ``unattributed``, ``unreconciled``). ``--format
+plain`` prints the row values tab-separated in that order, ``null`` as an empty string.
+A figure is never shown without ``checked_at``/``age_seconds`` unless it is unknown.
+
 Changes since the 1.0 contract
 -------------------------------
 What a caller written against 1.0 needs to know. Only contract changes are listed;
@@ -187,7 +205,7 @@ see the CHANGELOG for everything else.
 **Added:**
 
 * Commands: ``completions`` (1.5.0), ``schedule`` (1.8.0), ``verify`` (2.1.0),
-  ``prune`` (2.2.0), ``import``, ``export`` (3.1.0).
+  ``prune`` (2.2.0), ``import``, ``export`` (3.1.0), ``du`` (3.4.0).
 * Global options: ``-v``/``--verbose``, ``--progress-inline``/``--progress-lines``,
   ``--event-log``/``--no-event-log`` (1.3.0).
 * ``PATH...``: every command that takes a ``PATH`` accepts several, e.g. from a shell
@@ -204,12 +222,13 @@ see the CHANGELOG for everything else.
   the remote-view states.
 * Config keys: ``defaults.event_log``, ``defaults.progress_style`` (1.3.0);
   ``defaults.manifest`` (2.1.0); ``defaults.batch_size``, ``defaults.skip_thumbnails``
-  (2.5.0); ``defaults.deletions`` (3.0.0); ``defaults.clock_skew`` (3.3.0).
+  (2.5.0); ``defaults.deletions`` (3.0.0); ``defaults.clock_skew`` (3.3.0); ``du.refresh``, ``du.plan_size`` (3.4.0, global only).
 * Environment variables: ``PROTONFS_EVENT_LOG``, ``PROTONFS_PROGRESS_STYLE`` (1.3.0);
   ``PROTONFS_MANIFEST``, ``PROTONFS_NO_MANIFEST`` (2.1.0); ``PROTONFS_BATCH_SIZE``,
   ``PROTONFS_SKIP_THUMBNAILS``, ``PROTONFS_TRANSFER_MIN_RATE`` (2.5.0);
   ``PROTONFS_DRIVE_CACHE_HOME`` (2.6.0); ``PROTONFS_CLOCK_SKEW``,
-  ``PROTONFS_CLOCK_AHEAD_LIMIT`` (3.3.0).
+  ``PROTONFS_CLOCK_AHEAD_LIMIT`` (3.3.0); ``PROTONFS_DU_REFRESH``, ``PROTONFS_PLAN_SIZE``,
+  ``PROTONFS_DU_CACHE`` (3.4.0).
 * The `Output contract`_ above (summary keys and ``--format json`` keys) is new in the
   3.x contract; the keys themselves shipped with the options that print them.
 
@@ -479,6 +498,20 @@ flag/argument name; these names, not just their presence, are frozen.
        (both required). Options: ``--global``, ``--local``.
      - ``0`` success; ``1`` unknown key, ``--global``/``--local`` both given, or no
        shared config yet for the repo; ``2`` usage error.
+   * - ``du``
+     - Read-only storage analysis of Proton Drive paths, trash included (added in
+       3.4.0). Argument: ``PATH...`` (optional, repeatable; a Drive path under ``/``,
+       ``/my-files`` or ``/devices``, or a local path inside a store; none means the
+       current directory). Options: ``-x``/``--exclude-updates``, ``-X``/``--exclude``,
+       ``--mindepth``, ``--maxdepth``, ``-d``/``--depth``, ``-D``/``--dirs-only``,
+       ``--refresh``, ``--format table|plain|json``, ``--json``, ``-p``/``--show-progress``,
+       ``--gui``, ``--listen``, ``--port``, ``--log``. Only ``filesystem list``,
+       ``filesystem size`` and ``filesystem list /trash`` are ever issued. Every figure carries its age.
+     - ``0`` complete; ``1`` the target's own figure could not be measured, or a config
+       or Drive error; ``2`` usage error (also ``--listen``/``--port``/``--log`` without
+       ``--gui``, and ``-d`` with ``--mindepth``/``--maxdepth``); ``3`` partial results:
+       a row is in state ``error`` or the trash pass was incomplete. The output is
+       printed in full in every case.
 
 Sync states
 -----------
@@ -534,7 +567,9 @@ Known keys for ``config get``/``config set``: :confval:`remote_root`,
 :confval:`defaults.event_log`, :confval:`defaults.progress_style`,
 :confval:`defaults.manifest` (added in 2.1.0), :confval:`defaults.skip_thumbnails` (added
 in 2.5.0), :confval:`defaults.deletions` (added in 3.0.0), :confval:`defaults.clock_skew`
-(added in 3.3.0). Each is defined in the
+(added in 3.3.0). Global-config-only keys (``config set`` needs ``--global``; ``config
+get`` works outside a store): :confval:`du.refresh` and :confval:`du.plan_size` (both
+added in 3.4.0). Each is defined in the
 Configuration
 section of :doc:`reference/index`.
 
@@ -629,6 +664,14 @@ Environment variables
    * - :envvar:`PROTONFS_CLOCK_AHEAD_LIMIT`
      - Seconds this host's clock may run ahead of Proton's before uploads are refused
        (default ``30``).
+   * - :envvar:`PROTONFS_DU_REFRESH`
+     - Per-key override for :confval:`du.refresh` (default ``5d``). Added in 3.4.0.
+   * - :envvar:`PROTONFS_PLAN_SIZE`
+     - Per-key override for :confval:`du.plan_size`, the plan size ``du`` computes
+       ``%Plan`` from (e.g. ``3TB``). Added in 3.4.0.
+   * - :envvar:`PROTONFS_DU_CACHE`
+     - Path of the SQLite file ``du`` keeps its figures in (default
+       ``$XDG_CACHE_HOME/protonfs/du.sqlite``). Added in 3.4.0.
    * - :envvar:`PROTONFS_KEYRING_PASSWORD`
      - Supplies the password for the protonfs-owned keyring bootstrap, instead of
        generating one.
