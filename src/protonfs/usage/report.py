@@ -51,9 +51,11 @@ class DuRow:
     :ivar unchecked_bytes: when incomplete, bytes that were not checked for trash.
     :ivar checked_at: Unix time the figure was measured, or ``None``.
     :ivar age_seconds: ``now - checked_at``, or ``None``.
-    :ivar state: ``listed``, ``sized``, ``excluded``, ``unmeasured``, ``error`` or ``gap``.
+    :ivar state: ``listed``, ``sized``, ``excluded``, ``unmeasured``, ``error``,
+        ``partial`` (the ``/`` view leaving out a section) or ``gap``.
     :ivar exclusion: ``none``, ``freeze`` or ``hide``.
     :ivar gap_kind: ``none``, ``in_trash``, ``unattributed`` or ``unreconciled``.
+    :ivar error: the failure text when ``state`` is ``error``, else ``None``.
 
     .. versionadded:: 3.4.0
     """
@@ -75,6 +77,7 @@ class DuRow:
     state: str
     exclusion: str
     gap_kind: str
+    error: str | None = None
 
 
 #: Row field names in order: the plain-format columns and the JSON row keys.
@@ -110,7 +113,7 @@ class _Collector:
         state = bd.state if bd is not None else entry.state
         when = at if at is not None else entry.at
         trash = (None, None, None)
-        if entry.kind != "file" and state in (NodeState.LISTED, NodeState.SIZED):
+        if entry.kind != "file" and state in (NodeState.LISTED, NodeState.SIZED, NodeState.PARTIAL):
             fig = self.engine.trash_for(entry.path)
             trash = (fig.known, fig.complete, fig.unchecked_bytes)
         self.rows.append(DuRow(
@@ -119,6 +122,7 @@ class _Collector:
             trash[0], trash[1], trash[2], when,
             None if when is None else max(0.0, self.now - when),
             state.value, entry.exclusion.value, GapKind.NONE.value,
+            (bd.error if bd is not None and bd.error else None) or entry.error,
         ))
 
     def gap(self, depth, bd: Breakdown):

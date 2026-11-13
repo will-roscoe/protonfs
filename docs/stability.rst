@@ -183,8 +183,9 @@ when several PATHs are given) with the keys ``target``, ``generated_at`` (Unix t
 ``descendants``, ``pct_parent``, ``pct_used``, ``pct_plan`` (percent 0 to 100, or
 ``null``), ``in_trash``, ``in_trash_complete``, ``unchecked_bytes``, ``checked_at``
 (Unix time), ``age_seconds``, ``state`` (``listed``, ``sized``, ``excluded``,
-``unmeasured``, ``error`` or ``gap``), ``exclusion`` (``none``, ``freeze``, ``hide``) and
-``gap_kind`` (``none``, ``in_trash``, ``unattributed``, ``unreconciled``). ``--format
+``unmeasured``, ``error``, ``partial`` (``/`` total leaves out a section) or ``gap``), ``exclusion`` (``none``, ``freeze``, ``hide``),
+``gap_kind`` (``none``, ``in_trash``, ``unattributed``, ``unreconciled``) and ``error``
+(failure text when ``state`` is ``error``, else ``null``). ``--format
 plain`` prints the row values tab-separated in that order, ``null`` as an empty string.
 A figure is never shown without ``checked_at``/``age_seconds`` unless it is unknown.
 
@@ -222,7 +223,8 @@ see the CHANGELOG for everything else.
   the remote-view states.
 * Config keys: ``defaults.event_log``, ``defaults.progress_style`` (1.3.0);
   ``defaults.manifest`` (2.1.0); ``defaults.batch_size``, ``defaults.skip_thumbnails``
-  (2.5.0); ``defaults.deletions`` (3.0.0); ``defaults.clock_skew`` (3.3.0); ``du.refresh``, ``du.plan_size`` (3.4.0, global only).
+  (2.5.0); ``defaults.deletions`` (3.0.0); ``defaults.clock_skew`` (3.3.0);
+  ``du.refresh``, ``du.plan_size`` (3.4.0, global only).
 * Environment variables: ``PROTONFS_EVENT_LOG``, ``PROTONFS_PROGRESS_STYLE`` (1.3.0);
   ``PROTONFS_MANIFEST``, ``PROTONFS_NO_MANIFEST`` (2.1.0); ``PROTONFS_BATCH_SIZE``,
   ``PROTONFS_SKIP_THUMBNAILS``, ``PROTONFS_TRANSFER_MIN_RATE`` (2.5.0);
@@ -510,7 +512,8 @@ flag/argument name; these names, not just their presence, are frozen.
      - ``0`` complete; ``1`` the target's own figure could not be measured, or a config
        or Drive error; ``2`` usage error (also ``--listen``/``--port``/``--log`` without
        ``--gui``, and ``-d`` with ``--mindepth``/``--maxdepth``); ``3`` partial results:
-       a row is in state ``error`` or the trash pass was incomplete. The output is
+       a row is in state ``error``, the ``/`` total leaves out an unmeasurable section, or
+       the trash pass was incomplete (a ``-x``/``-X`` you gave is not partial). The output is
        printed in full in every case.
 
 Sync states

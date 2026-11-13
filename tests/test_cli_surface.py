@@ -351,7 +351,7 @@ def test_du_json_keys_are_frozen() -> None:
     assert set(JSON_ROW_KEYS) == {
         "depth", "path", "name", "kind", "size", "descendants", "pct_parent", "pct_used",
         "pct_plan", "in_trash", "in_trash_complete", "unchecked_bytes", "checked_at",
-        "age_seconds", "state", "exclusion", "gap_kind",
+        "age_seconds", "state", "exclusion", "gap_kind", "error",
     }, "du row keys changed -- update docs/stability.rst 'Output contract' and this set"
     doc = to_json_for_test()
     assert set(doc) == EXPECTED_DU_JSON_KEYS

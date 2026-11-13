@@ -851,7 +851,8 @@ def du(path, exclude_updates, exclude, mindepth, maxdepth, depth, dirs_only, ref
     figure that could not be fully measured is shown as a lower bound.
 
     Exit codes: 0 complete, 1 the target could not be measured, 2 usage error,
-    3 partial results (some row failed or the trash pass was incomplete).
+    3 partial results (some row failed or the trash pass was incomplete). With several
+    PATHs, one whose own figure failed makes the run exit 1 while the others still print.
 
     .. versionadded:: 3.4.0
     """

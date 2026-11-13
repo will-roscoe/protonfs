@@ -51,6 +51,14 @@ class Reporter:
         self._last_progress: float | None = None
         self._progress_open = False  # an inline progress line awaits a newline
 
+    @property
+    def inline(self) -> bool:
+        """Whether progress rewrites one line (inline style on a TTY).
+
+        .. versionadded:: 3.4.0
+        """
+        return self._inline
+
     def _close_progress(self) -> None:
         """End an open inline progress line so the next output starts cleanly."""
         if self._progress_open:

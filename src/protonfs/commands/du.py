@@ -84,6 +84,27 @@ class DuOptions:
     log: str | None = None
 
 
+def _depth_range(
+    depth: str | None, mindepth: int | None, maxdepth: int | None
+) -> tuple[int, int | None]:
+    """Resolve ``-d``/``--mindepth``/``--maxdepth`` into ``(low, high)``.
+
+    ``--mindepth`` alone keeps a bounded walk: ``high`` is ``max(low, 1)``.
+
+    :raises click.UsageError: for ``-d`` with the long forms, or ``low > high``.
+    :raises click.BadParameter: for a malformed ``-d``.
+    """
+    if depth is not None:
+        if mindepth is not None or maxdepth is not None:
+            raise click.UsageError("-d/--depth cannot be combined with --mindepth/--maxdepth.")
+        return parse_depth(depth)
+    low = 0 if mindepth is None else mindepth
+    high = max(low, 1) if maxdepth is None else maxdepth
+    if low > high:
+        raise click.UsageError(f"--mindepth ({low}) is greater than --maxdepth ({high}).")
+    return low, high
+
+
 def build_options(
     *,
     exclude_updates=(),
@@ -120,25 +141,16 @@ def build_options(
         if fmt not in (None, "json"):
             raise click.UsageError("--json cannot be combined with --format " + fmt + ".")
         fmt = "json"
-    if depth is not None and (mindepth is not None or maxdepth is not None):
-        raise click.UsageError("-d/--depth cannot be combined with --mindepth/--maxdepth.")
-    if depth is not None:
-        low, high = parse_depth(depth)
-    else:
-        low = 0 if mindepth is None else mindepth
-        high = 1 if maxdepth is None and mindepth is None else maxdepth
-        if maxdepth is None and mindepth is not None:
-            high = None
-    if high is not None and low > high:
-        raise click.UsageError(f"--mindepth ({low}) is greater than --maxdepth ({high}).")
+    low, high = _depth_range(depth, mindepth, maxdepth)
     if not gui and (listen is not None or port is not None or log is not None):
         raise click.UsageError("--listen, --port and --log are only valid with --gui.")
     if gui:
         if n_paths > 1:
             raise click.UsageError("--gui takes at most one PATH.")
-        if fmt is not None or depth is not None or progress or mindepth is not None:
+        if fmt is not None or progress or mindepth is not None or low > 0:
             raise click.UsageError(
-                "--gui cannot be combined with --format/--json, -p or --mindepth."
+                "--gui cannot be combined with --format/--json, -p, --mindepth or a "
+                "-d with a minimum depth."
             )
     text = refresh if refresh is not None else (resolve_du_setting("du.refresh") or "5d")
     try:
@@ -201,7 +213,9 @@ def run_du(
 ) -> int:
     """Measure each target and print the result in ``options.fmt``.
 
-    Output is always printed in full, including rows that failed.
+    Output is always printed in full, including rows that failed. With several targets,
+    one target whose own figure failed makes the whole run exit ``1``; the others still
+    print.
 
     :param targets: resolved targets, one section each.
     :param options: the parsed flags.
@@ -210,7 +224,9 @@ def run_du(
     :param err: stream for warnings, the plan hint and ``-p`` progress (default
         ``sys.stderr``).
     :returns: ``0`` complete; ``1`` a target's own figure failed; ``3`` partial results
-        (a row in state ``error`` or an incomplete trash pass).
+        (a row in state ``error``, a ``/`` total that leaves out a section, an unmeasurable
+        ``/devices`` row, or an incomplete trash pass). A user's ``-x``/``-X`` alone is not
+        partial.
 
     .. versionadded:: 3.4.0
     """
@@ -231,7 +247,7 @@ def run_du(
     if options.progress:
         reporter = Reporter(
             max(get_reporter().level, 1),
-            progress_style="inline" if getattr(get_reporter(), "_inline", False) else "lines",
+            progress_style="inline" if get_reporter().inline else "lines",
             stream=err,
         )
         state = {"n": 0, "t": 0.0}
@@ -248,7 +264,7 @@ def run_du(
         engine.on_call = on_call
     engine.check_account(policy)
 
-    fatal = partial = False
+    fatal = partial = need_used = False
     docs = []
     hint = False
     console = Console(file=out, width=None if getattr(out, "isatty", lambda: False)() else 200,
@@ -258,13 +274,21 @@ def run_du(
         rows = collect_rows(engine, target.remote, policy, rules, maxdepth=options.maxdepth,
                             plan_size=options.plan_size, now=now)
         fatal = fatal or rows[0].state == "error"
-        partial = partial or any(r.state == "error" for r in rows[1:])
+        partial = partial or (rows[0].state == "partial"
+                           and not (options.exclude or options.exclude_updates)) or any(
+            r.state == "error"
+            or (r.kind == "section" and r.size is None and r.exclusion == "none"
+                and r.path != "/photos")
+            for r in rows[1:]
+        )
         shown = select_rows(rows, mindepth=options.mindepth, dirs_only=options.dirs_only)
         for r in rows:
             if r.state == "error":
-                err.write(f"! {r.path}: measurement failed\n")
+                err.write(f"! {r.path}: {r.error or 'measurement failed'}\n")
         summary = engine.trash_summary() if target.remote == "/" else None
-        partial = partial or bool(summary is not None and summary.partial)
+        partial = partial or bool(
+            summary is not None and (summary.partial or summary.unresolved_folders > 0)
+        )
         if options.fmt == "json":
             docs.append(to_json(shown, target=target.remote, trash=summary,
                                 used_total=engine.used_total(), plan_size=options.plan_size,
@@ -278,8 +302,11 @@ def run_du(
                 for line in _trash_lines(summary):
                     out.write(line + "\n")
             hint = hint or options.plan_size is None
+            need_used = need_used or (engine.used_total() is None and options.fmt == "table")
     if options.fmt == "json":
         out.write(json.dumps(docs[0] if len(docs) == 1 else docs, indent=2) + "\n")
     if hint:
         err.write(PLAN_HINT + "\n")
+    if need_used:
+        err.write("(%Used needs `protonfs du /` once)\n")
     return 1 if fatal else 3 if partial else 0

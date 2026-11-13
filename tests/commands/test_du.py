@@ -119,7 +119,7 @@ def test_du_hide_omits_row(du):
 def test_du_root_trash_lines(du, drive):
     drive.trash("/my-files/A/sub")
     res = du("/")
-    assert res.exit_code == 0, res.output
+    assert res.exit_code == 3, res.output
     assert "1 trashed folders, size unknown" in res.stdout
     assert res.stdout.index("my-files") < res.stdout.index("trashed folders")
 
@@ -194,12 +194,65 @@ def test_du_listen_without_gui_is_usage_error(du):
         assert du("/my-files", *flag).exit_code == 2
 
 
-def test_du_gui_checks(du):
-    assert du("--gui").exit_code == 2
+@pytest.mark.parametrize(
+    "extra",
+    [["-d", "2"], ["-d", "-2"], ["--maxdepth", "2"], ["-D"], ["-x", "sub"], ["-X", "sub"],
+     ["--refresh", "1h"], ["/my-files"]],
+)
+def test_du_gui_allowed_flags_reach_gui_path(du, extra):
+    res = du("--gui", *extra)
+    assert res.exit_code == 2 and "later task" in res.output
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [["--json"], ["--format", "plain"], ["-p"], ["--mindepth", "1"], ["-d", "1-3"],
+     ["/my-files", "/devices"]],
+)
+def test_du_gui_forbidden_flags(du, extra):
+    res = du("--gui", *extra)
+    assert res.exit_code == 2 and "later task" not in res.output
+
+
+def test_du_gui_alone_is_later_task(du):
     assert "later task" in du("--gui").output
-    for extra in (["--json"], ["-p"], ["--mindepth", "1"], ["/my-files", "/devices"]):
-        res = du("--gui", *extra)
-        assert res.exit_code == 2 and "later task" not in res.output
+
+
+def test_du_mindepth_alone_stays_bounded(du):
+    rows = _rows(du("/my-files", "--json", "--mindepth", "1"))
+    assert {r["depth"] for r in rows} == {1}
+    from protonfs.commands.du import _depth_range
+
+    assert _depth_range(None, 3, None) == (3, 3)
+    assert _depth_range(None, 0, None) == (0, 1)
+
+
+def test_du_error_row_carries_text(du, drive):
+    drive.fail_next("size", "/my-files/A", DriveError("boom"), times=5)
+    res = du("/my-files", "--json")
+    bad = [r for r in _rows(res) if r["state"] == "error"][0]
+    assert "boom" in bad["error"]
+    assert f"! /my-files/A: {bad['error']}" in res.stderr
+
+
+def test_du_exit_3_on_unresolved_trash(du, drive):
+    drive.trash("/my-files/A/sub")
+    res = du("/")
+    assert res.exit_code == 3
+    assert "1 trashed folders, size unknown" in res.stdout
+
+
+def test_du_cells_show_age_and_lower_bound(du, drive):
+    drive.trash("/my-files/A/sub")
+    res = du("/")
+    assert "0s" in res.stdout
+    assert "≥" in res.stdout and "unchecked" in res.stdout
+
+
+def test_du_used_hint_table_only(du):
+    assert "%Used needs `protonfs du /` once" in du("/my-files/A").stderr
+    assert "%Used" not in du("/my-files/A", "--json").stderr
+    assert "%Used" not in du("/my-files/A", "--format", "plain").stderr
 
 
 def test_du_json_with_other_format_is_usage_error(du):
@@ -224,3 +277,24 @@ def test_du_checks_account_once_per_run(du, monkeypatch):
     monkeypatch.setattr(UsageEngine, "check_account", lambda self, policy: calls.append(1))
     du("/my-files", "/my-files/A")
     assert calls == [1]
+
+
+def test_du_root_devices_unmeasured_is_exit_3(du, drive):
+    drive.fail_next("list", "/devices", DriveError("nope"), times=9)
+    res = du("/", "--json")
+    assert res.exit_code == 3, res.output + res.stderr
+    assert any(r["path"] == "/devices" and r["state"] == "error" for r in _rows(res))
+
+
+def test_du_root_user_exclusion_alone_is_exit_0(du, drive):
+    for flag in ("-x", "-X"):
+        res = du("/", "--json", flag, "devices")
+        assert res.exit_code == 0, (flag, res.output + res.stderr)
+    res = du("/", "--json", "-X", "my-files")
+    assert res.exit_code == 0, res.output + res.stderr
+    assert _rows(res)[0]["state"] == "partial"
+
+
+def test_du_root_unmeasured_my_files_is_exit_3(du, drive):
+    drive.fail_next("size", "/my-files", DriveError("boom"), times=9)
+    assert du("/").exit_code == 3
