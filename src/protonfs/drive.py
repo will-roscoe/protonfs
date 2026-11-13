@@ -323,6 +323,26 @@ class RemoteIdentity:
     revision: str | None = None
 
 
+@dataclass(frozen=True)
+class SizeResult:
+    """A folder's total from ``filesystem size``: bytes and node count beneath it.
+
+    :ivar size: summed encrypted ``totalStorageSize`` of every descendant, **trashed
+        descendants included** until they are permanently deleted.
+    :ivar descendants: number of descendant nodes (files and folders, trashed included).
+
+    .. versionadded:: 3.4.0
+    """
+
+    size: int
+    descendants: int
+
+
+def _is_count(value: object) -> bool:
+    """Whether ``value`` is a non-negative int and not a bool (JSON ``true`` is an int)."""
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
 def binary_path() -> str:
     """Return the proton-drive binary to invoke: ``$PROTONFS_DRIVE_BIN`` or the default.
 
@@ -1241,6 +1261,52 @@ class DriveClient:
             cap=cap,
             sleep=sleep,
         )
+
+    def size(
+        self,
+        remote_path: str,
+        *,
+        timeout: float = 120.0,
+        retries: int = LIST_MAX_RETRIES,
+        base_delay: float = LIST_BACKOFF_BASE_SECONDS,
+        cap: float = LIST_BACKOFF_CAP_SECONDS,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> SizeResult:
+        """Total bytes and node count under a remote folder, via ``filesystem size``.
+
+        The figure is computed by Proton, so it costs one call whatever the folder holds
+        (1-4 s for most folders, about 27 s for a 171k-item root). It **includes trashed
+        descendants** until they are permanently deleted, so it can exceed the sum of a
+        listing. Proton rate-limits this endpoint per account (about 18 calls in quick
+        succession, then HTTP 429); the CLI waits out each ``retry-after`` without output,
+        so under throttling a call can take minutes. Give it a long ``timeout``.
+
+        :param remote_path: absolute Drive path of the folder (escaped Drive form).
+        :param timeout: per-attempt timeout in seconds.
+        :param retries: throttle/timeout retries before giving up.
+        :param base_delay: first backoff delay in seconds (doubles per retry).
+        :param cap: maximum backoff delay in seconds.
+        :param sleep: sleep function (injected by tests).
+        :returns: the folder's :class:`SizeResult`.
+        :raises DriveThrottleError: when throttling or timeouts outlast ``retries``.
+        :raises DriveError: when the path is missing or trashed, or the output is not
+            ``{"size": int, "numberOfDescendants": int}``.
+
+        .. versionadded:: 3.4.0
+        """
+        result = _retry_with_backoff(
+            lambda: self._run_json(["filesystem", "size", remote_path], timeout=timeout),
+            describe=f"`size {remote_path}`",
+            retries=retries,
+            base_delay=base_delay,
+            cap=cap,
+            sleep=sleep,
+        )
+        size = result.get("size") if isinstance(result, dict) else None
+        descendants = result.get("numberOfDescendants") if isinstance(result, dict) else None
+        if not _is_count(size) or not _is_count(descendants):
+            raise DriveError(f"unexpected filesystem size output: {result!r}")
+        return SizeResult(size, descendants)
 
     def remote_identities(
         self,

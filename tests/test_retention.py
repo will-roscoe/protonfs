@@ -24,7 +24,7 @@ def test_parse_duration(text: str, seconds: float) -> None:
     assert parse_duration(text) == seconds
 
 
-@pytest.mark.parametrize("text", ["", "12", "1 week", "-1d", "1w", "d"])
+@pytest.mark.parametrize("text", ["", "12", "1 week", "-1d", "d"])
 def test_parse_duration_refuses_what_it_would_have_to_guess(text: str) -> None:
     with pytest.raises(RetentionError):
         parse_duration(text)
@@ -83,3 +83,18 @@ def test_negative_settings_are_refused() -> None:
         select_prune_candidates({}, keep=-1, min_age=0, now=NOW)
     with pytest.raises(RetentionError):
         select_prune_candidates({}, keep=0, min_age=-1, now=NOW)
+
+
+@pytest.mark.parametrize("text,seconds", [
+    ("90s", 90), ("30m", 1800), ("12h", 43200), ("1d", 86400), ("1.5d", 129600),
+    ("2h45m", 9900), ("1w", 604800), ("1mo", 2592000), ("1y", 31536000),
+    ("1d12h", 129600), (" 5d ", 432000), ("0", 0),
+])
+def test_parse_duration_compound_and_long_units(text: str, seconds: float) -> None:
+    assert parse_duration(text) == seconds
+
+
+@pytest.mark.parametrize("bad", ["", "5", "5x", "m5", "5d-", "1h1h", "30m2h", "-1d", "never"])
+def test_parse_duration_rejects(bad: str) -> None:
+    with pytest.raises(RetentionError):
+        parse_duration(bad)

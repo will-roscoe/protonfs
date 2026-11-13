@@ -12,10 +12,18 @@ Layers, highest wins::
 `get` always reports the fully RESOLVED value. `set` writes to exactly one layer:
 the shared repo file by default, or the global/local file with `--global`/`--local`.
 
+The ``du.*`` keys (:data:`GLOBAL_ONLY_KEYS`) configure ``protonfs du``, which is not tied
+to a store: they live only in the global file, resolve as env var > global > built-in
+default, and can be read outside a store.
+
 .. versionadded:: 1.0.0
+
+.. versionchanged:: 3.4.0
+   Added the global-only ``du.refresh`` and ``du.plan_size`` keys.
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import click
@@ -36,6 +44,7 @@ from protonfs.config import (
     save_local_config,
 )
 from protonfs.drive import parse_clock_skew
+from protonfs.usage.policy import RefreshPolicy, parse_size
 
 # Keys settable/gettable through this command -- kept in lockstep with the `Config`
 # dataclass shape (#21 asks that it stay stable; this is the only place that needs to
@@ -51,7 +60,18 @@ KNOWN_KEYS = (
     "defaults.skip_thumbnails",
     "defaults.deletions",
     "defaults.clock_skew",
+    "du.refresh",
+    "du.plan_size",
 )
+
+#: Keys that exist only in the global config (``protonfs du`` is not tied to a store),
+#: mapped to ``(environment override, built-in default)``. ``None`` means no default.
+#:
+#: .. versionadded:: 3.4.0
+GLOBAL_ONLY_KEYS: dict[str, tuple[str, str | None]] = {
+    "du.refresh": ("PROTONFS_DU_REFRESH", "5d"),
+    "du.plan_size": ("PROTONFS_PLAN_SIZE", None),
+}
 _BOOL_KEYS = {
     "defaults.low_io", "defaults.event_log", "defaults.manifest", "defaults.skip_thumbnails"
 }
@@ -116,6 +136,12 @@ def _coerce_value(key: str, raw: str):
             parse_clock_skew(raw)
         except ValueError as exc:
             raise click.ClickException(str(exc)) from exc
+    validators = {"du.refresh": RefreshPolicy.parse, "du.plan_size": parse_size}
+    if key in validators:
+        try:
+            validators[key](raw)
+        except ValueError as exc:
+            raise click.ClickException(f"invalid value {raw!r} for {key}: {exc}") from exc
     return raw
 
 
@@ -131,9 +157,42 @@ def _require_known_key(key: str) -> None:
         )
 
 
+def resolve_du_setting(key: str) -> str | None:
+    """Resolved value of a global-only ``du.*`` key: env var, else global config, else default.
+
+    :param key: one of :data:`GLOBAL_ONLY_KEYS` (``du.refresh``, ``du.plan_size``).
+    :returns: the raw string value, or ``None`` when unset and the key has no default
+        (``du.plan_size``).
+    :raises KeyError: when ``key`` is not a global-only key.
+
+    .. versionadded:: 3.4.0
+    """
+    env_var, default = GLOBAL_ONLY_KEYS[key]
+    env_value = os.environ.get(env_var)
+    if env_value:
+        return env_value
+    value = _get_nested(load_global_config(), key)
+    if value is None or value == "":
+        return default
+    return str(value)
+
+
 def config_get(root: Path, key: str) -> str:
-    """Return the RESOLVED value of `key` across all layers, as a string."""
+    """Return the RESOLVED value of `key` across all layers, as a string.
+
+    Global-only ``du.*`` keys resolve without a store (see :func:`resolve_du_setting`).
+
+    .. versionchanged:: 3.4.0
+       Reads ``du.*`` keys outside a store.
+    """
     _require_known_key(key)
+    if key in GLOBAL_ONLY_KEYS:
+        value = resolve_du_setting(key)
+        if value is None:
+            raise click.ClickException(
+                f"{key!r} is not set: protonfs config set --global {key} <value>"
+            )
+        return value
     try:
         config = load_layered_config(root)
     except MissingDeviceIdError as exc:
@@ -162,6 +221,8 @@ def config_set(root: Path, key: str, value: str, scope: str = "shared") -> Path:
     (`~/.config/protonfs/config.json`, or `$PROTONFS_CONFIG`). Returns the path written.
     """
     _require_known_key(key)
+    if key in GLOBAL_ONLY_KEYS and scope != "global":
+        raise click.ClickException(f"du.* keys are global: use --global ({key})")
     coerced = _coerce_value(key, value)
 
     if scope == "global":

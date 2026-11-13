@@ -70,6 +70,8 @@ select = ["E", "F", "I", "UP"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Tests share fakes as tests.<pkg>.<module>; plain pytest needs the root on sys.path.
+pythonpath = ["."]
 
 [tool.interrogate]
 # Docstring-coverage gate (issue: raise docs coverage for 1.0). Tests are excluded

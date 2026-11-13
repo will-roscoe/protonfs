@@ -48,6 +48,7 @@ EXPECTED_TOP_LEVEL_COMMANDS = frozenset(
         "verify",
         "import",
         "export",
+        "du",
     }
 )
 
@@ -93,6 +94,13 @@ EXPECTED_OPTIONS: dict[str, frozenset[str]] = {
     "trash.list": frozenset(),
     "trash.empty": frozenset({"--yes"}),
     "verify": frozenset({"--repair", "--index"}),
+    "du": frozenset(
+        {
+            "-x", "--exclude-updates", "-X", "--exclude", "--mindepth", "--maxdepth", "-d",
+            "--depth", "-D", "--dirs-only", "--refresh", "--format", "--json", "-p",
+            "--show-progress", "--gui", "--listen", "--port", "--log",
+        }
+    ),
 }
 
 EXPECTED_ARGUMENTS: dict[str, tuple[str, ...]] = {
@@ -121,6 +129,7 @@ EXPECTED_ARGUMENTS: dict[str, tuple[str, ...]] = {
     "trash.list": (),
     "trash.empty": (),
     "verify": (),
+    "du": ("path",),
 }
 
 
@@ -329,6 +338,29 @@ def test_push_summary_key_set_is_frozen(tmp_path, monkeypatch) -> None:
     assert _summary_keys(_summary_line(out, "transferred=")) == EXPECTED_SUMMARY_KEYS[
         "push"
     ], _SUMMARY_MSG
+
+
+EXPECTED_DU_JSON_KEYS = frozenset(
+    {"target", "generated_at", "used_total", "plan_size", "trash", "rows"}
+)
+
+
+def test_du_json_keys_are_frozen() -> None:
+    from protonfs.usage.report import JSON_ROW_KEYS
+
+    assert set(JSON_ROW_KEYS) == {
+        "depth", "path", "name", "kind", "size", "descendants", "pct_parent", "pct_used",
+        "pct_plan", "in_trash", "in_trash_complete", "unchecked_bytes", "checked_at",
+        "age_seconds", "state", "exclusion", "gap_kind", "error",
+    }, "du row keys changed -- update docs/stability.rst 'Output contract' and this set"
+    doc = to_json_for_test()
+    assert set(doc) == EXPECTED_DU_JSON_KEYS
+
+
+def to_json_for_test() -> dict:
+    from protonfs.usage.report import to_json
+
+    return to_json([], target="/", trash=None, used_total=None, plan_size=None, now=0.0)
 
 
 def test_pull_summary_key_set_is_frozen(tmp_path, monkeypatch) -> None:

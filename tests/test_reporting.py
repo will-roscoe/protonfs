@@ -121,3 +121,13 @@ def test_first_progress_always_renders(monkeypatch) -> None:
     r = _reporter(1)
     r.progress(1, 10)
     assert "1/10" in r._stream.getvalue()
+
+
+def test_reporter_inline_property():
+    import io
+
+    from protonfs.reporting import Reporter
+
+    assert Reporter(1, progress_style="inline", stream=io.StringIO(), isatty=True).inline
+    assert not Reporter(1, progress_style="lines", stream=io.StringIO(), isatty=True).inline
+    assert not Reporter(1, progress_style="inline", stream=io.StringIO(), isatty=False).inline

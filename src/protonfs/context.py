@@ -88,3 +88,21 @@ def load_context(start: Path | None = None) -> RepoContext:
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
     return RepoContext(root=root, config=config, index=IndexStore(root), drive=drive)
+
+
+def find_store_root(start: Path) -> Path | None:
+    """Return the nearest ancestor of ``start`` (inclusive) holding ``.protonfs/config.json``.
+
+    :param start: A path, which need not exist; the search begins at its nearest existing
+        ancestor.
+    :returns: The resolved store root, or ``None`` if no ancestor is a protonfs store.
+
+    .. versionadded:: 3.4.0
+    """
+    current = Path(start).resolve()
+    while not current.exists() and current != current.parent:
+        current = current.parent
+    for candidate in (current, *current.parents):
+        if (candidate / ".protonfs" / "config.json").is_file():
+            return candidate
+    return None

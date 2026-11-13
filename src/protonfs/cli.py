@@ -15,6 +15,7 @@ import contextlib
 import fnmatch
 import functools
 import signal
+import sys
 from pathlib import Path
 from typing import Callable
 
@@ -812,6 +813,76 @@ def ls(
             echo=click.echo,
         )
 
+
+
+@main.command()
+@click.argument("path", nargs=-1)
+@click.option("-x", "--exclude-updates", "exclude_updates", multiple=True, metavar="PATTERN",
+              help="Freeze matching paths: make no Drive calls for them or below; show the "
+              "cached figure (blank if none). Gitignore syntax; repeatable.")
+@click.option("-X", "--exclude", "exclude", multiple=True, metavar="PATTERN",
+              help="Hide matching paths: not walked and not shown. Repeatable.")
+@click.option("--mindepth", type=click.IntRange(min=0), default=None,
+              help="Hide rows shallower than this (the target is depth 0).")
+@click.option("--maxdepth", type=click.IntRange(min=0), default=None,
+              help="Deepest level shown (default 1: the target and its children).")
+@click.option("-d", "--depth", "depth", default=None, metavar="N|MIN-MAX",
+              help="Depth: N (max), MIN-MAX, MIN- or -MAX. Not with --mindepth/--maxdepth.")
+@click.option("-D", "--dirs-only", "dirs_only", is_flag=True, help="Hide file rows.")
+@click.option("--refresh", default=None, metavar="DURATION|0|never",
+              help="Re-measure figures older than this (default: config du.refresh, else "
+              "5d). 0 fetches everything fresh; never uses the cache only.")
+@click.option("--format", "fmt", type=click.Choice(["table", "plain", "json"]), default=None,
+              help="Output format: rich table (default), tab-separated lines, or JSON.")
+@click.option("--json", "as_json", is_flag=True, help="Shorthand for --format json.")
+@click.option("-p", "--show-progress", "progress", is_flag=True,
+              help="Report Drive calls on stderr as they happen.")
+@click.option("--gui", is_flag=True,
+              help="Serve a local web UI (loopback, token in the printed URL) "
+              "instead of printing a report.")
+@click.option("--listen", default=None, help="With --gui: address to listen on.")
+@click.option("--port", default=None, help="With --gui: port number, or auto.")
+@click.option("--log", default=None, help="With --gui: log directory, file or device.")
+@_drive_error_boundary
+def du(path, exclude_updates, exclude, mindepth, maxdepth, depth, dirs_only, refresh,
+       fmt, as_json, progress, gui, listen, port, log) -> None:
+    """Show how much Proton Drive space remote paths take, trash included.
+
+    PATH is a Drive path (/, /my-files/..., /devices/...) or a local path inside a
+    store; with none, the current directory. Every figure shows its age; a trash
+    figure that could not be fully measured is shown as a lower bound.
+
+    Exit codes: 0 complete, 1 the target could not be measured, 2 usage error,
+    3 partial results (some row failed or the trash pass was incomplete). With several
+    PATHs, one whose own figure failed makes the run exit 1 while the others still print.
+
+    .. versionadded:: 3.4.0
+    """
+    from protonfs.commands.du import build_options, run_du
+    from protonfs.usage.paths import TargetError, resolve_target
+
+    options = build_options(
+        exclude_updates=exclude_updates, exclude=exclude, mindepth=mindepth,
+        maxdepth=maxdepth, depth=depth, dirs_only=dirs_only, refresh=refresh, fmt=fmt,
+        as_json=as_json, progress=progress, gui=gui, listen=listen, port=port, log=log,
+        n_paths=len(path),
+    )
+    try:
+        targets = [resolve_target(a, Path.cwd()) for a in (path or (None,))]
+    except TargetError as exc:
+        raise click.ClickException(str(exc)) from exc
+    if gui:
+        from protonfs.webui.server import run_gui
+
+        sys.exit(run_gui(targets[0].remote, options, stdout=sys.stdout, stderr=sys.stderr))
+    try:
+        code = run_du(targets, options)
+    except KeyboardInterrupt:
+        click.echo("\ninterrupted -- sizes measured so far are kept; run again to continue.",
+                   err=True)
+        sys.exit(130)
+    if code:
+        sys.exit(code)
 
 @main.command()
 @click.argument("path", nargs=-1)

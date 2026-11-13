@@ -15,6 +15,7 @@ from protonfs.drive import (
     DriveError,
     DriveThrottleError,
     DriveTransferTimeoutError,
+    SizeResult,
     TransferResult,
 )
 from protonfs.drive import proton_clock_offset as REAL_CLOCK_OFFSET
@@ -1712,3 +1713,55 @@ def test_correction_also_covers_listings_before_any_upload(
     )
     client.list("/my-files/test")
     assert envs[0]["PROTONFS_CLOCK_SKEW_MS"] == "-124000"
+
+
+# --- filesystem size (protonfs du, 3.4.0) ----------------------------------------------
+
+
+def test_size_parses_result(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _client(monkeypatch)
+    run = _stub_run_seq([('{"size": 41009480, "numberOfDescendants": 7}', 0)])
+    monkeypatch.setattr(subprocess, "run", run)
+
+    assert client.size("/my-files/x") == SizeResult(41009480, 7)
+    assert run.calls[0][1:4] == ["filesystem", "size", "/my-files/x"]
+
+
+@pytest.mark.parametrize(
+    "stdout",
+    [
+        '{"size": "x", "numberOfDescendants": 1}',
+        '{"size": 1}',
+        "[]",
+        '{"size": true, "numberOfDescendants": 0}',
+    ],
+)
+def test_size_rejects_malformed(monkeypatch: pytest.MonkeyPatch, stdout: str) -> None:
+    client = _client(monkeypatch)
+    monkeypatch.setattr(subprocess, "run", _stub_run(stdout))
+
+    with pytest.raises(DriveError, match="unexpected filesystem size output"):
+        client.size("/my-files/x")
+
+
+def test_size_retries_throttle(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _client(monkeypatch)
+    run = _stub_run_seq(
+        [("429 Too Many Requests", 1), ('{"size": 5, "numberOfDescendants": 1}', 0)]
+    )
+    monkeypatch.setattr(subprocess, "run", run)
+    slept: list[float] = []
+
+    assert client.size("/my-files/x", sleep=slept.append) == SizeResult(5, 1)
+    assert len(run.calls) == 2
+    assert len(slept) == 1
+
+
+def test_size_does_not_retry_a_missing_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _client(monkeypatch)
+    run = _stub_run_seq([("Node not found: x", 1)])
+    monkeypatch.setattr(subprocess, "run", run)
+
+    with pytest.raises(DriveError, match="Node not found"):
+        client.size("/my-files/x", sleep=lambda _: None)
+    assert len(run.calls) == 1
