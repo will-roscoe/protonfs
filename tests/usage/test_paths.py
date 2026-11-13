@@ -97,3 +97,26 @@ def test_resolve_target_unsupported_section() -> None:
         resolve_target("/photos", Path("/"))
     with pytest.raises(TargetError, match="/trash/x"):
         resolve_target("/trash/x", Path("/"))
+
+
+def test_split_drops_empty_segments() -> None:
+    assert split("/a//b") == ["a", "b"]
+    assert split("/a/b/") == ["a", "b"]
+    assert split("/") == []
+
+
+def test_resolve_target_normalises_remote() -> None:
+    assert resolve_target("/my-files//x/", Path("/")).remote == "/my-files/x"
+
+
+def test_relative_doubled_slash() -> None:
+    assert relative("/my-files/a//b", "/my-files/a") == "b"
+
+
+def test_resolve_target_symlink_out_of_store(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (store / "link").symlink_to(outside)
+    with pytest.raises(TargetError, match="link"):
+        resolve_target(str(store / "link" / "x"), cwd=tmp_path)

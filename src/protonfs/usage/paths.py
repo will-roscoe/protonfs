@@ -89,30 +89,25 @@ def join(parent: str, segment: str) -> str:
 
 
 def split(path: str) -> list[str]:
-    """Return the unescaped segments of a Drive path (``[]`` for ``/``).
+    """Return the unescaped, non-empty segments of a Drive path (``[]`` for ``/``).
 
     .. versionadded:: 3.4.0
     """
     segments: list[str] = []
     cur: list[str] = []
     i, n = 0, len(path)
-    started = False
     while i < n:
         ch = path[i]
         if ch == "\\" and i + 1 < n:
             cur.append(path[i + 1])
             i += 2
-            started = True
             continue
         if ch == "/":
-            if started:
+            if cur:
                 segments.append("".join(cur))
-            cur, started = [], True
-            # a separator opens a segment; an empty trailing one is dropped below
-            i += 1
-            continue
-        cur.append(ch)
-        started = True
+            cur = []
+        else:
+            cur.append(ch)
         i += 1
     if cur:
         segments.append("".join(cur))
@@ -194,7 +189,9 @@ def resolve_target(arg: str | None, cwd: Path) -> Target:
     try:
         parts = local.resolve().relative_to(root).parts
     except ValueError:
-        parts = local.relative_to(root).parts
+        raise TargetError(
+            f"{str(local)!r} resolves outside its protonfs store {str(root)!r}"
+        ) from None
     remote = _normalise_remote(config.remote_root)
     for part in parts:
         remote = join(remote, part)
