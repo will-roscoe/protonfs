@@ -53,3 +53,19 @@ def test_load_context_passes_clock_skew_to_the_drive_client(
     init_config(tmp_path, "/my-files/test")
     monkeypatch.setenv("PROTONFS_CLOCK_SKEW", "auto")
     assert load_context(tmp_path).drive._clock_skew == "auto"
+
+
+def test_find_store_root_nested(tmp_path: Path) -> None:
+    from protonfs.config import Config, save_config
+    from protonfs.context import find_store_root
+
+    outer = tmp_path / "outer"
+    inner = outer / "inner"
+    (inner / "sub").mkdir(parents=True)
+    for root in (outer, inner):
+        (root / ".protonfs").mkdir()
+        save_config(root, Config(remote_root="/my-files/x", device_id=""))
+    assert find_store_root(inner / "sub") == inner.resolve()
+    assert find_store_root(inner / "missing" / "deeper") == inner.resolve()
+    assert find_store_root(outer) == outer.resolve()
+    assert find_store_root(tmp_path) is None
