@@ -42,8 +42,20 @@ def du(drive, tmp_path, monkeypatch):
     engine = UsageEngine(drive, cache, clock=FakeClock())
     monkeypatch.setattr("protonfs.commands.du.default_engine", lambda: engine)
     monkeypatch.chdir(tmp_path)
-    yield lambda *args: CliRunner().invoke(main, ["du", *args])
+    yield lambda *args: _runner().invoke(main, ["du", *args])
     cache.close()
+
+
+def _runner() -> CliRunner:
+    """A runner whose result keeps stderr apart from stdout on every supported Click.
+
+    Click 8.1 (the newest for Python 3.9) mixes them unless ``mix_stderr=False``; Click 8.2
+    always separates them and removed the argument.
+    """
+    try:
+        return CliRunner(mix_stderr=False)
+    except TypeError:
+        return CliRunner()
 
 
 def _rows(result) -> list[dict]:

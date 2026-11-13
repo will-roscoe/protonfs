@@ -340,4 +340,6 @@ def run_du(
         err.write("(%Used needs `protonfs du /` once)\n")
     if need_trash:
         err.write("(In trash needs `protonfs du /` once)\n")
+    out.flush()
+    err.flush()
     return 1 if fatal else 3 if partial else 0
