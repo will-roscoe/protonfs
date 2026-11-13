@@ -26,6 +26,12 @@ LOCK_RETRIES = 6
 LOCK_BACKOFF_BASE = 0.5
 LOCK_BACKOFF_CAP = 4.0
 
+#: Seconds one ``filesystem size`` call may run before it is abandoned. Proton
+#: rate-limits the size endpoint per account (HTTP 429 with ``retry-after``), and the
+#: CLI waits each one out silently, so a throttled call can take minutes. A shorter
+#: timeout would kill the call mid-wait and start the wait over in a new process.
+SIZE_TIMEOUT = 900.0
+
 
 @dataclass(frozen=True)
 class RawEntry:
@@ -147,9 +153,10 @@ class CliDriveSource:
     """:class:`DriveSource` over a :class:`~protonfs.drive.DriveClient`.
 
     A bounded semaphore guards every subprocess call so all callers (the engine's
-    executor and the GUI's threads) share one Drive budget. A
-    :class:`~protonfs.drive.DriveLockError` is retried up to 6 times (0.5 s doubling to
-    a 4 s cap) and then re-raised.
+    executor and the GUI's threads) share one Drive budget. ``size`` calls also run one
+    at a time, because Proton rate-limits the size endpoint per account: parallel sizes
+    only compete for the same allowance. A :class:`~protonfs.drive.DriveLockError` is
+    retried up to 6 times (0.5 s doubling to a 4 s cap) and then re-raised.
 
     :param client: the Drive client to call.
     :param concurrency: maximum simultaneous Drive calls.
@@ -168,6 +175,7 @@ class CliDriveSource:
         self._client = client
         self.concurrency = concurrency
         self._sem = threading.BoundedSemaphore(concurrency)
+        self._size_lane = threading.Lock()
         self._sleep = sleep
 
     def _call(self, fn: Callable[[], object]):
@@ -195,13 +203,20 @@ class CliDriveSource:
         return [normalise_entry(e) for e in raw]
 
     def size(self, path: str) -> SizeResult:
-        """Return the ``filesystem size`` total for ``path``.
+        """Return the ``filesystem size`` total for ``path``, one call at a time.
+
+        The call may take up to :data:`SIZE_TIMEOUT` seconds when Proton is throttling
+        the size endpoint, and is not restarted on timeout.
 
         :param path: escaped Drive path.
         :returns: bytes and node count, trashed descendants included.
+        :raises DriveThrottleError: when the call outlasts :data:`SIZE_TIMEOUT`.
         :raises DriveError: on a missing path, malformed output or a persistent lock.
         """
-        return self._call(lambda: self._client.size(path))
+        with self._size_lane:
+            return self._call(
+                lambda: self._client.size(path, timeout=SIZE_TIMEOUT, retries=0)
+            )
 
     def list_trash(self, *, timeout: float) -> list[RawEntry]:
         """Return the top-level trashed entries from ``filesystem list /trash``.

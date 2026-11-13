@@ -1277,7 +1277,9 @@ class DriveClient:
         The figure is computed by Proton, so it costs one call whatever the folder holds
         (1-4 s for most folders, about 27 s for a 171k-item root). It **includes trashed
         descendants** until they are permanently deleted, so it can exceed the sum of a
-        listing.
+        listing. Proton rate-limits this endpoint per account (about 18 calls in quick
+        succession, then HTTP 429); the CLI waits out each ``retry-after`` without output,
+        so under throttling a call can take minutes. Give it a long ``timeout``.
 
         :param remote_path: absolute Drive path of the folder (escaped Drive form).
         :param timeout: per-attempt timeout in seconds.

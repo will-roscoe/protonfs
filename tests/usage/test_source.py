@@ -6,7 +6,12 @@ import time
 import pytest
 
 from protonfs.drive import DriveError, DriveLockError, SizeResult
-from protonfs.usage.source import CliDriveSource, list_timeout, normalise_entry
+from protonfs.usage.source import (
+    SIZE_TIMEOUT,
+    CliDriveSource,
+    list_timeout,
+    normalise_entry,
+)
 
 
 class StubClient:
@@ -46,6 +51,7 @@ class StubClient:
 
     def size(self, path, **kw):
         self.calls.append(("size", path))
+        self.size_kwargs = kw
         self._enter()
         self._maybe_fail()
         return SizeResult(1, 2)
@@ -120,10 +126,43 @@ def test_list_dir_and_trash_use_client():
 def test_semaphore_bounds_concurrency():
     c = StubClient(delay=0.05)
     src = CliDriveSource(c, concurrency=4)
-    threads = [threading.Thread(target=src.size, args=("/x",)) for _ in range(8)]
+    threads = [threading.Thread(target=src.list_dir, args=("/x",)) for _ in range(8)]
     for t in threads:
         t.start()
     for t in threads:
         t.join()
     assert 2 <= c.max_inflight <= 4  # bounded by the semaphore; overlap is timing-dependent
     assert src.concurrency == 4
+
+
+def test_size_calls_run_one_at_a_time():
+    """Proton rate-limits the size endpoint per account, so sizes never overlap."""
+    client = StubClient(delay=0.05)
+    src = CliDriveSource(client, concurrency=4, sleep=lambda s: None)
+    threads = [threading.Thread(target=src.size, args=(f"/my-files/d{i}",)) for i in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(5)
+    assert len([c for c in client.calls if c[0] == "size"]) == 4
+    assert client.max_inflight == 1
+
+
+def test_lists_overlap_while_a_size_runs():
+    client = StubClient(delay=0.1)
+    src = CliDriveSource(client, concurrency=4, sleep=lambda s: None)
+    threads = [threading.Thread(target=src.size, args=("/my-files/a",))]
+    threads += [threading.Thread(target=src.list_dir, args=(f"/my-files/l{i}",)) for i in range(3)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(5)
+    assert client.max_inflight >= 2
+
+
+def test_size_waits_out_throttling_instead_of_restarting():
+    """A throttled size call is left to finish its retry-after wait: long timeout, no restarts."""
+    client = StubClient()
+    CliDriveSource(client, sleep=lambda s: None).size("/my-files/a")
+    assert client.size_kwargs == {"timeout": SIZE_TIMEOUT, "retries": 0}
+    assert SIZE_TIMEOUT >= 600
