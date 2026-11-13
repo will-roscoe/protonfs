@@ -187,6 +187,13 @@ def default_engine() -> UsageEngine:
 
 PLAN_HINT = "% of plan needs your plan size: protonfs config set --global du.plan_size 3TB"
 
+#: Printed once to stderr when a ``size`` call is held up by Proton's rate limit.
+THROTTLE_NOTICE = (
+    "du: Proton is rate-limiting folder sizes (about 20 at a time, then a pause of a few "
+    "minutes), so this can take a while. Sizes measured so far are kept: Ctrl-C and run "
+    "again later to continue from them (not with --refresh 0)."
+)
+
 
 def _trash_lines(summary) -> list:
     from protonfs.commands.ls import human_size
@@ -201,6 +208,25 @@ def _trash_lines(summary) -> list:
     if summary.unresolved_folders:
         lines.append(f"{summary.unresolved_folders} trashed folders, size unknown")
     return lines
+
+
+def _attach_throttle_notice(engine, err) -> None:
+    """Print :data:`THROTTLE_NOTICE` once when the engine's source reports a slow size."""
+    source = getattr(engine, "source", None)
+    if source is None or not hasattr(source, "on_slow_size"):
+        return
+    lock = threading.Lock()
+    shown = []
+
+    def on_slow_size(path: str) -> None:
+        with lock:
+            if shown:
+                return
+            shown.append(path)
+            err.write(THROTTLE_NOTICE + "\n")
+            err.flush()
+
+    source.on_slow_size = on_slow_size
 
 
 def run_du(
@@ -242,6 +268,7 @@ def run_du(
     out = out if out is not None else sys.stdout
     err = err if err is not None else sys.stderr
     engine = (engine_factory or default_engine)()
+    _attach_throttle_notice(engine, err)
     policy = RefreshPolicy.parse(options.refresh)
     rules = ExcludeRules(options.exclude_updates, options.exclude)
     if options.progress:

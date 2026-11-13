@@ -32,6 +32,10 @@ LOCK_BACKOFF_CAP = 4.0
 #: timeout would kill the call mid-wait and start the wait over in a new process.
 SIZE_TIMEOUT = 900.0
 
+#: Seconds after which a running ``size`` call is reported as throttled (an unthrottled
+#: call takes 1-4 s).
+SLOW_SIZE_AFTER = 15.0
+
 
 @dataclass(frozen=True)
 class RawEntry:
@@ -161,6 +165,10 @@ class CliDriveSource:
     :param client: the Drive client to call.
     :param concurrency: maximum simultaneous Drive calls.
     :param sleep: sleep function used between lock retries (injectable for tests).
+    :ivar on_slow_size: called as ``on_slow_size(path)`` from a timer thread when a
+        ``size`` call has run for ``slow_after`` seconds (usually Proton's rate limit);
+        ``None`` to disable. At most once per call.
+    :ivar slow_after: seconds before ``on_slow_size`` fires, :data:`SLOW_SIZE_AFTER`.
 
     .. versionadded:: 3.4.0
     """
@@ -177,6 +185,8 @@ class CliDriveSource:
         self._sem = threading.BoundedSemaphore(concurrency)
         self._size_lane = threading.Lock()
         self._sleep = sleep
+        self.on_slow_size: Callable[[str], None] | None = None
+        self.slow_after = SLOW_SIZE_AFTER
 
     def _call(self, fn: Callable[[], object]):
         delay = LOCK_BACKOFF_BASE
@@ -214,9 +224,18 @@ class CliDriveSource:
         :raises DriveError: on a missing path, malformed output or a persistent lock.
         """
         with self._size_lane:
-            return self._call(
-                lambda: self._client.size(path, timeout=SIZE_TIMEOUT, retries=0)
-            )
+            timer = None
+            if self.on_slow_size is not None:
+                timer = threading.Timer(self.slow_after, self.on_slow_size, args=(path,))
+                timer.daemon = True
+                timer.start()
+            try:
+                return self._call(
+                    lambda: self._client.size(path, timeout=SIZE_TIMEOUT, retries=0)
+                )
+            finally:
+                if timer is not None:
+                    timer.cancel()
 
     def list_trash(self, *, timeout: float) -> list[RawEntry]:
         """Return the top-level trashed entries from ``filesystem list /trash``.

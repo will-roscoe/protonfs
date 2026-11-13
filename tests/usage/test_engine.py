@@ -7,6 +7,7 @@ import threading
 from collections import Counter
 from dataclasses import replace
 
+import pytest
 from tests.usage.treedrive import TreeDrive
 
 from protonfs.drive import DriveError, DriveLockError
@@ -354,14 +355,20 @@ def test_child_change_invalidates_child_and_parent_snapshots(usage_cache, clock)
     eng.breakdown(c, ZERO, NO_RULES, target=F)
     assert usage_cache.snapshot(F).invalid
 
-    # An invalid parent is re-measured even within the threshold; re-sizing the
-    # changed child marks the child's own snapshot invalid.
+    # An invalid parent is re-measured even within the threshold. The child's own
+    # figure is a day old, so it is reused, not re-sized (R25): the new bytes show up
+    # as an unreconciled remainder.
     d.add_file(c + "/newer", 7)
     clock.advance(DAY)
     d.calls.clear()
     bd = eng.breakdown(F, FIVE_DAYS, NO_RULES, target=F)
-    assert ("list", F) in d.calls
+    assert ("list", F) in d.calls and ("size", c) not in d.calls
     assert not usage_cache.snapshot(F).invalid
+    assert _by_name(bd)["c"].size == 15
+    assert bd.gap == 7 and bd.gap_kind is GapKind.UNRECONCILED
+
+    # Fresh values only: re-sizing the changed child marks its own snapshot invalid.
+    bd = eng.breakdown(F, ZERO, NO_RULES, target=F)
     assert usage_cache.snapshot(c).invalid
     assert usage_cache.figure(c).size == 22
     assert _by_name(bd)["c"].size == 22 and bd.gap_kind is GapKind.NONE
@@ -653,11 +660,13 @@ def test_concurrent_writer_cannot_promote_old_rows(usage_cache, clock):
 
     assert seen_by_b[0].gap_kind is GapKind.UNRECONCILED  # B's frozen set is mixed
     assert ("size", F + "/sim") in d.calls  # only A sizes sim: B froze it
-    assert bd.gap == 1 and bd.gap_kind is GapKind.TRASH
     assert _by_name(bd)["sim"].at == clock.now
     assert usage_cache.figure(F + "/sim").at == clock.now
+    # A reuses the fresh figures B stored meanwhile (R25); they keep B's pass, so A's
+    # set is mixed and its remainder is never labelled trash.
     stored = usage_cache.snapshot(F)
-    assert all(r.pass_id == stored.pass_id for r in stored.rows)
+    assert any(r.pass_id != stored.pass_id for r in stored.rows if r.kind == "folder")
+    assert bd.gap == 1 and bd.gap_kind is GapKind.UNRECONCILED
 
 
 def _root_tree() -> TreeDrive:
@@ -784,3 +793,53 @@ def test_unscoped_data_found_by_a_breakdown_restarts_it(usage_cache, clock):
     assert usage_cache.figure(F + "/stray") is None
     assert d.calls.count(("size", F)) == 2 and d.calls.count(("list", F)) == 2
     assert bd.gap_kind is GapKind.NONE and bd.size == 3450
+
+
+def test_child_sizes_survive_an_interrupted_pass(usage_cache, clock):
+    """Each child folder's size is stored as soon as it is measured, not at pass end."""
+    d = _tree()
+    d.fail_next("size", F + "/c2", KeyboardInterrupt())
+    eng = UsageEngine(d, usage_cache, clock=clock)
+    with pytest.raises(KeyboardInterrupt):
+        eng.breakdown(F, FIVE_DAYS, NO_RULES, target=F)
+    assert usage_cache.figure(F + "/c1").size == 1000
+    assert usage_cache.snapshot(F) is None
+
+
+def test_rerun_after_interrupt_reuses_fresh_child_sizes(usage_cache, clock):
+    d = _tree()
+    d.fail_next("size", F + "/c2", KeyboardInterrupt())
+    eng = UsageEngine(d, usage_cache, clock=clock)
+    with pytest.raises(KeyboardInterrupt):
+        eng.breakdown(F, FIVE_DAYS, NO_RULES, target=F)
+    clock.advance(60)
+    d.calls.clear()
+    bd = eng.breakdown(F, FIVE_DAYS, NO_RULES, target=F)
+    assert ("size", F + "/c1") not in d.calls
+    assert ("size", F + "/c2") in d.calls
+    assert _by_name(bd)["c1"].size == 1000
+    assert bd.gap_kind is not GapKind.TRASH
+
+
+def test_refresh_zero_resizes_children_with_fresh_figures(usage_cache, clock):
+    d = _tree()
+    eng = UsageEngine(d, usage_cache, clock=clock)
+    eng.breakdown(F, FIVE_DAYS, NO_RULES, target=F)
+    d.calls.clear()
+    eng.breakdown(F, ZERO, NO_RULES, target=F)
+    assert ("size", F + "/c1") in d.calls and ("size", F + "/c2") in d.calls
+
+
+def test_changed_folder_repass_reuses_fresh_child_sizes(usage_cache, clock):
+    """One changed child must not cost a re-size of every sibling (R25)."""
+    d = _tree()
+    eng = UsageEngine(d, usage_cache, clock=clock)
+    eng.breakdown(F, FIVE_DAYS, NO_RULES, target=F)
+    d.add_file(F + "/c2/new", 5)
+    usage_cache.invalidate(F)
+    clock.advance(60)
+    d.calls.clear()
+    bd = eng.breakdown(F, FIVE_DAYS, NO_RULES, target=F)
+    assert Counter(d.calls) == Counter({("size", F): 1, ("list", F): 1})
+    assert _by_name(bd)["c2"].size == 2300
+    assert bd.gap == 5 and bd.gap_kind is GapKind.UNRECONCILED

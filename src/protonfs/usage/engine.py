@@ -140,7 +140,10 @@ class UsageEngine:
 
         Uses the cached snapshot when it is fresh under ``policy`` (or ``policy.never``);
         otherwise runs one pass: ``size(path)``, a fresh listing, and ``size`` of every
-        child folder that ``rules`` do not exclude. The child-folder sizes of the cached
+        child folder that ``rules`` do not exclude and whose own cached figure is missing
+        or stale (every one under ``--refresh 0``); a fresh child figure is reused with its
+        own time, so a remainder over figures from different passes is ``UNRECONCILED``.
+        The child-folder sizes of the cached
         snapshot are reused instead (re-stamped into the pass) only when
         ``policy.allow_shortcut``, the snapshot is valid, the ``(size, descendants)``
         fingerprint of ``path`` is unchanged, and the fresh listing has the same
@@ -151,7 +154,8 @@ class UsageEngine:
         ``rules`` exclude is answered from the cache with state ``EXCLUDED``.
 
         Side effects: writes the snapshot of ``path`` (atomically) and the figures of
-        ``path`` and each sized child, and invalidates any cached snapshot those new
+        ``path`` and each sized child (each child's as soon as it is measured, so an
+        interrupted pass keeps them), and invalidates any cached snapshot those new
         figures contradict (a child's own, or ``path``'s parent's). On the first listing
         whose volume scope differs from the cached one, the whole cache is cleared and
         the breakdown restarts once.
@@ -614,8 +618,9 @@ class UsageEngine:
         to_size = [
             p for e, p in children
             if p in live and (e.uid is None or e.uid not in reusable)
+            and not self._has_fresh_figure(p, policy, now)
         ]
-        results = self._parallel(self._size, to_size)
+        results = self._parallel(lambda p: self._size_and_store(p, now, pass_id), to_size)
         sized: dict[str, SizeResult] = {}
         failed: dict[str, str] = {}
         for p, res in zip(to_size, results):
@@ -657,11 +662,28 @@ class UsageEngine:
             tuple(rows),
         )
         self.cache.put_snapshot(written)
-        for p, res in sized.items():
+        for p in sized:
             self._errors.pop(p, None)
-            self._record_figure(p, res, now, pass_id, check_parent=False)
         self._errors.update(failed)
         return written
+
+    def _has_fresh_figure(self, path: str, policy: RefreshPolicy, now: float) -> bool:
+        """Whether a pass may reuse ``path``'s cached figure instead of sizing it again.
+
+        True when the policy allows reuse (any threshold but ``0``) and the cached figure
+        is younger than the threshold. Sizing is rate-limited, so a pass over a folder
+        whose figure changed re-sizes only the children whose own figures are stale.
+        """
+        if not policy.allow_shortcut:
+            return False
+        fig = self.cache.figure(path)
+        return fig is not None and fig.size is not None and not policy.is_stale(fig.at, now)
+
+    def _size_and_store(self, path: str, now: float, pass_id: int) -> SizeResult:
+        """Size ``path`` and store its figure at once, so an interrupted pass keeps it."""
+        result = self._size(path)
+        self._record_figure(path, result, now, pass_id, check_parent=False)
+        return result
 
     def _record_figure(
         self, path: str, result: SizeResult, now: float, pass_id: int, *, check_parent: bool = True

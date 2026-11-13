@@ -875,7 +875,12 @@ def du(path, exclude_updates, exclude, mindepth, maxdepth, depth, dirs_only, ref
         from protonfs.webui.server import run_gui
 
         sys.exit(run_gui(targets[0].remote, options, stdout=sys.stdout, stderr=sys.stderr))
-    code = run_du(targets, options)
+    try:
+        code = run_du(targets, options)
+    except KeyboardInterrupt:
+        click.echo("\ninterrupted -- sizes measured so far are kept; run again to continue.",
+                   err=True)
+        sys.exit(130)
     if code:
         sys.exit(code)
 

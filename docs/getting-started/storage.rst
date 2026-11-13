@@ -80,6 +80,13 @@ Sizing a folder takes 1–4 s whatever it holds. So ``du`` sizes rather than wal
 lists only what it is asked to break down, and keeps everything in a per-machine cache
 (:envvar:`PROTONFS_DU_CACHE`, default ``~/.cache/protonfs/du.sqlite``).
 
+Proton rate-limits sizing, though: about 20 folders in a row, then a pause of a few
+minutes. ``du`` sizes one folder at a time and waits the pauses out, so the first
+breakdown of a folder with hundreds of subfolders is slow (163 simulation folders took
+72 minutes). It prints a notice when this happens. Every size is kept as soon as it is
+measured, so you can press Ctrl-C and run the same command later to carry on where it
+stopped.
+
 A figure older than the refresh threshold is re-checked when it is used. The threshold
 is checked every time a figure is used, so in a long-running GUI a folder you revisit
 after the threshold has passed is re-checked then:
@@ -93,10 +100,11 @@ after the threshold has passed is re-checked then:
    Answer from the cache alone, with no Drive calls at all.
 
 Re-checking a stale folder costs two calls: its total is re-sized and it is re-listed
-(a listing is the only way to see what moved to the trash). Its subfolders' totals are
-reused rather than re-sized when the folder's total, item count, subfolder set and file
-bytes are all unchanged, so an unchanged tree is not walked again. With ``--refresh 0``
-nothing is reused.
+(a listing is the only way to see what moved to the trash). Each subfolder is re-sized
+only if its own figure is older than the threshold. When a folder's figures come from
+different checks, its remainder is shown as ``(unreconciled)`` rather than ``(in
+trash)``, because something may have changed in between; ``--refresh 0`` re-sizes
+everything shown so the remainder can be attributed again.
 
 Excluding folders
 -----------------

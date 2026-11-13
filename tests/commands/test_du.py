@@ -313,3 +313,26 @@ def test_du_root_user_exclusion_alone_is_exit_0(du, drive):
 def test_du_root_unmeasured_my_files_is_exit_3(du, drive):
     drive.fail_next("size", "/my-files", DriveError("boom"), times=9)
     assert du("/").exit_code == 3
+
+
+def test_du_prints_throttle_notice_once(du, drive):
+    drive.on_slow_size = None  # run_du attaches its callback when the source supports it
+
+    def throttled():
+        drive.on_slow_size("/my-files/A")
+        drive.on_slow_size("/my-files/A")
+
+    drive.before("size", "/my-files/A", throttled)
+    res = du("/my-files", "--refresh", "0")
+    assert res.exit_code == 0, res.output
+    assert res.stderr.count("rate-limiting folder sizes") == 1
+
+
+def test_du_ctrl_c_keeps_sizes_and_exits_130(du, drive):
+    def interrupt():
+        raise KeyboardInterrupt
+
+    drive.before("size", "/my-files/B", interrupt)
+    res = du("/my-files", "--refresh", "0")
+    assert res.exit_code == 130
+    assert "sizes measured so far are kept" in res.stderr

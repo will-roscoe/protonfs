@@ -166,3 +166,22 @@ def test_size_waits_out_throttling_instead_of_restarting():
     CliDriveSource(client, sleep=lambda s: None).size("/my-files/a")
     assert client.size_kwargs == {"timeout": SIZE_TIMEOUT, "retries": 0}
     assert SIZE_TIMEOUT >= 600
+
+
+def test_slow_size_is_reported_once_past_the_threshold():
+    seen = []
+    src = CliDriveSource(StubClient(delay=0.3), sleep=lambda s: None)
+    src.slow_after = 0.05
+    src.on_slow_size = seen.append
+    src.size("/my-files/a")
+    assert seen == ["/my-files/a"]
+
+
+def test_fast_size_is_not_reported():
+    seen = []
+    src = CliDriveSource(StubClient(), sleep=lambda s: None)
+    src.slow_after = 5.0
+    src.on_slow_size = seen.append
+    src.size("/my-files/a")
+    time.sleep(0.05)
+    assert seen == []
