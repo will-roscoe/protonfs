@@ -218,6 +218,7 @@ def test_responses_carry_referrer_policy(srv):
 def test_token_never_reaches_the_log_and_log_is_private(srv, tmp_path):
     srv.request("GET", f"/?t={srv.token}", auth=False)
     srv.request("GET", f"/api/nope?x=1&t={srv.token}&y=2")
+    srv.request("GET", f"/?%74={srv.token}", auth=False)  # percent-encoded key
     srv.raw(f"GET /?t={srv.token} HTTP/1.1\r\nHost: x\r\nBogus\r\n\r\n".encode())
     text = (tmp_path / "server.log").read_text()
     assert "GET /" in text and "t=<redacted>" in text

@@ -46,7 +46,8 @@ PLACEHOLDER = "{{PFS_TOKEN}}"
 _MAX_BODY = 1 << 20
 _REQUEST_TIMEOUT = 30.0
 _SSE_WRITE_TIMEOUT = 60.0
-_TOKEN_QUERY = re.compile(r"([?&]t=)[^&\s]*")
+# Also catches the percent-encoded key (``%74`` is ``t``), which parse_qs accepts.
+_TOKEN_QUERY = re.compile(r"([?&](?:t|%74)=)[^&\s]*", re.IGNORECASE)
 
 #: The ``notice`` event published when a ``size`` call is held up by Proton's rate limit.
 THROTTLE_NOTICE = (
