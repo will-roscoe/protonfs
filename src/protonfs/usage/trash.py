@@ -246,8 +246,9 @@ def figure_for(engine: UsageEngine, path: str) -> TrashFigure:
         at = None
     if complete:
         return TrashFigure(known, True, None, None, at)
-    share = unchecked / size if size else None
-    return TrashFigure(known, False, unchecked if size is not None else None, share, at)
+    if unchecked is None or size is None:
+        return TrashFigure(known, False, None, None, at)
+    return TrashFigure(known, False, unchecked, unchecked / size if size else None, at)
 
 
 def _roots(engine: UsageEngine, path: str) -> list[str]:
@@ -262,29 +263,39 @@ def _roots(engine: UsageEngine, path: str) -> list[str]:
     return out
 
 
-def _unchecked(engine: UsageEngine, path: str) -> tuple[int, int | None]:
-    """Return ``(bytes of sized-only folders under path, size of path)``."""
+def _unchecked(engine: UsageEngine, path: str) -> tuple[int | None, int | None]:
+    """Return ``(bytes of sized-only folders under path, size of path)``.
+
+    The first item is ``None`` when any such folder has no known size.
+    """
     from .engine import _row_path
 
     size = engine.used_total() if path == "/" else _size(engine, path)
     total = 0
+    unknown = False
     stack = _roots(engine, path)
     while stack:
         p = stack.pop()
         snap = engine.cache.snapshot(p)
         if snap is None or snap.invalid:
             fig = engine.cache.figure(p)
-            total += fig.size if fig is not None and fig.size is not None else 0
+            if fig is not None and fig.size is not None:
+                total += fig.size
+            else:
+                unknown = True
             continue
         for row in snap.rows:
             if row.kind == "file":
                 continue
             child = _row_path(p, row)
             if engine.cache.snapshot(child) is None:
-                total += row.size or 0
+                if row.size is None:
+                    unknown = True
+                else:
+                    total += row.size
             else:
                 stack.append(child)
-    return total, size
+    return (None if unknown else total), size
 
 
 def _size(engine: UsageEngine, path: str) -> int | None:

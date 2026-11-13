@@ -192,3 +192,57 @@ def test_root_runs_trash_pass_only_when_stale(usage_cache, clock):
     clock.advance(6 * 86400)
     eng.root(five, NO_RULES)
     assert d.calls.count(("list_trash", "/trash")) == 3
+
+
+def test_trash_for_unknown_sized_only_folder_gives_unknown_coverage(usage_cache, clock):
+    from dataclasses import replace
+
+    d = TreeDrive()
+    d.add_file("/my-files/a/f", 100)
+    d.add_file("/my-files/b/big", 190_000)
+    eng = UsageEngine(d, usage_cache, clock=clock)
+    eng.breakdown("/my-files", REVAL, NO_RULES, target="/my-files")
+    snap = usage_cache.snapshot("/my-files")
+    assert snap is not None
+    rows = tuple(replace(r, size=None) if r.name == "b" else r for r in snap.rows)
+    usage_cache.put_snapshot(replace(snap, rows=rows))
+
+    fig = eng.trash_for("/my-files")
+
+    assert not fig.complete
+    assert fig.unchecked_bytes is None and fig.unchecked_share is None
+
+
+def test_unresolved_parent_file_group_counts_in_total_but_no_subtree(usage_cache, clock):
+    d = _probe()
+    d.trash(P + "/a")  # parent p never listed: its uid is unknown to the cache
+    eng = UsageEngine(d, usage_cache, clock=clock)
+    summary = run_trash_pass(eng, REVAL)
+    usage_cache.put_trash(summary.to_json(), clock.now)
+
+    assert summary.groups == (TrashGroup(None, 1, 0, 1048723),)
+    assert summary.total_known == 1048723
+    assert summary.complete  # only an unresolved FOLDER makes the summary incomplete
+    assert eng.trash_for("/").known == 1048723
+    sub = eng.trash_for("/my-files")
+    assert sub.known == 0 and not sub.complete  # it might belong anywhere below
+
+
+def test_negative_remainder_makes_folder_group_unmeasured(usage_cache, clock):
+    from dataclasses import replace
+
+    d, eng = _trashed(usage_cache, clock)
+    uid = usage_cache.snapshot(P).uid
+    real = d.list_trash
+
+    def inflated(*, timeout):
+        extra = replace(real(timeout=timeout)[0], name="ghost", kind="file",
+                        size=10**9, parent_uid=uid)
+        return real(timeout=timeout) + [extra]
+
+    d.list_trash = inflated
+
+    summary = run_trash_pass(eng, REVAL)
+
+    assert TrashGroup(P, 0, 1, None) in summary.groups
+    assert not summary.complete
