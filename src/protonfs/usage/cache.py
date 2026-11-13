@@ -277,29 +277,6 @@ class UsageCache:
                 db.execute("ROLLBACK")
                 raise
 
-    def restamp(self, path: str, pass_id: int, now: float) -> None:
-        """Set the snapshot's and its rows' ``at``/``pass_id`` to ``now``/``pass_id``.
-
-        Values are kept; a missing snapshot is a no-op.
-
-        :param path: folder whose snapshot is restamped.
-        :param pass_id: pass id to record on the snapshot and its rows.
-        :param now: Unix timestamp to record as their capture time.
-        """
-        with self._lock:
-            self._db.execute("BEGIN IMMEDIATE")
-            try:
-                self._db.execute(
-                    "UPDATE snapshots SET at=?, pass_id=? WHERE path=?", (now, pass_id, path)
-                )
-                self._db.execute(
-                    "UPDATE rows SET at=?, pass_id=? WHERE parent=?", (now, pass_id, path)
-                )
-                self._db.execute("COMMIT")
-            except BaseException:
-                self._db.execute("ROLLBACK")
-                raise
-
     def invalidate(self, path: str) -> None:
         """Mark the snapshot of ``path`` invalid; other snapshots are untouched."""
         with self._lock:

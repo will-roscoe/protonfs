@@ -78,17 +78,6 @@ def test_put_snapshot_is_atomic(cache, monkeypatch):
     assert cache.snapshot("/a") == new
 
 
-def test_restamp_updates_times_not_values(cache):
-    cache.put_snapshot(_snap())
-    cache.restamp("/a", 9, 99.0)
-    got = cache.snapshot("/a")
-    assert (got.pass_id, got.at) == (9, 99.0)
-    folder = got.rows[1]
-    assert (folder.size, folder.descendants) == (100, 7)
-    assert (folder.at, folder.pass_id) == (99.0, 9)
-    assert got.fingerprint == (123, 4)
-
-
 def test_invalidate(cache):
     cache.put_snapshot(_snap())
     cache.invalidate("/a")
