@@ -510,8 +510,12 @@ flag/argument name; these names, not just their presence, are frozen.
        ``--refresh``, ``--format table|plain|json``, ``--json``, ``-p``/``--show-progress``,
        ``--gui``, ``--listen``, ``--port``, ``--log``. Only ``filesystem list``,
        ``filesystem size`` and ``filesystem list /trash`` are ever issued. Every figure
-       carries its age.
-     - ``0`` complete; ``1`` the target's own figure could not be measured, or a config
+       carries its age. With ``--gui``: at most one ``PATH``, and ``--format``/``--json``,
+       ``-p`` and ``--mindepth`` are usage errors; the address to open is the last line
+       written to stdout, ``http://HOST:PORT/?t=TOKEN`` (an IPv6 host in brackets). The
+       HTTP API under ``/api/`` serves the bundled page and is not covered.
+     - With ``--gui``: ``0`` when stopped with Ctrl-C; ``1`` when the port is in use, the
+       address cannot be bound or the log cannot be opened. Otherwise: ``0`` complete; ``1`` the target's own figure could not be measured, or a config
        or Drive error; ``2`` usage error (also ``--listen``/``--port``/``--log`` without
        ``--gui``, and ``-d`` with ``--mindepth``/``--maxdepth``); ``3`` partial results:
        a row is in state ``error``, the ``/`` total leaves out an unmeasurable section, or

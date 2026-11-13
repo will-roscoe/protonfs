@@ -131,5 +131,42 @@ chooses the output, and ``-p``/``--show-progress`` reports progress on stderr.
 produce its output, ``2`` for a usage error, and ``3`` when the output is complete but
 some figures could not be fetched or the trash total is partial.
 
+Browsing it in a web page
+-------------------------
+
+``protonfs du --gui [PATH]`` serves a page that shows the same figures as a sortable
+table next to a treemap or sunburst, so you can click your way down to whatever is
+taking the space. It runs until you press Ctrl-C.
+
+.. code-block:: bash
+
+   protonfs du --gui /my-files/sph-dev
+   protonfs du --gui /my-files/sph-dev -x process --refresh 2d   # seed the page's settings
+
+The address to open is the last line ``du`` prints, e.g.
+``http://127.0.0.1:43017/?t=…``; on a desktop it also opens in your browser. The ``t=``
+part is a one-off access token, so keep the line to yourself: it is what stops other
+programs and users on the machine from using the page.
+
+``--listen ADDR``
+   The address to serve on (default ``127.0.0.1``, this machine only). Anything else
+   prints a warning: the page and its token travel over plain HTTP, so only listen
+   beyond loopback on a network you trust, or reach the page through an SSH tunnel.
+``--port N|auto``
+   The port (default ``auto``: any free one). A port already in use is an error.
+``--log DIR|FILE|DEVICE``
+   Where request logs go (default ``~/.local/state/protonfs/logs/``, one file per run;
+   ``$XDG_STATE_HOME`` is respected). A directory gets a new file named after the start
+   time, a file is appended to, and a device such as ``/dev/null`` is written to as is.
+   Log files are readable only by you, and the token is never written to them.
+
+``-d``/``--maxdepth`` (how many levels the charts nest, default 3), ``-D``, ``-x``,
+``-X`` and ``--refresh`` set the page's starting settings, which you can change on the
+page. ``--format``/``--json``, ``-p`` and ``--mindepth`` make no sense for a page and
+are rejected, as is more than one ``PATH``.
+
+The page never waits on Drive: it shows what is cached straight away and fills in
+fresh figures as they arrive. When Proton is rate-limiting folder sizes it says so.
+
 See :doc:`../reference/index` for every option, and :doc:`../stability` for the
 output contract.
