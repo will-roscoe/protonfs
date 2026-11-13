@@ -106,6 +106,9 @@ class _Collector:
         self.now = now
         self.rows: list[DuRow] = []
         self.used = None
+        # Without a stored trash pass every folder's figure would be a vacuous "≥ 0 B".
+        # Checked at the first row, after the breakdown that may have run the pass.
+        self.trash_measured: bool | None = None
 
     def row(self, depth, entry, parent_size, *, bd: Breakdown | None = None, at=None):
         size = bd.size if bd is not None and bd.size is not None else entry.size
@@ -114,7 +117,10 @@ class _Collector:
         state = bd.state if bd is not None else entry.state
         when = at if at is not None else entry.at
         trash = (None, None, None)
-        if entry.kind != "file" and state in (NodeState.LISTED, NodeState.SIZED, NodeState.PARTIAL):
+        if self.trash_measured is None:
+            self.trash_measured = self.engine.trash_summary() is not None
+        if self.trash_measured and entry.kind != "file" and state in (
+                NodeState.LISTED, NodeState.SIZED, NodeState.PARTIAL):
             fig = self.engine.trash_for(entry.path)
             trash = (fig.known, fig.complete, fig.unchecked_bytes)
         self.rows.append(DuRow(

@@ -291,7 +291,7 @@ def run_du(
         engine.on_call = on_call
     engine.check_account(policy)
 
-    fatal = partial = need_used = False
+    fatal = partial = need_used = need_trash = False
     docs = []
     hint = False
     console = Console(file=out, width=None if getattr(out, "isatty", lambda: False)() else 200,
@@ -330,10 +330,14 @@ def run_du(
                     out.write(line + "\n")
             hint = hint or options.plan_size is None
             need_used = need_used or (engine.used_total() is None and options.fmt == "table")
+            need_trash = need_trash or (target.remote != "/" and options.fmt == "table"
+                                        and engine.trash_summary() is None)
     if options.fmt == "json":
         out.write(json.dumps(docs[0] if len(docs) == 1 else docs, indent=2) + "\n")
     if hint:
         err.write(PLAN_HINT + "\n")
     if need_used:
         err.write("(%Used needs `protonfs du /` once)\n")
+    if need_trash:
+        err.write("(In trash needs `protonfs du /` once)\n")
     return 1 if fatal else 3 if partial else 0

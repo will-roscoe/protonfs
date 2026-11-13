@@ -336,3 +336,20 @@ def test_du_ctrl_c_keeps_sizes_and_exits_130(du, drive):
     res = du("/my-files", "--refresh", "0")
     assert res.exit_code == 130
     assert "sizes measured so far are kept" in res.stderr
+
+
+def test_du_trash_cells_blank_until_trash_measured(du):
+    res = du("/my-files", "--json")
+    assert res.exit_code == 0, res.output
+    assert all(r["in_trash"] is None for r in _rows(res) if r["kind"] != "gap")
+    table = du("/my-files")
+    assert "unchecked" not in table.stdout
+    assert "(In trash needs `protonfs du /` once)" in table.stderr
+
+
+def test_du_trash_cells_filled_after_root_pass(du):
+    assert du("/").exit_code == 0
+    res = du("/my-files", "--json")
+    folders = [r for r in _rows(res) if r["kind"] == "folder"]
+    assert folders and all(r["in_trash"] is not None for r in folders)
+    assert "In trash needs" not in du("/my-files").stderr

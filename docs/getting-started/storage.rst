@@ -48,7 +48,7 @@ Size
 In trash
    Bytes inside this folder that are in the trash. Trashed items keep counting against
    your plan, and keep counting in their original folders' totals, until the trash is
-   emptied.
+   emptied. The column is blank until ``protonfs du /`` has measured the trash once.
 Age
    How old the figure is. Figures come from a local cache (see below), so ``du`` always
    shows how old each one is.
