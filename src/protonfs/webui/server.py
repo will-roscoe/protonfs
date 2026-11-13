@@ -19,6 +19,7 @@ import os
 import re
 import secrets
 import socket
+import socketserver
 import threading
 import webbrowser
 from datetime import datetime
@@ -100,6 +101,14 @@ class _Server(ThreadingHTTPServer):
         self.log = log
         self.log_lock = threading.Lock()
         super().__init__(addr, handler)
+
+    def server_bind(self) -> None:
+        # HTTPServer.server_bind sets server_name from socket.getfqdn(host), a reverse DNS
+        # lookup that can stall for seconds (seen on macOS CI). The name is never used.
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = host
+        self.server_port = port
 
 
 class _Handler(BaseHTTPRequestHandler):

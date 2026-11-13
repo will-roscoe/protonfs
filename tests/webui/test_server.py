@@ -112,7 +112,7 @@ def _start(tmp_path, *, listen="127.0.0.1", port=None, drive=None, settings=None
 
     t = threading.Thread(target=run, daemon=True)
     t.start()
-    assert ready.wait(5), "server did not start"
+    assert ready.wait(15), "server did not start"
     return drive, engine, cache, out, err, stop, t, errors
 
 
@@ -442,7 +442,7 @@ def test_run_gui_end_to_end(tmp_path, tree_drive, monkeypatch):
         daemon=True)
     t.start()
     try:
-        for _ in range(100):
+        for _ in range(300):  # up to 15 s, like the other server starts
             if out.getvalue().strip():
                 break
             threading.Event().wait(0.05)
