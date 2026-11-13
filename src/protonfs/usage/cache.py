@@ -40,6 +40,8 @@ def default_cache_path() -> Path:
     ``$PROTONFS_DU_CACHE`` if set, else ``$XDG_CACHE_HOME/protonfs/du.sqlite``, else
     ``~/.cache/protonfs/du.sqlite``.
 
+    :returns: the path; neither the file nor its directory is created.
+
     .. versionadded:: 3.4.0
     """
     env = os.environ.get("PROTONFS_DU_CACHE")
@@ -70,8 +72,8 @@ class Row:
     """One entry of a folder listing.
 
     For folders ``size``, ``descendants``, ``at`` and ``pass_id`` are the figure captured
-    in the snapshot's pass (or a cached figure for excluded rows). ``name`` is stored in
-    Drive-escaped form.
+    in the snapshot's pass (or a cached figure for excluded rows). ``name`` is the plain,
+    unescaped name; paths built from it escape ``/`` and ``\\``.
 
     .. versionadded:: 3.4.0
     """
@@ -119,31 +121,42 @@ class UsageCache:
     lock. A stored schema version other than :data:`SCHEMA_VERSION` rebuilds all tables.
 
     :param path: database file; the parent directory is created.
+    :param timeout: seconds to wait for a lock held by another process before failing.
+    :raises sqlite3.OperationalError: if the database stays locked past ``timeout``.
     :raises sqlite3.Error: if the file cannot be opened as a database.
 
     .. versionadded:: 3.4.0
     """
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, timeout: float = 10.0) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._db = sqlite3.connect(
-            str(self.path), check_same_thread=False, isolation_level=None
+            str(self.path), check_same_thread=False, isolation_level=None, timeout=timeout
         )
-        with self._lock:
-            try:
-                self._db.execute("PRAGMA journal_mode=WAL")
-            except sqlite3.Error:
-                pass
-            self._ensure_schema()
+        try:
+            with self._lock:
+                try:
+                    self._db.execute("PRAGMA journal_mode=WAL")
+                except sqlite3.OperationalError as e:
+                    if "locked" in str(e) or "busy" in str(e):
+                        raise
+                self._ensure_schema()
+        except BaseException:
+            self._db.close()
+            raise
 
     def _ensure_schema(self) -> None:
         try:
             row = self._db.execute(
                 "SELECT value FROM meta WHERE key='schema_version'"
             ).fetchone()
-        except sqlite3.OperationalError:
+        except sqlite3.OperationalError as e:
+            # Only a missing meta table means "fresh or old layout"; a lock error
+            # must propagate rather than wipe a database another process is using.
+            if "no such table" not in str(e):
+                raise
             row = None
         if row is not None and row[0] == str(SCHEMA_VERSION):
             return
@@ -243,6 +256,10 @@ class UsageCache:
         """Set the snapshot's and its rows' ``at``/``pass_id`` to ``now``/``pass_id``.
 
         Values are kept; a missing snapshot is a no-op.
+
+        :param path: folder whose snapshot is restamped.
+        :param pass_id: pass id to record on the snapshot and its rows.
+        :param now: Unix timestamp to record as their capture time.
         """
         with self._lock:
             self._db.execute("BEGIN IMMEDIATE")
@@ -291,7 +308,10 @@ class UsageCache:
             self._db.execute("INSERT OR REPLACE INTO meta VALUES(?,?)", (key, value))
 
     def clear(self) -> None:
-        """Delete all cached data (figures, snapshots, rows, passes, trash, metadata)."""
+        """Delete all cached data (figures, snapshots, rows, passes, trash, metadata).
+
+        The ``schema_version`` metadata row is kept.
+        """
         with self._lock:
             self._db.execute("BEGIN IMMEDIATE")
             try:

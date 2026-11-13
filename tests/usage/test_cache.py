@@ -27,7 +27,7 @@ def _snap(path="/a", rows=None, pass_id=1, at=10.0, uid="U-a"):
         rows = (
             _row("z.bin", size=5),
             _row("sub", "folder", "U-sub", 100, 7, 10.0, pass_id),
-            _row("a\\/b", size=2),
+            _row("a/b", "folder", "U-ab", 2),
         )
     return Snapshot(path, uid, at, pass_id, (123, 4), 3, False, tuple(rows))
 
@@ -52,7 +52,7 @@ def test_snapshot_roundtrip_preserves_row_order_and_escaped_names(cache):
     cache.put_snapshot(s)
     got = cache.snapshot("/a")
     assert got == s
-    assert [r.name for r in got.rows] == ["z.bin", "sub", "a\\/b"]
+    assert [r.name for r in got.rows] == ["z.bin", "sub", "a/b"]
     assert cache.snapshot("/missing") is None
 
 
@@ -99,6 +99,8 @@ def test_path_for_uid(cache):
     cache.put_snapshot(_snap(rows=(_row("we/ird\\", "folder", "U-w"), _row("f", uid="U-f"))))
     assert cache.path_for_uid("U-w") == "/a/we\\/ird\\\\"
     assert cache.path_for_uid("U-a") == "/a"
+    cache.put_snapshot(_snap())
+    assert cache.path_for_uid("U-ab") == "/a/a\\/b"
     assert cache.path_for_uid("U-f") is None
     assert cache.path_for_uid("nope") is None
 
@@ -165,3 +167,25 @@ def test_threads_share_one_cache(cache):
     for t in ts:
         t.join()
     assert errors == []
+
+
+def test_locked_database_is_not_wiped(tmp_path):
+    p = tmp_path / "du.sqlite"
+    c = UsageCache(p)
+    c.put_figure("/a", Figure(1, 1, 1.0, 1))
+    c.close()
+    raw = sqlite3.connect(p, isolation_level=None)
+    raw.execute("BEGIN IMMEDIATE")
+    try:
+        try:
+            c2 = UsageCache(p, timeout=0.2)
+        except sqlite3.OperationalError:
+            c2 = None
+    finally:
+        raw.execute("ROLLBACK")
+        raw.close()
+    if c2 is not None:
+        c2.close()
+    c3 = UsageCache(p)
+    assert c3.figure("/a") == Figure(1, 1, 1.0, 1)
+    c3.close()
