@@ -6,11 +6,22 @@ Trashed nodes stay counted by ``size()`` of every ancestor until purged, vanish 
 
 from __future__ import annotations
 
+import functools
+import threading
 from typing import Callable
 
 from protonfs.drive import DriveError, SizeResult
 from protonfs.usage import paths
 from protonfs.usage.source import RawEntry
+
+
+def _locked(fn):
+    @functools.wraps(fn)
+    def wrapper(self, *args, **kwargs):
+        with self._lock:
+            return fn(self, *args, **kwargs)
+
+    return wrapper
 
 
 class _Node:
@@ -26,6 +37,7 @@ class TreeDrive:
     """A tree of nodes keyed by escaped Drive path, implementing ``DriveSource``."""
 
     def __init__(self, scope: str = "vol-1") -> None:
+        self._lock = threading.RLock()
         self.scope = scope
         self.concurrency = 4
         self.calls: list[tuple[str, str]] = []
@@ -35,6 +47,7 @@ class TreeDrive:
         self._hooks: dict[tuple[str, str], list[Callable[[], None]]] = {}
 
     # building
+    @_locked
     def _add(self, path: str, kind: str, size: int | None = None) -> str:
         parent = paths.parent_of(path)
         while parent not in (None, "/") and parent not in self._nodes:
@@ -57,24 +70,29 @@ class TreeDrive:
         """Add a device root under ``/devices``; return its uid."""
         return self._add(paths.join("/devices", name), "folder")
 
+    @_locked
     def trash(self, path: str) -> None:
         """Move ``path`` to the trash (still counted by ancestors' ``size``)."""
         self._nodes[path].trashed = True
 
+    @_locked
     def purge(self, path: str) -> None:
         """Remove ``path`` and everything beneath it permanently."""
-        for p in [p for p in self._nodes if p == path or paths.is_within(p, path)]:
+        for p in [p for p in list(self._nodes) if p == path or paths.is_within(p, path)]:
             del self._nodes[p]
 
     # scripting
+    @_locked
     def fail_next(self, op: str, path: str, exc: BaseException, times: int = 1) -> None:
         """Raise ``exc`` on the next ``times`` calls of ``op`` for ``path``."""
         self._failures.setdefault((op, path), []).extend([exc] * times)
 
+    @_locked
     def before(self, op: str, path: str, fn: Callable[[], None]) -> None:
         """Run ``fn()`` just before servicing the next matching ``(op, path)`` call."""
         self._hooks.setdefault((op, path), []).append(fn)
 
+    @_locked
     def _enter(self, op: str, path: str) -> None:
         self.calls.append((op, path))
         hooks = self._hooks.get((op, path))
@@ -107,7 +125,7 @@ class TreeDrive:
 
     def _top_level_trashed(self) -> list[_Node]:
         out = []
-        for node in self._nodes.values():
+        for node in list(self._nodes.values()):
             if not node.trashed:
                 continue
             p = paths.parent_of(node.path)
@@ -122,6 +140,7 @@ class TreeDrive:
                 out.append(node)
         return out
 
+    @_locked
     def list_dir(self, path: str, *, expected_entries: int | None = None) -> list[RawEntry]:
         self._enter("list", path)
         self._check_live(path)
@@ -131,24 +150,26 @@ class TreeDrive:
             raise DriveError("Trashed node not found")
         return [
             self._entry(n)
-            for p, n in self._nodes.items()
+            for p, n in list(self._nodes.items())
             if paths.parent_of(p) == path and not n.trashed
         ]
 
+    @_locked
     def size(self, path: str) -> SizeResult:
         self._enter("size", path)
         self._check_live(path)
         node = self._nodes.get(path)
         if node is None:
             if path in ("/", "/my-files", "/devices"):
-                below = [n for p, n in self._nodes.items() if paths.is_within(p, path)]
+                below = [n for p, n in list(self._nodes.items()) if paths.is_within(p, path)]
                 return SizeResult(sum(n.size or 0 for n in below), len(below))
             raise DriveError(f"Node not found: {path}")
         if node.trashed:
             raise DriveError("Trashed node not found")
-        below = [n for p, n in self._nodes.items() if paths.is_within(p, path) and p != path]
+        below = [n for p, n in list(self._nodes.items()) if paths.is_within(p, path) and p != path]
         return SizeResult(sum(n.size or 0 for n in below), len(below))
 
+    @_locked
     def list_trash(self, *, timeout: float) -> list[RawEntry]:
         self._enter("list_trash", "/trash")
         return [self._entry(n) for n in self._top_level_trashed()]

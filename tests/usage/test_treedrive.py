@@ -87,3 +87,32 @@ def test_before_hook_runs_once_before_matching_call():
     d.before("size", "/my-files/p", lambda: d.purge("/my-files/p/c"))
     assert d.size("/my-files/p").descendants == 4  # a, sub, b, new
     assert d.size("/my-files/p").descendants == 4
+
+
+def test_threadsafe_with_mutating_hook():
+    import threading
+
+    d = TreeDrive()
+    d.add_folder("/my-files/p")
+    for i in range(200):
+        d.add_file(f"/my-files/p/f{i}", 1)
+    for k in range(40):
+        d.before("size", "/my-files/p", lambda k=k: d.add_file(f"/my-files/p/new{k}", 1))
+    errors = []
+
+    def work():
+        try:
+            for _ in range(60):
+                d.size("/my-files/p")
+                d.list_dir("/my-files/p")
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=work) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert errors == []
+    assert d.size("/my-files/p") == SizeResult(240, 240)
+    assert len(d.list_dir("/my-files/p")) == 240
