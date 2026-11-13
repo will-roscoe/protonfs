@@ -683,6 +683,39 @@ Examples::
     protonfs ls --visual treemap             # squarified storage treemap
     protonfs ls sim/ --visual waffle         # proportional waffle chart of sim/
 
+.. _cmd-du:
+
+du
+--
+.. click:: protonfs.cli:du
+   :prog: protonfs du
+
+Shows how much Proton Drive space remote paths take, from the whole account (``/``)
+down to one folder, including what is in the trash. Read-only: it issues only
+``filesystem list``, ``filesystem size`` and ``filesystem list /trash``.
+
+.. versionadded:: 3.4.0
+
+Unlike ``ls --dirs``, which sums the index of one store, ``du`` measures Drive itself,
+so it covers every store, device and anything uploaded outside protonfs. Figures come
+from a per-machine cache (:envvar:`PROTONFS_DU_CACHE`) and carry their age; a figure
+older than ``--refresh`` (default :confval:`du.refresh`, ``5d``) is re-checked when it
+is used. ``--refresh 0`` fetches everything shown, ``--refresh never`` makes no Drive
+calls. ``%Plan`` needs :confval:`du.plan_size`.
+
+Exit code: ``0`` complete, ``1`` a target could not be measured, ``2`` usage error,
+``3`` complete output with some figures missing or a partial trash total. See
+:doc:`../getting-started/storage` for what the columns and remainder rows mean, and
+:doc:`../stability` for the JSON contract.
+
+Examples::
+
+    protonfs du /                            # each section, plus the trash total
+    protonfs du /my-files/sph-dev -d 2       # two levels, biggest first
+    protonfs du ~/sph-dev/sim/mload005       # a local path inside a store
+    protonfs du / -x devices --refresh never # cache only, devices frozen
+    protonfs du /my-files --json | jq '.rows[] | select(.depth == 1)'
+
 .. _cmd-push:
 
 push
