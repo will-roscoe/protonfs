@@ -224,7 +224,7 @@ class Api:
         call is missed. The iterator ends when the job queue closes (or drops this
         subscriber for falling behind); ``close()`` unsubscribes. A
         ``{"event": "keepalive", "data": {}}`` is yielded after ``timeout`` seconds without an
-        event. Names are ``breakdown``, ``progress``, ``trash`` and ``error``.
+        event. Names are ``breakdown``, ``progress``, ``trash``, ``error`` and ``notice``.
 
         :param timeout: seconds of silence before a keepalive.
         :returns: an iterator with a ``close()`` method.

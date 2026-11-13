@@ -122,6 +122,7 @@ def tree_drive():
     d.add_file("/my-files/A/f1", 100)
     d.add_file("/my-files/A/sub/x", 1000)
     d.add_file("/my-files/B/big", 5000)
+    d.on_slow_size = None  # serve() attaches its throttle notice where the source has one
     return d
 
 
@@ -460,3 +461,13 @@ def test_run_gui_end_to_end(tmp_path, tree_drive, monkeypatch):
     assert result == [0]
     (log,) = list((tmp_path / "logs").glob("du-gui-*.log"))
     assert "GET /api/settings" in log.read_text()
+
+
+def test_slow_size_publishes_a_notice(srv):
+    events = srv.events()
+    next(events)
+    srv.drive.on_slow_size("/my-files/A")
+    for name, data in events:
+        if name == "notice":
+            break
+    assert "rate-limiting folder sizes" in data["message"]

@@ -48,6 +48,12 @@ _REQUEST_TIMEOUT = 30.0
 _SSE_WRITE_TIMEOUT = 60.0
 _TOKEN_QUERY = re.compile(r"([?&]t=)[^&\s]*")
 
+#: The ``notice`` event published when a ``size`` call is held up by Proton's rate limit.
+THROTTLE_NOTICE = (
+    "Proton is rate-limiting folder sizes (about 20 at a time, then a pause of a few "
+    "minutes), so new figures arrive slowly. Sizes are kept as they arrive."
+)
+
 
 def parse_port(text: str | None) -> int | None:
     """Parse the ``--port`` value.
@@ -356,6 +362,9 @@ def serve(
         stream.close()
         raise
     jobs = JobQueue(engine, lambda: holder["api"].settings)
+    source = getattr(engine, "source", None)
+    if source is not None and hasattr(source, "on_slow_size"):
+        source.on_slow_size = lambda path: jobs.notify(THROTTLE_NOTICE)
     holder["api"] = api = Api(engine, jobs, settings, plan_size=plan_size)
     try:
         try:

@@ -85,6 +85,13 @@ class JobQueue:
             if q in self._subs:
                 self._subs.remove(q)
 
+    def notify(self, message: str) -> None:
+        """Publish ``{"event": "notice", "message": message}`` to every subscriber.
+
+        .. versionadded:: 3.4.0
+        """
+        self._publish({"event": "notice", "message": message})
+
     def _publish(self, event: dict) -> None:
         with self._lock:
             subs = list(self._subs)
