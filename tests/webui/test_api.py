@@ -89,19 +89,68 @@ def test_tree_under_never_queues_nothing(make, drive):
     assert out["pending"] == [] and drive.calls == []
 
 
-def test_tree_requests_do_not_requeue_every_time(make):
-    api = make(refresh="0")  # always stale: must still not loop
-    api.tree(TARGET, 1)
-    q = api.jobs.subscribe()
-    _next(q, "breakdown")
-    api.tree(TARGET, 1)
+def _settle(api, q, name="breakdown"):
+    """Wait for one ``name`` event; afterwards the job has left ``pending()``."""
+    _next(q, name)
     assert api.jobs.pending() == []
+
+
+def test_revisit_after_threshold_queues_again(make, clock):
+    api = make(refresh="5m")
+    q = api.jobs.subscribe()
+    api.tree(TARGET, 1)
+    _settle(api, q)
+    assert api.tree(TARGET, 1)["pending"] == []  # fresh: nothing to do
+    clock.advance(301)
+    assert api.tree(TARGET, 1)["pending"] == [TARGET]  # stale again, queued again
+    _settle(api, q)
+
+
+def test_queue_false_never_queues(make):
+    api = make(refresh="0")
+    out = api.tree(TARGET, 1, queue=False)
+    assert out["pending"] == [] and api.root(queue=False)["pending"] == []
+    assert api.tree(TARGET, 1)["pending"] == [TARGET]
+
+
+def test_refresh_zero_queues_on_every_navigation(make):
+    api = make(refresh="0")
+    q = api.jobs.subscribe()
+    for _ in range(3):
+        assert api.tree(TARGET, 1)["pending"] == [TARGET]
+        _settle(api, q)
+
+
+def test_drilling_down_keeps_target_relative_rules(make):
+    api = make()
+    api.set_settings({"hide": ["/A/sub"]})  # anchored: only target/A/sub
+    q = api.jobs.subscribe()
+    api.tree(f"{TARGET}/A", 2)
+    _settle(api, q)
+    out = api.tree(f"{TARGET}/A", 2, queue=False)
+    names = {r["name"] for r in out["rows"]}
+    assert "f1" in names and "sub" not in names
+    # relative to the drilled-into folder the same pattern would match nothing
+    api.set_settings({"hide": ["/sub"]})
+    names = {r["name"] for r in api.tree(f"{TARGET}/A", 2, queue=False)["rows"]}
+    assert "sub" in names
+
+
+def test_engine_base_must_contain_target(engine):
+    from protonfs.usage.excludes import ExcludeRules
+    from protonfs.usage.report import collect_rows
+
+    never = RefreshPolicy.parse("never")
+    with pytest.raises(ValueError):
+        engine.tree(f"{TARGET}/A", never, ExcludeRules(), maxdepth=1, base=f"{TARGET}/B")
+    with pytest.raises(ValueError):
+        collect_rows(engine, f"{TARGET}/A", never, ExcludeRules(), now=0.0, base="/devices")
 
 
 def test_refresh_forces_fresh(make, drive, engine):
     api = make()
-    api.tree(TARGET, 1)
     q = api.jobs.subscribe()
+    api.tree(TARGET, 1)
     _next(q, "breakdown")
     n = len(drive.calls)
     assert api.refresh(f"{TARGET}/A")["queued"] is True
@@ -134,6 +183,8 @@ def test_settings_roundtrip_and_validation(make):
         api.set_settings({"maxdepth": 99})
     with pytest.raises(ValueError):
         api.set_settings({"target": "/devices"})
+    with pytest.raises(ValueError):
+        api.set_settings("nope")
     assert api.get_settings()["maxdepth"] == 5  # unchanged by the failures
 
 
@@ -204,3 +255,92 @@ def test_events_are_json_able_and_end_on_close(make):
     assert ev["data"]["breakdown"]["state"] == "listed"
     api.jobs.close()
     assert list(gen) == []
+
+
+@pytest.mark.parametrize(
+    "patch",
+    [{"refresh": 5}, {"refresh": None}, {"hide": "A"}, {"hide": None}, {"freeze": [1]},
+     {"maxdepth": 0}, {"maxdepth": 7}, {"maxdepth": None}, {"dirs_only": 1},
+     {"hide": ["a/**/[z-a]"]}],
+)
+def test_bad_settings_are_rejected_and_never_stored(make, patch):
+    api = make()
+    before = api.get_settings()
+    with pytest.raises(ValueError):
+        api.set_settings(patch)
+    assert api.get_settings() == before
+    api.tree(TARGET, 1, queue=False)  # still usable
+
+
+def test_refused_walk_does_not_break_cancel(make, drive):
+    api = make()
+    gate = threading.Event()
+    drive.before("list", f"{TARGET}/A", lambda: gate.wait(5))
+    q = api.jobs.subscribe()
+    assert api.walk([TARGET])["started"] is True
+    assert api.walk([TARGET])["started"] is False
+    api.cancel_walk()
+    gate.set()
+    while True:
+        ev = _next(q, "progress")
+        if ev["state"] != "running":
+            break
+    assert ev["state"] == "cancelled"
+
+
+def test_walk_that_raises_ends_in_error_with_last_known_counts(make, engine, monkeypatch):
+    api = make()
+
+    def boom(path, policy, rules, *, target, on_progress, cancel):
+        on_progress(2, 5)
+        raise RuntimeError("kaput")
+
+    monkeypatch.setattr(engine, "walk", boom)
+    q = api.jobs.subscribe()
+    api.walk([TARGET])
+    err = _next(q, "error")
+    assert err["message"] == "kaput"
+    while True:
+        ev = _next(q, "progress")
+        if ev["state"] != "running":
+            break
+    assert (ev["state"], ev["done"], ev["total"], ev["message"]) == ("error", 2, 5, "kaput")
+
+
+def test_cancelled_walk_keeps_last_known_total(make, engine, monkeypatch):
+    api = make()
+
+    def slow(path, policy, rules, *, target, on_progress, cancel):
+        on_progress(1, 4)
+        cancel.set()
+        return 1
+
+    monkeypatch.setattr(engine, "walk", slow)
+    q = api.jobs.subscribe()
+    api.walk([TARGET])
+    while True:
+        ev = _next(q, "progress")
+        if ev["state"] != "running":
+            break
+    assert (ev["state"], ev["done"], ev["total"]) == ("cancelled", 1, 4)
+
+
+def test_events_subscribe_eagerly(make):
+    api = make()
+    events = api.events(timeout=5)  # no next() yet
+    api.jobs.submit("breakdown", TARGET, RefreshPolicy.parse("0"))
+    ev = next(events)
+    assert ev["event"] == "breakdown"
+    events.close()
+    assert api.jobs._subs == []
+
+
+def test_slow_subscriber_is_dropped(make):
+    from protonfs.webui import jobs as jobs_mod
+
+    api = make()
+    q = api.jobs.subscribe()
+    for i in range(jobs_mod.MAX_BACKLOG + 5):
+        api.jobs._publish({"event": "error", "path": str(i), "message": "x"})
+    assert q not in api.jobs._subs
+    assert q.get_nowait() is None  # backlog discarded, stream ends

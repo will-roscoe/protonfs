@@ -23,6 +23,9 @@ if TYPE_CHECKING:
 
 _STOP = object()
 
+#: Unread events a subscriber may have queued before it is dropped.
+MAX_BACKLOG = 1000
+
 
 class JobQueue:
     """Runs breakdown jobs on worker threads and one walk on its own thread.
@@ -32,14 +35,19 @@ class JobQueue:
     - ``breakdown``: ``path`` and the finished ``breakdown`` (a
       :class:`~protonfs.usage.model.Breakdown`).
     - ``trash``: ``trash``, the engine's trash summary or ``None`` (after a breakdown of ``/``).
-    - ``progress``: ``done``, ``total``, ``path`` and ``state`` (``running``, ``done`` or
-      ``cancelled``), aggregated over every path of the walk.
+    - ``progress``: ``done``, ``total``, ``path`` and ``state`` (``running``, ``done``,
+      ``cancelled`` or ``error``), aggregated over every path of the walk. The last event of
+      a walk is never ``running``; a ``cancelled`` or ``error`` one keeps the last known
+      ``done`` and ``total`` (``error`` adds ``message``).
     - ``error``: ``path`` and ``message`` for a job that raised; the worker carries on.
 
     :param engine: the usage engine the jobs run on.
     :param settings: returns the current :class:`~protonfs.webui.settings.GuiSettings`; read
         at the start of every job, so live edits apply to the next job.
     :param workers: number of breakdown worker threads.
+
+    A subscriber whose queue holds :data:`MAX_BACKLOG` unread events is dropped: its queue
+    receives a final ``None`` after the backlog is discarded.
 
     .. versionadded:: 3.4.0
     """
@@ -66,7 +74,7 @@ class JobQueue:
 
     def subscribe(self) -> queue.Queue:
         """Return a new queue that receives every event published from now on."""
-        q: queue.Queue = queue.Queue()
+        q: queue.Queue = queue.Queue(maxsize=MAX_BACKLOG)
         with self._lock:
             self._subs.append(q)
         return q
@@ -81,7 +89,13 @@ class JobQueue:
         with self._lock:
             subs = list(self._subs)
         for q in subs:
-            q.put(event)
+            try:
+                q.put_nowait(event)
+            except queue.Full:
+                self.unsubscribe(q)
+                with q.mutex:
+                    q.queue.clear()
+                q.put_nowait(None)
 
     # -------------------------------------------------------------- breakdowns
 
@@ -114,20 +128,25 @@ class JobQueue:
             if item is _STOP:
                 return
             kind, path, policy = item
+            events: list = []
             try:
-                self._run_breakdown(path, policy)
+                events = self._run_breakdown(path, policy)
             except Exception as exc:  # noqa: BLE001 - a job must never kill its worker
-                self._publish({"event": "error", "path": path, "message": str(exc) or repr(exc)})
-            finally:
-                with self._lock:
-                    self._active.pop((kind, path), None)
+                events = [{"event": "error", "path": path, "message": str(exc) or repr(exc)}]
+            # leave pending() before anyone hears the result, so a reader reacting to the
+            # event never still sees the path as pending
+            with self._lock:
+                self._active.pop((kind, path), None)
+            for ev in events:
+                self._publish(ev)
 
-    def _run_breakdown(self, path: str, policy: RefreshPolicy) -> None:
+    def _run_breakdown(self, path: str, policy: RefreshPolicy) -> list:
         s = self._settings()
         bd: Breakdown = self.engine.breakdown(path, policy, s.rules(), s.target)
-        self._publish({"event": "breakdown", "path": path, "breakdown": bd})
+        events = [{"event": "breakdown", "path": path, "breakdown": bd}]
         if path == "/":
-            self._publish({"event": "trash", "trash": self.engine.trash_summary()})
+            events.append({"event": "trash", "trash": self.engine.trash_summary()})
+        return events
 
     # -------------------------------------------------------------------- walk
 
@@ -149,8 +168,10 @@ class JobQueue:
 
     def _run_walk(self, paths: list, cancel: threading.Event) -> None:
         finished = 0
+        known = [0, 0]  # last reported (done, total) across all paths
         state = "done"
-        last: str | None = None
+        message = None
+        last = None
         try:
             for path in paths:
                 if cancel.is_set():
@@ -158,26 +179,34 @@ class JobQueue:
                 last = path
                 s = self._settings()
 
-                def tick(done: int, known: int, _base: int = finished, _path: str = path) -> None:
+                def tick(done: int, total: int, _base: int = finished, _path: str = path) -> None:
+                    known[0], known[1] = _base + done, _base + total
                     self._publish({
-                        "event": "progress", "done": _base + done, "total": _base + known,
+                        "event": "progress", "done": known[0], "total": known[1],
                         "path": _path, "state": "running",
                     })
 
                 finished += self.engine.walk(
                     path, s.policy(), s.rules(), target=s.target, on_progress=tick, cancel=cancel
                 )
+                known[0], known[1] = finished, max(finished, known[1])
             if cancel.is_set():
                 state = "cancelled"
         except Exception as exc:  # noqa: BLE001
-            self._publish({"event": "error", "path": last or "", "message": str(exc) or repr(exc)})
+            state = "error"
+            message = str(exc) or repr(exc)
+            self._publish({"event": "error", "path": last or "", "message": message})
         finally:
             with self._lock:
                 self._walking = False
-            self._publish({
-                "event": "progress", "done": finished, "total": finished,
+            final = {
+                "event": "progress", "done": known[0],
+                "total": known[0] if state == "done" else known[1],
                 "path": last or "", "state": state,
-            })
+            }
+            if message is not None:
+                final["message"] = message
+            self._publish(final)
 
     # ------------------------------------------------------------------- close
 

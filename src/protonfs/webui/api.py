@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import dataclasses
 import enum
+import queue as queue_mod
 import threading
 from collections.abc import Iterator
 from typing import TYPE_CHECKING
@@ -37,6 +38,8 @@ def to_jsonable(obj):
 
     :param obj: a value built from those types plus str, int, float, bool and ``None``.
     :returns: the same structure as dicts, lists and scalars; enums become their values.
+
+    .. versionadded:: 3.4.0
     """
     if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
         return {f.name: to_jsonable(getattr(obj, f.name)) for f in dataclasses.fields(obj)}
@@ -76,7 +79,7 @@ class Api:
         self.settings = settings
         self.plan_size = plan_size
         self._walk_cancel = threading.Event()
-        self._auto: set = set()
+        self._walk_lock = threading.Lock()
 
     def _within(self, path: str) -> str:
         if not isinstance(path, str) or not is_within(path, self.settings.target):
@@ -85,17 +88,20 @@ class Api:
 
     # ------------------------------------------------------------------ reading
 
-    def tree(self, path: str, depth: int) -> dict:
+    def tree(self, path: str, depth: int, *, queue: bool = True) -> dict:
         """Return the cached rows and breakdowns under ``path``, queueing stale ones.
 
-        Makes no Drive calls. Every breakdown shown that is stale under the current refresh
-        setting, or has no listing, is queued once for a background refresh (not for a
-        failed, excluded or unmeasurable folder, and never under refresh ``never``); the
-        page hears the result as a ``breakdown`` event. Exclusion patterns are matched
-        relative to ``path``.
+        Makes no Drive calls. With ``queue`` true, every breakdown shown that is stale under
+        the current refresh setting, or has no listing, is submitted for a background
+        refresh (a breakdown that is excluded or failed is not; nothing is queued under
+        refresh ``never``; a path already queued or running is not queued twice); the page
+        hears the result as a ``breakdown`` event. Exclusion patterns are matched relative to
+        the settings' target, whatever ``path`` is.
 
         :param path: escaped Drive path, within the settings' target.
         :param depth: levels to include, within :data:`~protonfs.webui.settings.DEPTH_RANGE`.
+        :param queue: whether to queue stale breakdowns; pass ``False`` for a refetch
+            triggered by an event, ``True`` for user navigation.
         :returns: ``{"rows": [...], "breakdowns": {path: {...}}, "pending": [paths]}`` where
             rows have the :data:`~protonfs.usage.report.JSON_ROW_KEYS` keys.
         :raises ValueError: if ``path`` is outside the target or ``depth`` is out of range.
@@ -107,13 +113,14 @@ class Api:
         rules = s.rules()
         now = self.engine.clock()
         rows = collect_rows(
-            self.engine, path, _NEVER, rules, maxdepth=depth, plan_size=self.plan_size, now=now
+            self.engine, path, _NEVER, rules, maxdepth=depth, plan_size=self.plan_size,
+            now=now, base=s.target,
         )
         if s.dirs_only:
             rows = [r for r in rows if r.kind != "file"]
-        bds = self.engine.tree(path, _NEVER, rules, maxdepth=depth)
+        bds = self.engine.tree(path, _NEVER, rules, maxdepth=depth, base=s.target)
         policy = s.policy()
-        if not policy.never:
+        if queue and not policy.never:
             for bd in bds.values():
                 self._queue_if_stale(bd, policy, now)
         return {
@@ -123,20 +130,20 @@ class Api:
         }
 
     def _queue_if_stale(self, bd, policy: RefreshPolicy, now: float) -> None:
-        if bd.path in self._auto or bd.state in (NodeState.EXCLUDED, NodeState.ERROR):
+        if bd.state in (NodeState.EXCLUDED, NodeState.ERROR):
             return
         at = bd.oldest_at if bd.oldest_at is not None else bd.at
         if bd.state is not NodeState.LISTED or policy.is_stale(at, now):
-            self._auto.add(bd.path)
             self.jobs.submit("breakdown", bd.path, policy)
 
-    def root(self) -> dict:
+    def root(self, *, queue: bool = True) -> dict:
         """Return :meth:`tree` for the settings' target at the current depth, plus trash.
 
+        :param queue: as for :meth:`tree`.
         :returns: the :meth:`tree` dict with a ``"trash"`` key: the cached trash summary as
             a dict, or ``None`` when no trash pass has run.
         """
-        out = self.tree(self.settings.target, self.settings.maxdepth)
+        out = self.tree(self.settings.target, self.settings.maxdepth, queue=queue)
         out["trash"] = to_jsonable(self.engine.trash_summary())
         return out
 
@@ -151,7 +158,6 @@ class Api:
         :raises ValueError: if ``path`` is outside the target.
         """
         self._within(path)
-        self._auto.discard(path)
         queued = self.jobs.submit("breakdown", path, _FORCE)
         return {"queued": queued, "pending": self.jobs.pending()}
 
@@ -166,15 +172,20 @@ class Api:
             raise ValueError("paths must be a non-empty list")
         for p in paths:
             self._within(p)
-        self._walk_cancel = threading.Event()
-        return {"started": self.jobs.walk(paths, self._walk_cancel)}
+        with self._walk_lock:
+            cancel = threading.Event()
+            started = self.jobs.walk(paths, cancel)
+            if started:
+                self._walk_cancel = cancel
+        return {"started": started}
 
     def cancel_walk(self) -> dict:
         """Ask the running walk (if any) to stop before its next folder.
 
         :returns: ``{"cancelled": True}``.
         """
-        self._walk_cancel.set()
+        with self._walk_lock:
+            self._walk_cancel.set()
         return {"cancelled": True}
 
     def get_settings(self) -> dict:
@@ -194,35 +205,59 @@ class Api:
         patch = dict(data)
         if patch.get("target") == self.settings.target:
             del patch["target"]
-        self.settings = self.settings.updated(patch)
-        self._auto.clear()
+        try:
+            new = self.settings.updated(patch)  # validates types, ranges, policy and patterns
+            new.policy()
+        except ValueError:
+            raise
+        except (TypeError, AttributeError) as exc:
+            raise ValueError(f"invalid settings: {exc}") from exc
+        self.settings = new
         return self.settings.to_dict()
 
     # ------------------------------------------------------------------- events
 
     def events(self, timeout: float = 15.0) -> Iterator[dict]:
-        """Yield ``{"event": name, "data": {...}}`` dicts until the job queue closes.
+        """Subscribe now and return an iterator of ``{"event": name, "data": {...}}`` dicts.
 
-        A ``{"event": "keepalive", "data": {}}`` is yielded after ``timeout`` seconds
-        without an event. Names are ``breakdown``, ``progress``, ``trash`` and ``error``.
+        The subscription exists when this method returns, so no event published after the
+        call is missed. The iterator ends when the job queue closes (or drops this
+        subscriber for falling behind); ``close()`` unsubscribes. A
+        ``{"event": "keepalive", "data": {}}`` is yielded after ``timeout`` seconds without an
+        event. Names are ``breakdown``, ``progress``, ``trash`` and ``error``.
 
         :param timeout: seconds of silence before a keepalive.
-        :returns: a generator; closing it unsubscribes.
+        :returns: an iterator with a ``close()`` method.
         """
-        import queue
+        return _Events(self.jobs, timeout)
 
-        q = self.jobs.subscribe()
+
+class _Events:
+    """Iterator over one subscription's events; :meth:`close` unsubscribes (idempotent)."""
+
+    def __init__(self, jobs: JobQueue, timeout: float) -> None:
+        self._jobs = jobs
+        self._timeout = timeout
+        self._q = jobs.subscribe()
+        self._open = True
+
+    def __iter__(self) -> _Events:
+        return self
+
+    def __next__(self) -> dict:
+        if not self._open:
+            raise StopIteration
         try:
-            while True:
-                try:
-                    ev = q.get(timeout=timeout)
-                except queue.Empty:
-                    yield {"event": "keepalive", "data": {}}
-                    continue
-                if ev is None:
-                    return
-                name = ev["event"]
-                data = {k: to_jsonable(v) for k, v in ev.items() if k != "event"}
-                yield {"event": name, "data": data}
-        finally:
-            self.jobs.unsubscribe(q)
+            ev = self._q.get(timeout=self._timeout)
+        except queue_mod.Empty:
+            return {"event": "keepalive", "data": {}}
+        if ev is None:
+            self.close()
+            raise StopIteration
+        data = {k: to_jsonable(v) for k, v in ev.items() if k != "event"}
+        return {"event": ev["event"], "data": data}
+
+    def close(self) -> None:
+        """Unsubscribe; later iteration stops."""
+        self._open = False
+        self._jobs.unsubscribe(self._q)

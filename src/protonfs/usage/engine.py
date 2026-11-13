@@ -209,7 +209,13 @@ class UsageEngine:
         return self._figure_entry(path, self.cache.figure(path))
 
     def tree(
-        self, target: str, policy: RefreshPolicy, rules: ExcludeRules, *, maxdepth: int
+        self,
+        target: str,
+        policy: RefreshPolicy,
+        rules: ExcludeRules,
+        *,
+        maxdepth: int,
+        base: str | None = None,
     ) -> dict[str, Breakdown]:
         """Break down ``target`` and every non-excluded folder above ``maxdepth``.
 
@@ -221,17 +227,23 @@ class UsageEngine:
         :param policy: refresh policy for every breakdown.
         :param rules: freeze/hide rules.
         :param maxdepth: depth limit as above.
+        :param base: escaped Drive path ``rules`` are matched relative to; defaults to
+            ``target``. Must contain ``target``.
         :returns: the breakdowns keyed by escaped Drive path, in breadth-first order.
+        :raises ValueError: if ``target`` is not within ``base``.
 
         .. versionadded:: 3.4.0
         """
+        base = target if base is None else base
+        if not is_within(target, base):
+            raise ValueError(f"{target!r} is not within the rules base {base!r}")
         out: dict[str, Breakdown] = {}
         queue: deque[tuple[str, int]] = deque([(target, 0)])
         while queue:
             path, depth = queue.popleft()
             if path in out:
                 continue
-            bd = self.breakdown(path, policy, rules, target)
+            bd = self.breakdown(path, policy, rules, base)
             out[path] = bd
             if depth + 1 < maxdepth:
                 queue.extend((p, depth + 1) for p in self._subfolders(bd))

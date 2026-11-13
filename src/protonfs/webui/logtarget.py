@@ -30,12 +30,18 @@ class LogTarget:
     def open(self) -> TextIO:
         """Open the destination for writing, creating parent directories for files.
 
+        A file that does not exist yet is created with mode ``0600``; an existing file keeps
+        its mode.
+
         :returns: a line-buffered text stream; the caller closes it.
         :raises OSError: when the destination cannot be created or opened.
         """
         if self.kind != "device":
             self.path.parent.mkdir(parents=True, exist_ok=True)
-        return open(self.path, "a", buffering=1, encoding="utf-8")  # noqa: SIM115
+        if self.kind == "device":
+            return open(self.path, "a", buffering=1, encoding="utf-8")  # noqa: SIM115
+        fd = os.open(self.path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        return os.fdopen(fd, "a", buffering=1, encoding="utf-8")
 
 
 def default_log_dir() -> Path:

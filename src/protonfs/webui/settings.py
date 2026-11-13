@@ -59,12 +59,14 @@ class GuiSettings:
 
         :param patch: any of ``refresh``, ``maxdepth``, ``dirs_only``, ``freeze``, ``hide``.
         :returns: the new settings (this object is unchanged).
-        :raises ValueError: on an unknown key or an invalid value.
+        :raises ValueError: on an unknown key, an invalid value or a pattern that does not compile.
         """
         unknown = set(patch) - _EDITABLE
         if unknown:
             raise ValueError(f"cannot change {', '.join(sorted(unknown))}")
         if "refresh" in patch:
+            if not isinstance(patch["refresh"], str):
+                raise ValueError("refresh must be a string such as '5d', '0' or 'never'")
             RefreshPolicy.parse(patch["refresh"])  # raises ValueError
         depth = patch.get("maxdepth", self.maxdepth)
         if type(depth) is not int or not DEPTH_RANGE[0] <= depth <= DEPTH_RANGE[1]:
@@ -76,7 +78,12 @@ class GuiSettings:
             if not isinstance(value, list) or not all(isinstance(p, str) for p in value):
                 raise ValueError(f"{key} must be a list of pattern strings")
         copied = {k: (list(v) if isinstance(v, list) else v) for k, v in patch.items()}
-        return replace(self, **copied)
+        new = replace(self, **copied)
+        try:
+            new.rules()
+        except Exception as exc:  # noqa: BLE001 - any pattern-compiler failure
+            raise ValueError(f"invalid freeze/hide pattern: {exc}") from exc
+        return new
 
     def policy(self) -> RefreshPolicy:
         """Return the :class:`~protonfs.usage.policy.RefreshPolicy` for :attr:`refresh`."""

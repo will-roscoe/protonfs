@@ -11,9 +11,12 @@ onto :class:`~protonfs.webui.api.Api`; :func:`run_gui` builds everything from th
 from __future__ import annotations
 
 import errno
+import html
 import ipaddress
 import json
 import mimetypes
+import os
+import re
 import secrets
 import socket
 import threading
@@ -36,9 +39,14 @@ if TYPE_CHECKING:
     from protonfs.commands.du import DuOptions
     from protonfs.usage.engine import UsageEngine
 
-COOKIE = "pfs_token"
+COOKIE_PREFIX = "pfs_token_"
 HEADER = "X-Protonfs-Token"
+#: Marker in ``static/index.html`` replaced by the access token for an authorised request.
+PLACEHOLDER = "{{PFS_TOKEN}}"
 _MAX_BODY = 1 << 20
+_REQUEST_TIMEOUT = 30.0
+_SSE_WRITE_TIMEOUT = 60.0
+_TOKEN_QUERY = re.compile(r"([?&]t=)[^&\s]*")
 
 
 def parse_port(text: str | None) -> int | None:
@@ -70,6 +78,10 @@ def _is_loopback(host: str) -> bool:
         return False
 
 
+class _LengthRequired(ValueError):
+    pass
+
+
 class _Server(ThreadingHTTPServer):
     daemon_threads = True
 
@@ -85,6 +97,7 @@ class _Server(ThreadingHTTPServer):
 
 class _Handler(BaseHTTPRequestHandler):
     server: _Server
+    timeout = _REQUEST_TIMEOUT
 
     # ----------------------------------------------------------------- plumbing
 
@@ -92,6 +105,7 @@ class _Handler(BaseHTTPRequestHandler):
         self._log(format % args)
 
     def _log(self, text: str) -> None:
+        text = _TOKEN_QUERY.sub(r"\1<redacted>", text)
         stamp = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
         with self.server.log_lock:
             try:
@@ -100,16 +114,22 @@ class _Handler(BaseHTTPRequestHandler):
             except (OSError, ValueError):
                 pass
 
-    def _authorised(self) -> bool:
+    @property
+    def _cookie_name(self) -> str:
+        return f"{COOKIE_PREFIX}{self.server.server_address[1]}"
+
+    def _authorised(self, *, header_only: bool = False) -> bool:
         given = self.headers.get(HEADER)
-        if given is None:
+        if given is None and not header_only:
             for part in (self.headers.get("Cookie") or "").split(";"):
                 name, _, value = part.strip().partition("=")
-                if name == COOKIE:
+                if name == self._cookie_name:
                     given = value
-        return given is not None and secrets.compare_digest(
-            given.encode("utf-8"), self.server.token.encode("utf-8")
-        )
+        return given is not None and _token_ok(given, self.server.token)
+
+    def _origin_ok(self) -> bool:
+        origin = self.headers.get("Origin")
+        return origin is None or origin == f"http://{self.headers.get('Host')}"
 
     def _send(self, status: int, body: bytes, ctype: str, headers: tuple = ()) -> None:
         self.send_response(status)
@@ -117,6 +137,7 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
         for k, v in headers:
             self.send_header(k, v)
         self.end_headers()
@@ -143,7 +164,7 @@ class _Handler(BaseHTTPRequestHandler):
         try:
             if method == "GET" and path == "/":
                 return self._index(query)
-            if not self._authorised():
+            if not self._authorised(header_only=method == "POST") or not self._origin_ok():
                 return self._error(HTTPStatus.FORBIDDEN, "missing or wrong access token")
             if method == "GET" and path.startswith("/static/"):
                 return self._static(path[len("/static/"):])
@@ -153,9 +174,10 @@ class _Handler(BaseHTTPRequestHandler):
             api = self.server.api
             routes = {
                 ("GET", "/api/tree"): lambda: api.tree(
-                    query.get("path", api.settings.target), _int(query.get("depth"), api)
+                    query.get("path", api.settings.target), _int(query.get("depth"), api),
+                    queue=query.get("queue", "1") != "0",
                 ),
-                ("GET", "/api/root"): api.root,
+                ("GET", "/api/root"): lambda: api.root(queue=query.get("queue", "1") != "0"),
                 ("GET", "/api/settings"): api.get_settings,
                 ("POST", "/api/settings"): lambda: api.set_settings(body),
                 ("POST", "/api/refresh"): lambda: api.refresh(body.get("path")),
@@ -168,6 +190,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.OK, handler())
         except (BrokenPipeError, ConnectionResetError):
             return
+        except _LengthRequired as exc:
+            self._error(HTTPStatus.LENGTH_REQUIRED, str(exc))
         except ValueError as exc:
             self._error(HTTPStatus.BAD_REQUEST, str(exc))
         except Exception as exc:  # noqa: BLE001 - report to the client, keep serving
@@ -178,10 +202,15 @@ class _Handler(BaseHTTPRequestHandler):
                 pass
 
     def _read_json(self) -> dict:
+        header = self.headers.get("Content-Length")
+        if header is None:
+            raise _LengthRequired("POST needs a Content-Length")
         try:
-            length = int(self.headers.get("Content-Length") or 0)
+            length = int(header)
         except ValueError:
-            raise ValueError("bad Content-Length") from None
+            length = -1
+        if length < 0:
+            raise ValueError("bad Content-Length")
         if length > _MAX_BODY:
             raise ValueError("request body too large")
         raw = self.rfile.read(length) if length else b""
@@ -196,16 +225,25 @@ class _Handler(BaseHTTPRequestHandler):
     # ------------------------------------------------------------------- routes
 
     def _index(self, query: dict) -> None:
-        headers = []
         supplied = query.get("t")
-        if supplied and secrets.compare_digest(
-            supplied.encode("utf-8"), self.server.token.encode("utf-8")
-        ):
-            headers.append(
-                ("Set-Cookie", f"{COOKIE}={self.server.token}; HttpOnly; SameSite=Strict; Path=/")
+        if supplied and _token_ok(supplied, self.server.token):
+            # move the token out of the address bar and history: cookie, then plain "/"
+            self.send_response(HTTPStatus.SEE_OTHER)
+            self.send_header("Location", "/")
+            self.send_header(
+                "Set-Cookie",
+                f"{self._cookie_name}={self.server.token}; HttpOnly; SameSite=Strict; Path=/",
             )
-        page = (resources.files("protonfs.webui") / "static" / "index.html").read_bytes()
-        self._send(HTTPStatus.OK, page, "text/html; charset=utf-8", tuple(headers))
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        page = (resources.files("protonfs.webui") / "static" / "index.html").read_text("utf-8")
+        # the page needs the token for its POST requests (the cookie is HttpOnly); only a
+        # request that already holds the cookie gets it, and the response is not cached
+        token = html.escape(self.server.token, quote=True) if self._authorised() else ""
+        page = page.replace(PLACEHOLDER, token)
+        self._send(HTTPStatus.OK, page.encode("utf-8"), "text/html; charset=utf-8")
 
     def _static(self, name: str) -> None:
         parts = name.split("/")
@@ -222,27 +260,38 @@ class _Handler(BaseHTTPRequestHandler):
         self._send(HTTPStatus.OK, node.read_bytes(), ctype)
 
     def _events(self) -> None:
-        self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", "text/event-stream")
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("Connection", "close")
-        self.end_headers()
-        gen = self.server.api.events()
+        events = self.server.api.events()  # subscribe before anything is written
         try:
+            self.connection.settimeout(_SSE_WRITE_TIMEOUT)
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("Connection", "close")
+            self.end_headers()
             self.wfile.write(b": open\n\n")
             self.wfile.flush()
-            for ev in gen:
+            for ev in events:
                 if ev["event"] == "keepalive":
                     out = ": keepalive\n\n"
                 else:
                     out = f"event: {ev['event']}\ndata: {json.dumps(ev['data'])}\n\n"
                 self.wfile.write(out.encode("utf-8"))
                 self.wfile.flush()
-        except (BrokenPipeError, ConnectionResetError):
-            pass
+        except (OSError, ValueError, TypeError) as exc:
+            if not isinstance(exc, (BrokenPipeError, ConnectionResetError)):
+                self._log(f"event stream ended: {exc!r}")
         finally:
-            gen.close()
+            events.close()
             self.close_connection = True
+
+
+def _can_open_browser(stdout: TextIO) -> bool:
+    return stdout.isatty() and bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+
+
+def _token_ok(given: str, token: str) -> bool:
+    return secrets.compare_digest(given.encode("utf-8"), token.encode("utf-8"))
 
 
 def _int(text: str | None, api: Api) -> int:
@@ -280,25 +329,34 @@ def serve(
     :param listen: address to bind; a non-loopback address prints a warning on ``stderr``.
     :param port: port to bind, or ``None`` for one chosen by the OS.
     :param log: where the request log goes.
-    :param open_browser: open the URL in a browser, only when ``listen`` is loopback and
-        ``stdout`` is a terminal.
+    :param open_browser: open the URL in a browser (on a background thread), only when
+        ``listen`` is loopback, ``stdout`` is a terminal and ``DISPLAY`` or
+        ``WAYLAND_DISPLAY`` is set.
     :param stdout: receives the URL.
     :param stderr: receives warnings.
     :param ready: set once the server is listening and the URL is printed.
     :param stop: when set, the server shuts down and ``serve`` returns.
     :param plan_size: plan size in bytes for percentage columns, or ``None``.
-    :raises click.ClickException: if an explicit ``port`` is in use or the address cannot be
-        bound.
+    :raises click.ClickException: if the log cannot be opened, an explicit ``port`` is in
+        use or the address cannot be bound.
 
     .. versionadded:: 3.4.0
     """
-    engine.check_account(settings.policy())
+    try:
+        stream = log.open()
+    except OSError as exc:
+        raise click.ClickException(f"cannot open log {log.path}: {exc}") from exc
+    listen = listen.strip("[]")  # accept a bracketed IPv6 address
     token = secrets.token_urlsafe(24)
     holder: dict = {}
+    httpd = None
+    try:
+        engine.check_account(settings.policy())
+    except BaseException:
+        stream.close()
+        raise
     jobs = JobQueue(engine, lambda: holder["api"].settings)
     holder["api"] = api = Api(engine, jobs, settings, plan_size=plan_size)
-    stream = log.open()
-    httpd = None
     try:
         try:
             httpd = _Server(
@@ -309,7 +367,7 @@ def serve(
                 raise click.ClickException(f"port {port} is in use") from exc
             raise click.ClickException(f"cannot listen on {listen}:{port or 0}: {exc}") from exc
         bound = httpd.server_address[1]
-        host = f"[{listen}]" if ":" in listen else listen
+        host = f"[{listen.replace('%', '%25')}]" if ":" in listen else listen
         url = f"http://{host}:{bound}/?t={token}"
         loopback = _is_loopback(listen)
         if not loopback:
@@ -321,8 +379,8 @@ def serve(
         stream.write(f"serving on {host}:{bound}\n")
         stdout.write(url + "\n")
         stdout.flush()
-        if open_browser and loopback and stdout.isatty():
-            webbrowser.open(url)
+        if open_browser and loopback and _can_open_browser(stdout):
+            threading.Thread(target=webbrowser.open, args=(url,), daemon=True).start()
         if stop is not None:
             threading.Thread(
                 target=lambda: (stop.wait(), httpd.shutdown()), daemon=True
@@ -338,7 +396,12 @@ def serve(
 
 
 def run_gui(
-    target_remote: str, options: DuOptions, *, stdout: TextIO, stderr: TextIO
+    target_remote: str,
+    options: DuOptions,
+    *,
+    stdout: TextIO,
+    stderr: TextIO,
+    stop: threading.Event | None = None,
 ) -> int:
     """Run ``du --gui`` for ``target_remote`` with the parsed ``options``.
 
@@ -350,6 +413,7 @@ def run_gui(
     :param options: the parsed ``du`` options (``listen``, ``port`` and ``log`` are used).
     :param stdout: receives the URL.
     :param stderr: receives warnings.
+    :param stop: when set, the server shuts down and this returns ``0``.
     :returns: the exit code: ``0`` after ``KeyboardInterrupt`` or a clean stop.
     :raises click.BadParameter: for an invalid ``--port``.
     :raises click.ClickException: if the port is in use or the address cannot be bound.
@@ -375,7 +439,7 @@ def run_gui(
         serve(
             default_engine(), settings, listen=options.listen or "127.0.0.1", port=port,
             log=log, open_browser=True, stdout=stdout, stderr=stderr,
-            plan_size=options.plan_size,
+            plan_size=options.plan_size, stop=stop,
         )
     except KeyboardInterrupt:
         return 0

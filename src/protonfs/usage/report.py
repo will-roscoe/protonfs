@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from .model import Breakdown, Entry, GapKind, NodeState
+from .paths import is_within, relative
 
 if TYPE_CHECKING:
     from rich.console import Console
@@ -163,6 +164,7 @@ def collect_rows(
     maxdepth: int | None = 1,
     plan_size: int | None = None,
     now: float,
+    base: str | None = None,
 ) -> list[DuRow]:
     """Return every row down to ``maxdepth``, target first, in pre-order.
 
@@ -176,24 +178,30 @@ def collect_rows(
     :param maxdepth: deepest level shown; ``None`` for no limit.
     :param plan_size: plan size in bytes for the ``pct_plan`` column, or ``None``.
     :param now: Unix time used for ages.
+    :param base: escaped Drive path ``rules`` are matched relative to; defaults to ``target``.
+        Must contain ``target``.
     :returns: the rows.
+    :raises ValueError: if ``target`` is not within ``base``.
 
     .. versionadded:: 3.4.0
     """
     limit = _UNBOUNDED if maxdepth is None else maxdepth
-    col = _Collector(engine, policy, rules, target, limit, plan_size, now)
+    base = target if base is None else base
+    if not is_within(target, base):
+        raise ValueError(f"{target!r} is not within the rules base {base!r}")
+    col = _Collector(engine, policy, rules, base, limit, plan_size, now)
     if limit == 0 and target != "/":
         entry = engine.figure(target, policy)
         col.used = None
         col.row(0, entry, None)
         col.rows[0] = _with_used(col.rows[0], engine.used_total())
         return col.rows
-    bd = engine.breakdown(target, policy, rules, target)
+    bd = engine.breakdown(target, policy, rules, base)
     col.used = engine.used_total()
     entry = Entry(
         "/" if target == "/" else target.rsplit("/", 1)[-1], target,
         "folder", None, bd.size, bd.descendants, bd.at, bd.state,
-        rules.match("", True), None, True, bd.error,
+        rules.match(relative(target, base), True), None, True, bd.error,
     )
     col.row(0, entry, None, bd=bd, at=bd.oldest_at if bd.oldest_at is not None else bd.at)
     col.children(0, bd)
