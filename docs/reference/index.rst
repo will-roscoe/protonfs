@@ -210,6 +210,17 @@ contract (see :doc:`../stability`).
 
    .. versionadded:: 1.0.0
 
+.. envvar:: PROTONFS_TRASH_LIST_TIMEOUT
+
+   Timeout in seconds for listing the whole ``/trash`` (default ``900``), used by
+   ``restore``, ``trash list``, ``rm --force``, ``ls --trash`` and the trash pass of
+   ``du /``. On expiry the command fails with an error saying the trash is too large to
+   list; nothing is changed. ``du`` instead shows its trash total as partial, with that
+   reason, and lists the trash again before that figure is stale only when this value
+   has been raised since (or under ``--refresh 0``).
+
+   .. versionadded:: 3.4.0
+
 .. envvar:: PROTONFS_LIST_RETRIES
 
    Max retries for a Drive listing call (default ``4``).
@@ -343,6 +354,28 @@ contract (see :doc:`../stability`).
 
    .. versionadded:: 1.9.0
 
+.. envvar:: PROTONFS_DU_REFRESH
+
+   Override for :confval:`du.refresh`: the age past which ``protonfs du`` re-checks a
+   cached figure (a duration such as ``5d`` or ``2h45m``, ``0`` for fresh values only, or
+   ``never`` for cache only).
+
+   .. versionadded:: 3.4.0
+
+.. envvar:: PROTONFS_PLAN_SIZE
+
+   Override for :confval:`du.plan_size`.
+
+   .. versionadded:: 3.4.0
+
+.. envvar:: PROTONFS_DU_CACHE
+
+   Path of the ``protonfs du`` cache database. Default:
+   ``$XDG_CACHE_HOME/protonfs/du.sqlite`` (``~/.cache/protonfs/du.sqlite``). It is
+   separate from proton-drive's own cache (:envvar:`PROTONFS_DRIVE_CACHE_HOME`).
+
+   .. versionadded:: 3.4.0
+
 Configuration file and keys
 -----------------------------
 
@@ -469,6 +502,28 @@ Configuration file and keys
    :ref:`push --deletions <push-deletions>` for the guards.
 
    .. versionadded:: 3.0.0
+
+.. confval:: du.refresh
+   :type: str
+   :default: 5d
+
+   How old a cached ``protonfs du`` figure may be before it is re-checked: a duration
+   (``5d``, ``2h45m``, ``1w``, ``1mo``, ``1y``), ``0`` for fresh values only, or ``never``
+   for cache only. Global config only (``protonfs config set --global du.refresh 2d``),
+   overridden by :envvar:`PROTONFS_DU_REFRESH` and per run by ``du --refresh``.
+
+   .. versionadded:: 3.4.0
+
+.. confval:: du.plan_size
+   :type: str
+   :default: unset
+
+   Your Proton plan's **shared** storage total (Mail, Drive and the rest draw on it), for
+   ``protonfs du``'s ``%Plan`` column, e.g. ``3TB`` or ``500GB`` (decimal) or ``2TiB``
+   (binary). Proton's CLI cannot report it, so it has to be set by hand. Global config
+   only, overridden by :envvar:`PROTONFS_PLAN_SIZE`.
+
+   .. versionadded:: 3.4.0
 
 .. _reference-subcommands:
 
@@ -638,6 +693,40 @@ Examples::
     protonfs ls sim/ --dirs --format json    # scriptable per-dir sizes/counts
     protonfs ls --visual treemap             # squarified storage treemap
     protonfs ls sim/ --visual waffle         # proportional waffle chart of sim/
+
+.. _cmd-du:
+
+du
+--
+.. click:: protonfs.cli:du
+   :prog: protonfs du
+
+Shows how much Proton Drive space remote paths take, from the whole account (``/``)
+down to one folder, including what is in the trash. Read-only: it issues only
+``filesystem list``, ``filesystem size``, ``filesystem list /trash`` and
+``filesystem info /my-files``.
+
+.. versionadded:: 3.4.0
+
+Unlike ``ls --dirs``, which sums the index of one store, ``du`` measures Drive itself,
+so it covers every store, device and anything uploaded outside protonfs. Figures come
+from a per-machine cache (:envvar:`PROTONFS_DU_CACHE`) and carry their age; a figure
+older than ``--refresh`` (default :confval:`du.refresh`, ``5d``) is re-checked when it
+is used. ``--refresh 0`` fetches everything shown, ``--refresh never`` makes no Drive
+calls. ``%Plan`` needs :confval:`du.plan_size`.
+
+Exit code: ``0`` complete, ``1`` a target could not be measured, ``2`` usage error,
+``3`` complete output with some figures missing or a partial trash total. See
+:doc:`../getting-started/storage` for what the columns and remainder rows mean, and
+:doc:`../stability` for the JSON contract.
+
+Examples::
+
+    protonfs du /                            # each section, plus the trash total
+    protonfs du /my-files/sph-dev -d 2       # two levels, biggest first
+    protonfs du ~/sph-dev/sim/mload005       # a local path inside a store
+    protonfs du / -x devices --refresh never # cache only, devices frozen
+    protonfs du /my-files --json | jq '.rows[] | select(.depth == 1)'
 
 .. _cmd-push:
 
@@ -1437,12 +1526,23 @@ trash list
 .. click:: protonfs.cli:trash_list_cmd
    :prog: protonfs trash list
 
-Lists every item currently in ``/trash``: its name, its original parent (resolved
-on a best-effort basis — shown as ``?`` when proton-drive can't resolve it), and
+Lists every item currently in ``/trash``: its name, its original parent path, and
 how many *other* trashed items share the same name. A nonzero duplicate count is
 exactly the ambiguity ``restore`` can refuse to resolve on its own (#56): proton-
 drive resolves ``/trash`` paths by name, first match wins, so same-named entries
 can silently block a restore or shadow one another.
+
+proton-drive cannot look a folder up by its UID alone, so the original parent is found
+by searching the :confval:`remote_root` subtree (at most 200 folder listings or two
+minutes). A parent that could not be placed is marked rather than guessed:
+``(not under <remote_root>)`` when the whole subtree was searched without finding it (it is elsewhere, or was
+permanently deleted),
+``(not found within search limit)`` when the search was cut short,
+``(trashed folder <name>)`` when the parent is itself in the trash, and ``(unknown)``
+when the entry names no parent.
+
+.. versionchanged:: 3.4.0
+   The original parent is shown as a path; it was ``?`` for every item (#231).
 
 Examples::
 

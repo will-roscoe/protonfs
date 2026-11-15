@@ -339,7 +339,10 @@ def run_doctor(fix: bool = False, root: Path | None = None) -> list[Check]:
     .. seealso:: :func:`render` to print these, :func:`doctor` for the full command.
     """
     checks: list[Check] = []
-    root = root or Path.cwd()
+    if root is None:
+        from protonfs.storeroot import find_store_root
+
+        root = find_store_root(Path.cwd()) or Path.cwd()
 
     drive = DriveClient()
     installed = drive.binary_available()

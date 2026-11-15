@@ -14,6 +14,10 @@ import contextlib
 import logging
 import sys
 import time
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 # Seconds between rendered progress updates, by verbosity level (0 = every update).
 THROTTLE = {0: 0.0, 1: 30.0, 2: 5.0, 3: 1.0, 4: 0.0}
@@ -50,12 +54,34 @@ class Reporter:
         # never be able to suppress it.
         self._last_progress: float | None = None
         self._progress_open = False  # an inline progress line awaits a newline
+        self._progress_width = 0  # length of the open inline line, to blank it on rewrite
+        #: Maps a store-relative path to how the user would type it from the current
+        #: directory; installed by :func:`~protonfs.context.load_context`. The event log
+        #: always records the store-relative path.
+        self.path_view: Callable[[str], str] | None = None
+
+    def show(self, path: str) -> str:
+        """``path`` (store-relative) as printed on the stream: as typed from the current
+        directory once a store is loaded, else unchanged.
+
+        .. versionadded:: 3.4.0
+        """
+        return self.path_view(path) if self.path_view is not None else path
+
+    @property
+    def inline(self) -> bool:
+        """Whether progress rewrites one line (inline style on a TTY).
+
+        .. versionadded:: 3.4.0
+        """
+        return self._inline
 
     def _close_progress(self) -> None:
         """End an open inline progress line so the next output starts cleanly."""
         if self._progress_open:
             self._stream.write("\n")
             self._progress_open = False
+            self._progress_width = 0
 
     def _emit(self, text: str) -> None:
         """Write a normal (non-progress) line, closing any open progress line first."""
@@ -67,6 +93,8 @@ class Reporter:
         """Announce a new phase (e.g. ``"downloading"``). Rendered at level >= 1."""
         _events_logger.info("%s %s", name, _fields(fields))
         if self.level >= 1:
+            if "subpath" in fields:
+                fields = {**fields, "subpath": self.show(fields["subpath"])}
             suffix = f" {_fields(fields)}" if fields else ""
             self._emit(f"{name}{suffix}")
 
@@ -97,16 +125,67 @@ class Reporter:
             self._stream.write(line + "\n")
             self._stream.flush()
 
-    def item(self, action: str, path: str) -> None:
-        """Report a single transferred/affected item. Rendered at level >= 2."""
-        _events_logger.debug("%s %s", action, path)
-        if self.level >= 2:
-            self._emit(f"  {action} {path}")
+    def running(self, name: str, **fields) -> None:
+        """Report progress with no known total, e.g. ``du calls=12 last=size /x``.
 
-    def warn(self, msg: str) -> None:
-        """Surface a warning at every level (always shown)."""
+        Rendered at level >= 1 like :meth:`progress`: in inline style it rewrites the one
+        progress line (padding over a longer previous text), otherwise it writes a new
+        line each time. Not throttled; the caller decides how often to call it.
+
+        :param name: the leading word.
+        :param fields: ``key=value`` fields after it.
+
+        .. versionadded:: 3.4.0
+        """
+        _events_logger.debug("%s %s", name, _fields(fields))
+        if self.level < 1:
+            return
+        line = f"{name} {_fields(fields)}" if fields else name
+        if self._inline:
+            pad = max(0, self._progress_width - len(line)) if self._progress_open else 0
+            self._stream.write("\r" + line + " " * pad)
+            self._progress_open = True
+            self._progress_width = len(line) + pad
+        else:
+            self._stream.write(line + "\n")
+        self._stream.flush()
+
+    def end_progress(self) -> None:
+        """End an open inline progress line, so other output to the stream starts afresh.
+
+        Does nothing when no inline progress line is open.
+
+        .. versionadded:: 3.4.0
+        """
+        self._close_progress()
+        self._stream.flush()
+
+    def item(self, action: str, path: str, *, to: str | None = None) -> None:
+        """Report a single transferred/affected item. Rendered at level >= 2.
+
+        :param path: the store-relative path; shown as typed from the current directory.
+        :param to: a second store-relative path (a move's destination), shown after ``->``.
+
+        .. versionchanged:: 3.4.0
+           Added ``to``; paths are shown relative to the current directory (#232).
+        """
+        _events_logger.debug("%s %s", action, path if to is None else f"{path} -> {to}")
+        if self.level >= 2:
+            tail = "" if to is None else f" -> {self.show(to)}"
+            self._emit(f"  {action} {self.show(path)}{tail}")
+
+    def warn(self, msg: str, *, shown: str | None = None) -> None:
+        """Surface a warning at every level (always shown).
+
+        :param msg: the message, with store-relative paths; this is what the event log records.
+        :param shown: the same message with paths as typed from the current directory, for
+            the stream; defaults to ``msg``.
+
+        .. versionchanged:: 3.4.0
+           Added ``shown`` (#232).
+        """
         _events_logger.warning("%s", msg)
-        self._emit(f"! {msg}")
+        self._emit(f"! {msg if shown is None else shown}")
 
     def done(self, msg: str, **fields) -> None:
         """Announce phase/command completion. Rendered at level >= 1."""

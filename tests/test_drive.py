@@ -15,6 +15,8 @@ from protonfs.drive import (
     DriveError,
     DriveThrottleError,
     DriveTransferTimeoutError,
+    DriveTrashListTimeoutError,
+    SizeResult,
     TransferResult,
 )
 from protonfs.drive import proton_clock_offset as REAL_CLOCK_OFFSET
@@ -1712,3 +1714,192 @@ def test_correction_also_covers_listings_before_any_upload(
     )
     client.list("/my-files/test")
     assert envs[0]["PROTONFS_CLOCK_SKEW_MS"] == "-124000"
+
+
+# --- filesystem size (protonfs du, 3.4.0) ----------------------------------------------
+
+
+def test_size_parses_result(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _client(monkeypatch)
+    run = _stub_run_seq([('{"size": 41009480, "numberOfDescendants": 7}', 0)])
+    monkeypatch.setattr(subprocess, "run", run)
+
+    assert client.size("/my-files/x") == SizeResult(41009480, 7)
+    assert run.calls[0][1:4] == ["filesystem", "size", "/my-files/x"]
+
+
+@pytest.mark.parametrize(
+    "stdout",
+    [
+        '{"size": "x", "numberOfDescendants": 1}',
+        '{"size": 1}',
+        "[]",
+        '{"size": true, "numberOfDescendants": 0}',
+    ],
+)
+def test_size_rejects_malformed(monkeypatch: pytest.MonkeyPatch, stdout: str) -> None:
+    client = _client(monkeypatch)
+    monkeypatch.setattr(subprocess, "run", _stub_run(stdout))
+
+    with pytest.raises(DriveError, match="unexpected filesystem size output"):
+        client.size("/my-files/x")
+
+
+def test_size_retries_throttle(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _client(monkeypatch)
+    run = _stub_run_seq(
+        [("429 Too Many Requests", 1), ('{"size": 5, "numberOfDescendants": 1}', 0)]
+    )
+    monkeypatch.setattr(subprocess, "run", run)
+    slept: list[float] = []
+
+    assert client.size("/my-files/x", sleep=slept.append) == SizeResult(5, 1)
+    assert len(run.calls) == 2
+    assert len(slept) == 1
+
+
+def test_size_does_not_retry_a_missing_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _client(monkeypatch)
+    run = _stub_run_seq([("Node not found: x", 1)])
+    monkeypatch.setattr(subprocess, "run", run)
+
+    with pytest.raises(DriveError, match="Node not found"):
+        client.size("/my-files/x", sleep=lambda _: None)
+    assert len(run.calls) == 1
+
+
+def test_list_trash_is_bounded_and_timeout_error_is_truthful(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # #193: every /trash listing carries a timeout (it used to be None -> hang forever),
+    # and expiry names what timed out, that nothing changed, and what to try.
+    client = _client(monkeypatch)
+    seen: list[float | None] = []
+
+    def hang(path, timeout=None):
+        seen.append(timeout)
+        raise subprocess.TimeoutExpired(cmd="proton-drive", timeout=timeout)
+
+    monkeypatch.setattr(client, "list", hang)
+    with pytest.raises(DriveTrashListTimeoutError) as info:
+        client.list_trash(timeout=7)
+
+    assert seen == [7]
+    message = str(info.value)
+    assert "/trash" in message and "7s" in message
+    assert "changed nothing" in message
+    assert "PROTONFS_TRASH_LIST_TIMEOUT" in message
+
+
+def test_list_trash_default_timeout_is_finite(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _client(monkeypatch)
+    seen: list[float | None] = []
+    monkeypatch.setattr(client, "list", lambda path, timeout=None: seen.append(timeout) or [])
+
+    assert client.list_trash() == []
+    assert seen == [drive_mod.TRASH_LIST_TIMEOUT_SECONDS] and seen[0] > 0
+
+
+def test_restore_trash_listing_timeout_does_not_restore(monkeypatch: pytest.MonkeyPatch) -> None:
+    # #193: restore lists /trash first; a timeout must stop before any restore call.
+    client = _client(monkeypatch)
+    calls: list[list[str]] = []
+
+    def run(cmd, **kw):
+        calls.append(list(cmd[1:4]))
+        if cmd[1:4] == ["filesystem", "list", "/trash"]:
+            raise subprocess.TimeoutExpired(cmd="proton-drive", timeout=kw.get("timeout"))
+        return subprocess.CompletedProcess(cmd, 1, 'Path "x" is not supported', "")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    with pytest.raises(DriveTrashListTimeoutError):
+        client.restore(["/my-files/test/a.bin"])
+
+    assert ["filesystem", "restore", "/trash/a.bin"] not in calls
+
+
+def _dir(name: str | None, uid: str) -> dict:
+    entry = {"uid": uid, "type": "folder"}
+    entry["name"] = {"ok": True, "value": name} if name else {"ok": False, "value": None}
+    return entry
+
+
+def test_find_folder_paths_resolves_nested_uid_by_uid_path_segments(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # #231: a bare UID is rejected as a whole path but works as a segment under its
+    # parent, so the walk lists children via UID segments and reports name paths.
+    client = _client(monkeypatch)
+    tree = {
+        "/r": [_dir("run1", "u1"), _dir("a/b", "u2"), {"uid": "f", "type": "file"}],
+        "/r/u1": [_dir("deep", "u3")],
+        "/r/u2": [],
+        "/r/u1/u3": [],
+    }
+    listed: list[str] = []
+
+    def fake_list(path, timeout=None):
+        listed.append(path)
+        return tree[path]
+
+    monkeypatch.setattr(client, "list", fake_list)
+
+    found, complete = client.find_folder_paths("/r/", {"u3", "u2", "nope"})
+
+    assert found == {"u3": "/r/run1/deep", "u2": "/r/a\\/b"}
+    assert complete is True  # whole subtree searched, so "nope" is outside it
+    assert listed == ["/r", "/r/u1", "/r/u2", "/r/u1/u3"]
+
+
+def test_find_folder_paths_stops_when_all_found_and_reports_incomplete_on_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _client(monkeypatch)
+    tree = {"/r": [_dir("a", "ua"), _dir("b", "ub")], "/r/ua": [], "/r/ub": []}
+    monkeypatch.setattr(client, "list", lambda path, timeout=None: tree[path])
+
+    found, complete = client.find_folder_paths("/r", {"ua"})
+    assert found == {"ua": "/r/a"} and complete is True
+
+    found, complete = client.find_folder_paths("/r", {"zz"}, max_lists=2)
+    assert found == {} and complete is False
+
+
+def test_find_folder_paths_marks_failed_listing_incomplete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _client(monkeypatch)
+
+    def fake_list(path, timeout=None):
+        if path == "/r":
+            return [_dir("a", "ua")]
+        raise subprocess.TimeoutExpired(cmd="proton-drive", timeout=timeout)
+
+    monkeypatch.setattr(client, "list", fake_list)
+
+    found, complete = client.find_folder_paths("/r", {"zz"})
+
+    assert found == {} and complete is False
+
+
+def test_find_folder_paths_caps_each_listing_at_the_remaining_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _client(monkeypatch)
+    now = {"t": 0.0}
+    seen: list[float] = []
+
+    def fake_list(path, timeout=None):
+        seen.append(timeout)
+        now["t"] += 8  # each listing eats 8 s of the 10 s budget
+        return [_dir("a", "ua")] if path == "/r" else [_dir("b", "ub")]
+
+    monkeypatch.setattr(client, "list", fake_list)
+
+    found, complete = client.find_folder_paths(
+        "/r", {"zz"}, time_budget=10, timeout=45, clock=lambda: now["t"]
+    )
+
+    # First listing gets min(45, 10); the second only the 2 s left; a third is not started.
+    assert seen == [10, 2]
+    assert found == {} and complete is False

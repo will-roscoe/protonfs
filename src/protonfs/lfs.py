@@ -36,6 +36,28 @@ def is_lfs_tracked(repo_root: Path) -> bool:
     return result.returncode == 0 and bool(result.stdout.strip())
 
 
+def lfs_tracked_paths(repo_root: Path) -> list[str]:
+    """Return the repo-relative paths git-LFS tracks (``git lfs ls-files -n``).
+
+    :param repo_root: the git repo root to inspect.
+    :returns: the tracked paths, in git's order; empty when LFS tracks no files.
+    :raises RuntimeError: when ``git lfs ls-files`` fails, so a caller never mistakes
+        "could not list" for "nothing tracked".
+
+    .. versionadded:: 3.4.0
+    """
+    result = subprocess.run(
+        ["git", "-C", str(repo_root), "lfs", "ls-files", "-n"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"`git lfs ls-files` failed: {(result.stderr or '').strip() or result.returncode}"
+        )
+    return [line for line in result.stdout.splitlines() if line]
+
+
 def is_pointer_stub(path: Path) -> bool:
     """Return whether ``path`` is an un-materialised git-LFS pointer file.
 

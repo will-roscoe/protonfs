@@ -16,6 +16,7 @@ from pathlib import Path
 
 import click
 
+from protonfs.commands.gitmove import verify_exported
 from protonfs.commands.push import KNOWN_TOP_LEVEL_AREAS, ensure_remote_root
 from protonfs.commands.push import push as push_files
 from protonfs.config import (
@@ -32,7 +33,7 @@ from protonfs.context import RepoContext
 from protonfs.drive import DriveClient
 from protonfs.ignore import init_ignore, init_include
 from protonfs.index import IndexStore
-from protonfs.lfs import find_pointer_stubs, is_lfs_tracked
+from protonfs.lfs import find_pointer_stubs, is_lfs_tracked, lfs_tracked_paths
 from protonfs.secretservice import SecretServiceError, ensure_secret_service
 
 
@@ -336,10 +337,42 @@ def _append_gitignore(root: Path, patterns: list[str]) -> None:
         fh.write("\n".join(lines_to_add) + "\n")
 
 
+def _verify_lfs_on_drive(ctx: RepoContext) -> None:
+    """Abort unless every LFS-tracked file is confirmed on Drive with the same bytes.
+
+    Uses :func:`~protonfs.commands.gitmove.verify_exported`: a fresh read of the file must
+    match its index entry, and the index must match a fresh listing of Drive.
+
+    :param ctx: the loaded repo context.
+    :raises click.ClickException: when any path is unverified (the message gives the
+        count, the first few paths and how to retry) or the LFS file list is unavailable.
+        Git tracking is untouched either way.
+
+    .. versionadded:: 3.4.0
+    """
+    try:
+        paths = lfs_tracked_paths(ctx.root)
+    except RuntimeError as exc:
+        raise click.ClickException(
+            f"{exc}; cannot confirm which files to verify, so nothing was untracked."
+        ) from exc
+    failures = verify_exported(ctx, paths) if paths else []
+    if not failures:
+        return
+    shown = "\n".join(f"  {f['name']}: {f['error']}" for f in failures[:10])
+    more = f"\n  ... and {len(failures) - 10} more" if len(failures) > 10 else ""
+    raise click.ClickException(
+        f"{len(failures)} of {len(paths)} LFS-tracked file(s) could not be verified on "
+        f"Drive:\n{shown}{more}\nNothing was untracked: they all stay tracked by git-LFS. "
+        "Fix the cause (or `protonfs push` them) and re-run `protonfs setup --migrate-lfs`."
+    )
+
+
 def migrate_lfs(ctx: RepoContext, dry_run: bool = False) -> bool:
     """Migrate a repo's git-LFS-tracked files to Proton Drive, then untrack them in git.
 
     Materialises LFS content (``git lfs pull``), uploads it to Drive via ``push``, and
+    after verifying every LFS-tracked file on Drive (:func:`_verify_lfs_on_drive`) and
     only then — after confirmation — removes the ``filter=lfs`` rules, gitignores the
     paths, ``git rm --cached`` them, and makes a single migration commit. Uploads
     happen before any git tracking is touched, so a failed upload aborts with the repo
@@ -349,7 +382,8 @@ def migrate_lfs(ctx: RepoContext, dry_run: bool = False) -> bool:
     :param dry_run: when true, print the plan and change nothing.
     :returns: ``True`` if a migration ran (or would, under dry-run); ``False`` when the
         repo has no LFS tracking.
-    :raises click.ClickException: on a failed upload or a failed git step (the message
+    :raises click.ClickException: on a failed upload, any LFS file unverified on Drive
+        (nothing is untracked), or a failed git step (the message
         states whether uploads had already succeeded).
 
     .. warning:: This rewrites ``.gitattributes`` and commits across the WHOLE
@@ -382,8 +416,11 @@ def migrate_lfs(ctx: RepoContext, dry_run: bool = False) -> bool:
             "touching git tracking. Re-run `protonfs setup` once uploads succeed."
         )
 
+    _verify_lfs_on_drive(ctx)
+
     click.confirm(
-        f"Uploaded {result.transferred_items} file(s) to Drive. This will now remove LFS "
+        f"Uploaded {result.transferred_items} file(s) to Drive and verified every "
+        "LFS-tracked file there. This will now remove LFS "
         "filter rules from .gitattributes, gitignore the same paths, `git rm --cached` them, "
         "and create one commit. Continue?",
         abort=True,

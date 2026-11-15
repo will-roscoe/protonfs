@@ -933,7 +933,7 @@ def _apply_moves(
                 ctx.index.remove(old)
                 verified[new] = manifest.entry_for_index(moved_entry, ident.revision, synced_at)
                 forgotten.append(old)
-                reporter.item("move", f"{old} -> {new}")
+                reporter.item("move", old, to=new)
                 moved += 1
                 continue
             if needs_move and old_name != new_name and old_name in after:

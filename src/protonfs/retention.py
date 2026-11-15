@@ -22,8 +22,13 @@ from pathlib import PurePosixPath
 DEFAULT_MIN_AGE = "1d"
 DEFAULT_KEEP = 10
 
-_UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400}
-_DURATION_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*([smhd])\s*$")
+_UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800, "mo": 2592000, "y": 31536000}
+_NUM = r"(?:(\d+(?:\.\d+)?)\s*{}\s*)?"
+# Units in strictly descending order, each at most once: ``2h45m`` but not ``30m2h``.
+_DURATION_RE = re.compile(
+    "^\\s*" + "".join(_NUM.format(u) for u in ("y", "mo", "w", "d", "h", "m", "s")) + "$"
+)
+_DURATION_ORDER = ("y", "mo", "w", "d", "h", "m", "s")
 
 
 class RetentionError(ValueError):
@@ -31,22 +36,33 @@ class RetentionError(ValueError):
 
 
 def parse_duration(text: str) -> float:
-    """Seconds in a duration such as ``90s``, ``30m``, ``12h``, ``1d`` or ``1.5d``.
+    """Seconds in a duration such as ``90s``, ``12h``, ``1.5d`` or ``2h45m``.
 
+    Units are ``s m h d w mo y`` (``mo`` is 30 days, ``y`` is 365 days). Several
+    ``<number><unit>`` parts may be joined, largest unit first, each unit at most once.
     ``0`` (no settle window) is the only unitless value accepted: a bare number is
     ambiguous, and guessing the wrong unit here decides what gets deleted.
 
+    .. versionchanged:: 3.4.0
+       Compound values and the ``w``, ``mo`` and ``y`` units.
+
+    :param text: the duration text.
+    :returns: the duration in seconds.
     :raises RetentionError: on anything else.
     """
     if text.strip() == "0":
         return 0.0
     match = _DURATION_RE.match(text)
-    if not match:
+    if not match or not text.strip():
         raise RetentionError(
-            f"invalid duration {text!r}: use a number with a unit s|m|h|d (e.g. 12h, 1d), "
-            "or 0 for no settle window"
+            f"invalid duration {text!r}: use a number with a unit s|m|h|d|w|mo|y "
+            "(e.g. 12h, 1d, 2h45m), or 0 for no settle window"
         )
-    return float(match.group(1)) * _UNITS[match.group(2)]
+    return sum(
+        float(num) * _UNITS[unit]
+        for unit, num in zip(_DURATION_ORDER, match.groups())
+        if num is not None
+    )
 
 
 def format_age(seconds: float) -> str:

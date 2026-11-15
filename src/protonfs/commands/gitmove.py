@@ -20,6 +20,7 @@ changed for every path or for none.
 from __future__ import annotations
 
 import posixpath
+import shlex
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -272,7 +273,8 @@ def verify_exported(ctx: RepoContext, paths: list[str], reporter=None) -> list[d
     return _verify_synced(
         ctx, paths, reporter, blobs=None,
         changed=lambda rel: (
-            f"changed since it was last pushed; run `protonfs push {rel}` first, so the "
+            "changed since it was last pushed; run `protonfs push "
+            f"{shlex.quote(ctx.shown(rel))}` first, so the "
             "version git gets is the one Drive holds"
         ),
     )
@@ -309,7 +311,8 @@ def _verify_synced(ctx, paths, reporter, *, blobs, changed) -> list[dict]:
                 failures.append(_fail(
                     rel, "low-io-stale",
                     "changed since its upload but kept its size and mtime, so push (with "
-                    f"low_io) did not see it; run `PROTONFS_LOW_IO=0 protonfs push {rel}`",
+                    "low_io) did not see it; run `PROTONFS_LOW_IO=0 protonfs push "
+                    f"{shlex.quote(ctx.shown(rel))}`",
                 ))
             else:
                 failures.append(_fail(rel, "unverified-local", changed(rel)))
@@ -388,8 +391,6 @@ def _shared_trash_policy(ctx: RepoContext) -> bool:
 
 
 def _commands(paths: list[str]) -> list[str]:
-    import shlex
-
     return [
         "git --literal-pathspecs rm --cached -q -- " + " ".join(shlex.quote(p) for p in paths),
         "git add -- .gitignore",
@@ -751,7 +752,8 @@ def export_to_git(
             result.trashed = trashed.trashed_items
             result.failures = [
                 _fail(f["name"], "trash", "its Drive copy is still there after trashing it; "
-                      f"git has the file, and `protonfs rm {f['name']}` trashes the copy")
+                      "git has the file, and `protonfs rm "
+                      f"{shlex.quote(ctx.shown(f['name']))}` trashes the copy")
                 for f in trashed.failures
             ]
         _forget(ctx, paths)

@@ -90,6 +90,10 @@ Every ``protonfs`` command follows the same top-level convention:
   conflict, a config problem) or a command-specific non-zero outcome documented below.
   A user declining a confirmation prompt (no ``--yes``/``--force``) also exits ``1``.
 
+``du`` adds ``3`` (partial results; see its row under `Command surface`_): the output is
+printed in full, but a row failed to measure, or the trash total of ``du /`` (the ``/``
+row's ``in_trash``) is incomplete.
+
 ``status`` and ``auth status`` layer additional meaning onto exit code ``1``/``2`` for
 unattended callers, documented in the table below.
 
@@ -170,6 +174,30 @@ view:
 The same rules apply: no key is renamed, removed or redefined within 3.x, and new keys
 may appear.
 
+**``du --format json``** (added in 3.4.0) prints one object per target (a list of objects
+when several PATHs are given) with the keys ``target``, ``generated_at`` (Unix time),
+``used_total`` (bytes or ``null``), ``plan_size`` (bytes or ``null``), ``trash`` and
+``rows``. ``trash`` is ``null`` when no trash pass has run, else (whatever the target)
+the stored pass, an object with ``at``,
+``known`` (bytes measured, a lower bound unless ``complete``), ``complete``, ``partial``
+(reason text or ``null``), ``unresolved_folders`` and ``unattributed`` (the groups of
+trashed folders whose size could not be measured, each ``{parent, folders, reason}``).
+Each row has the keys ``depth``,
+``path``, ``name``, ``kind`` (``file``, ``folder``, ``section`` or ``gap``), ``size``,
+``descendants``, ``pct_parent``, ``pct_used``, ``pct_plan`` (percent 0 to 100, or
+``null``), ``in_trash`` (the trash pass, replaced folder by folder by any listing made
+since), ``in_trash_complete``, ``unchecked_bytes``, ``checked_at``
+(Unix time), ``age_seconds``, ``state`` (``listed``, ``sized``, ``excluded``,
+``unmeasured``, ``error``, ``partial`` (``/`` or ``/devices`` total leaves out a
+section or device) or ``gap``), ``exclusion`` (``none``, ``freeze``, ``hide``),
+``gap_kind`` (``none``, ``in_trash``, ``unattributed``, ``unreconciled``), ``error``
+(failure text when ``state`` is ``error``, else ``null``), ``trash_at`` (Unix time of the
+oldest measurement behind ``in_trash``, which can be older than ``checked_at``, or
+``null``) and ``trash_unresolved`` (on the ``/`` row, the trashed folders whose size is
+unknown; ``0`` elsewhere). ``--format
+plain`` prints the row values tab-separated in that order, ``null`` as an empty string.
+A figure is never shown without ``checked_at``/``age_seconds`` unless it is unknown.
+
 Changes since the 1.0 contract
 -------------------------------
 What a caller written against 1.0 needs to know. Only contract changes are listed;
@@ -187,11 +215,12 @@ see the CHANGELOG for everything else.
 **Added:**
 
 * Commands: ``completions`` (1.5.0), ``schedule`` (1.8.0), ``verify`` (2.1.0),
-  ``prune`` (2.2.0), ``import``, ``export`` (3.1.0).
+  ``prune`` (2.2.0), ``import``, ``export`` (3.1.0), ``du`` (3.4.0).
 * Global options: ``-v``/``--verbose``, ``--progress-inline``/``--progress-lines``,
   ``--event-log``/``--no-event-log`` (1.3.0).
 * ``PATH...``: every command that takes a ``PATH`` accepts several, e.g. from a shell
-  glob (1.1.0).
+  glob (1.1.0). Store discovery from a subdirectory and ``PATH`` relative to the current
+  directory (3.4.0); see `Store discovery and PATH arguments`_.
 * ``ls``: ``--dirs``, ``--format``, ``--state`` (1.1.0); ``--visual`` (1.2.0).
 * ``status``: ``--format`` (1.1.0); ``--remote`` (2.0.0).
 * ``push``/``pull``: ``--strict`` (1.11.0). ``push``: ``--min-age`` (2.4.0);
@@ -204,18 +233,71 @@ see the CHANGELOG for everything else.
   the remote-view states.
 * Config keys: ``defaults.event_log``, ``defaults.progress_style`` (1.3.0);
   ``defaults.manifest`` (2.1.0); ``defaults.batch_size``, ``defaults.skip_thumbnails``
-  (2.5.0); ``defaults.deletions`` (3.0.0); ``defaults.clock_skew`` (3.3.0).
+  (2.5.0); ``defaults.deletions`` (3.0.0); ``defaults.clock_skew`` (3.3.0);
+  ``du.refresh``, ``du.plan_size`` (3.4.0, global only).
 * Environment variables: ``PROTONFS_EVENT_LOG``, ``PROTONFS_PROGRESS_STYLE`` (1.3.0);
   ``PROTONFS_MANIFEST``, ``PROTONFS_NO_MANIFEST`` (2.1.0); ``PROTONFS_BATCH_SIZE``,
   ``PROTONFS_SKIP_THUMBNAILS``, ``PROTONFS_TRANSFER_MIN_RATE`` (2.5.0);
   ``PROTONFS_DRIVE_CACHE_HOME`` (2.6.0); ``PROTONFS_CLOCK_SKEW``,
-  ``PROTONFS_CLOCK_AHEAD_LIMIT`` (3.3.0).
+  ``PROTONFS_CLOCK_AHEAD_LIMIT`` (3.3.0); ``PROTONFS_DU_REFRESH``, ``PROTONFS_PLAN_SIZE``,
+  ``PROTONFS_DU_CACHE`` (3.4.0).
 * The `Output contract`_ above (summary keys and ``--format json`` keys) is new in the
   3.x contract; the keys themselves shipped with the options that print them.
 
 **Deprecated:** ``ls --state synced``, until 4.0.0.
 
 **Removed:** nothing.
+
+Store discovery and PATH arguments
+----------------------------------
+*Added in 3.4.0* (#232). A command that works on a store finds it the way git finds a
+repository: the nearest ancestor of the current directory (itself included) that holds
+``.protonfs/config.json``; with nested stores, the innermost one. Run from the store root
+every command behaves as it did before 3.4.0; run from a subdirectory, which failed before
+3.4.0, it now works.
+
+* ``PATH`` arguments are relative to the **current directory** as typed, and are mapped to
+  store-relative paths, as git pathspecs are: ``protonfs push mload005`` in ``sim/`` means
+  what ``protonfs push sim/mload005`` means at the root. ``.`` is the current directory and
+  ``..`` works. An absolute local path is accepted.
+* **No PATH from a subdirectory** acts on that subdirectory only, as ``du`` does:
+  ``protonfs push`` in ``sim/`` is ``protonfs push sim``, and likewise for ``pull``,
+  ``status``, ``ls``, ``refresh``, ``offload``, ``prune``, ``import``, ``export`` and
+  ``schedule --add`` (whose job is stored with that path). Pass ``/`` (or ``..`` up to
+  the root) to cover the whole store. From the store root, no PATH means the whole store,
+  exactly as before. A note on stderr names the directory, and ``nothing to push``,
+  ``nothing to import`` and ``nothing to export`` say ``under '<dir>'``, so a summary is
+  never read as covering the whole store. Commands without a PATH (``verify``, ``trash``,
+  ``doctor``, ``config``, ``upgrade``) are unaffected.
+* A bare ``/`` still means the whole store, from the store root and from any
+  subdirectory (it is not a path outside the store). ``rm`` and ``restore`` refuse the
+  store root itself (``.``, ``..`` up to it, its absolute path or ``/``) with a usage
+  error (exit ``2``), because that would act on the whole remote root. Before 3.4.0,
+  ``rm -r .`` at the store root was accepted: it trashed the whole remote root and left
+  the index unchanged.
+* A ``PATH`` that resolves outside the discovered store is a usage error (exit ``2``)
+  naming it; nothing is run.
+* A quoted glob pattern expands relative to the current directory, with the matching rules
+  it already had (``push`` against the local tree, ``pull`` against the index). A
+  ``*``, ``?`` or ``[`` in the name of the directory you are standing in is taken
+  literally.
+* Human-readable messages print paths as you would type them from the current directory
+  (``../sibling/x`` from a sibling directory). From the store root they are the
+  store-relative paths they always were. That includes the ``ls`` table (including ``--dirs``) and
+  ``-v`` narration; the machine formats (``--format json`` and ``plain``) always carry
+  store-relative paths, wherever they are run. The event log
+  (``.protonfs/events.log``, warnings included) and the remote manifest always record
+  store-relative paths.
+* ``setup`` keeps creating a store in the directory it is run from. ``deinit`` run from a
+  subdirectory is a usage error (exit ``2``) naming the store root to run it from.
+  ``config get``/``config set`` (without ``--global``), ``schedule``, ``doctor`` and
+  ``upgrade`` act on the discovered store; ``schedule --path`` is read relative to the
+  current directory and stored relative to the store, because a job runs from the root.
+* ``du`` already resolved its targets this way (3.4.0) and is unchanged.
+* The per-store files (``.protonfs/``, the index, the lock, the event log) always belong
+  to the discovered store, never to the subdirectory. With no store above the current
+  directory the error is ``protonfs is not set up in this directory or any parent
+  directory``.
 
 Global options (before the subcommand)
 --------------------------------------
@@ -479,6 +561,34 @@ flag/argument name; these names, not just their presence, are frozen.
        (both required). Options: ``--global``, ``--local``.
      - ``0`` success; ``1`` unknown key, ``--global``/``--local`` both given, or no
        shared config yet for the repo; ``2`` usage error.
+   * - ``du``
+     - Read-only storage analysis of Proton Drive paths, trash included (added in
+       3.4.0). Argument: ``PATH...`` (optional, repeatable; a Drive path under ``/``,
+       ``/my-files`` or ``/devices``, or a local path inside a store; none means the
+       current directory; a quoted glob pattern expands, a local one against the store's
+       files and index, a remote one against a listing of its parent, and one matching
+       nothing is reported on stderr and skipped). Options: ``-x``/``--exclude-updates``, ``-X``/``--exclude``,
+       ``--mindepth``, ``--maxdepth``, ``-d``/``--depth``, ``-D``/``--dirs-only``,
+       ``--refresh``, ``--format table|plain|json``, ``--json``, ``-p``/``--show-progress``,
+       ``--gui``, ``--listen``, ``--port``, ``--log``. Only ``filesystem list``,
+       ``filesystem size``, ``filesystem list /trash`` and ``filesystem info /my-files``
+       (to check the cache belongs to this account) are ever issued. Every figure
+       carries its age. With ``--gui``: at most one ``PATH``, and ``--format``/``--json``,
+       ``-p`` and ``--mindepth`` are usage errors; the address to open is the last line
+       written to stdout, ``http://HOST:PORT/?t=TOKEN`` (an IPv6 host in brackets). The
+       HTTP API under ``/api/`` serves the bundled page and is not covered.
+     - With ``--gui``: ``0`` when stopped with Ctrl-C; ``1`` when the port is in use, the
+       address cannot be bound or the log cannot be opened; ``2`` usage error, including no
+       ``PATH`` outside a store. Otherwise: ``0`` complete; ``1`` the target's own figure could not be measured, or a config
+       or Drive error; ``2`` usage error (also ``--listen``/``--port``/``--log`` without
+       ``--gui``, and ``-d`` with ``--mindepth``/``--maxdepth``); ``3`` partial results:
+       a row is in state ``error``, the ``/`` or ``/devices`` total leaves out an
+       unmeasurable section or device, or
+       the ``/`` row's In trash is incomplete, whether from the trash pass or from a folder
+       listed since it whose trash is unknown, with a line below the table saying which
+       (a ``-x``/``-X`` you gave is not partial, including a remainder that is unknown
+       only because a folder you excluded keeps an older figure). The output is
+       printed in full in every case.
 
 Sync states
 -----------
@@ -534,7 +644,9 @@ Known keys for ``config get``/``config set``: :confval:`remote_root`,
 :confval:`defaults.event_log`, :confval:`defaults.progress_style`,
 :confval:`defaults.manifest` (added in 2.1.0), :confval:`defaults.skip_thumbnails` (added
 in 2.5.0), :confval:`defaults.deletions` (added in 3.0.0), :confval:`defaults.clock_skew`
-(added in 3.3.0). Each is defined in the
+(added in 3.3.0). Global-config-only keys (``config set`` needs ``--global``; ``config
+get`` works outside a store): :confval:`du.refresh` and :confval:`du.plan_size` (both
+added in 3.4.0). Each is defined in the
 Configuration
 section of :doc:`reference/index`.
 
@@ -629,6 +741,14 @@ Environment variables
    * - :envvar:`PROTONFS_CLOCK_AHEAD_LIMIT`
      - Seconds this host's clock may run ahead of Proton's before uploads are refused
        (default ``30``).
+   * - :envvar:`PROTONFS_DU_REFRESH`
+     - Per-key override for :confval:`du.refresh` (default ``5d``). Added in 3.4.0.
+   * - :envvar:`PROTONFS_PLAN_SIZE`
+     - Per-key override for :confval:`du.plan_size`, the plan size ``du`` computes
+       ``%Plan`` from (e.g. ``3TB``). Added in 3.4.0.
+   * - :envvar:`PROTONFS_DU_CACHE`
+     - Path of the SQLite file ``du`` keeps its figures in (default
+       ``$XDG_CACHE_HOME/protonfs/du.sqlite``). Added in 3.4.0.
    * - :envvar:`PROTONFS_KEYRING_PASSWORD`
      - Supplies the password for the protonfs-owned keyring bootstrap, instead of
        generating one.

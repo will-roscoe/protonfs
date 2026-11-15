@@ -62,6 +62,13 @@ _STRATEGY_RENAMES = {
 # directory (and is retried) instead of hanging the whole walk. Overridable via env for
 # low-latency vs. throttled hosts.
 LIST_TIMEOUT_SECONDS = float(os.environ.get("PROTONFS_LIST_TIMEOUT", "45"))
+# #193: `/trash` is one flat account-wide listing with no paging or filter, so a large trash
+# takes minutes (27 MB of JSON had streamed after 5 min on a measured account). It gets its
+# own, much longer bound; overridable for bigger trashes.
+# #231: bounds for the UID-to-path folder search behind `trash list`.
+FOLDER_SEARCH_MAX_LISTS = 200
+FOLDER_SEARCH_TIME_BUDGET_SECONDS = 120.0
+TRASH_LIST_TIMEOUT_SECONDS = float(os.environ.get("PROTONFS_TRASH_LIST_TIMEOUT", "900"))
 LIST_MAX_RETRIES = int(os.environ.get("PROTONFS_LIST_RETRIES", "4"))
 LIST_BACKOFF_BASE_SECONDS = float(os.environ.get("PROTONFS_LIST_BACKOFF", "2"))
 LIST_BACKOFF_CAP_SECONDS = float(os.environ.get("PROTONFS_LIST_BACKOFF_CAP", "60"))
@@ -136,6 +143,17 @@ class DriveThrottleError(DriveError):
 
     Distinct from a generic DriveError so callers (and the CLI) can report "the remote is
     throttling" clearly, and so a whole-tree walk fails one directory rather than hanging.
+    """
+
+
+class DriveTrashListTimeoutError(DriveError):
+    """Listing ``/trash`` did not finish within its timeout (#193).
+
+    Raised by :meth:`DriveClient.list_trash`. The listing is read-only, so nothing was
+    changed by the timed-out call itself; the caller adds what, if anything, it had
+    already done before listing.
+
+    .. versionadded:: 3.4.0
     """
 
 
@@ -321,6 +339,26 @@ class RemoteIdentity:
     claimed_size: int | None
     sha1: str | None
     revision: str | None = None
+
+
+@dataclass(frozen=True)
+class SizeResult:
+    """A folder's total from ``filesystem size``: bytes and node count beneath it.
+
+    :ivar size: summed encrypted ``totalStorageSize`` of every descendant, **trashed
+        descendants included** until they are permanently deleted.
+    :ivar descendants: number of descendant nodes (files and folders, trashed included).
+
+    .. versionadded:: 3.4.0
+    """
+
+    size: int
+    descendants: int
+
+
+def _is_count(value: object) -> bool:
+    """Whether ``value`` is a non-negative int and not a bool (JSON ``true`` is an int)."""
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
 
 
 def binary_path() -> str:
@@ -1216,6 +1254,30 @@ class DriveClient:
         result = self._run_json(["filesystem", "list", remote_path], timeout=timeout)
         return result if isinstance(result, list) else []
 
+    def list_trash(self, timeout: float | None = None) -> list[dict]:
+        """List every entry in ``/trash`` with a bounded timeout (#193).
+
+        :param timeout: seconds to wait, or ``None`` for
+            :data:`TRASH_LIST_TIMEOUT_SECONDS` (``PROTONFS_TRASH_LIST_TIMEOUT``, 900).
+        :returns: the raw ``filesystem list`` entries of the whole trash.
+        :raises DriveTrashListTimeoutError: when the listing does not finish in time
+            (a very large trash). The listing is read-only, so nothing was changed.
+        :raises DriveError: on any other Drive failure.
+
+        .. versionadded:: 3.4.0
+        """
+        limit = TRASH_LIST_TIMEOUT_SECONDS if timeout is None else timeout
+        try:
+            return self.list("/trash", timeout=limit)
+        except subprocess.TimeoutExpired as exc:
+            raise DriveTrashListTimeoutError(
+                f"listing /trash timed out after {limit:.0f}s; the trash is probably very "
+                "large. The listing itself changed nothing. Raise "
+                "PROTONFS_TRASH_LIST_TIMEOUT (seconds) and retry, or empty the trash in "
+                "the Proton Drive web app or with `protonfs trash empty` (irreversible, "
+                "account-wide)."
+            ) from exc
+
     def list_with_backoff(
         self,
         remote_path: str,
@@ -1241,6 +1303,52 @@ class DriveClient:
             cap=cap,
             sleep=sleep,
         )
+
+    def size(
+        self,
+        remote_path: str,
+        *,
+        timeout: float = 120.0,
+        retries: int = LIST_MAX_RETRIES,
+        base_delay: float = LIST_BACKOFF_BASE_SECONDS,
+        cap: float = LIST_BACKOFF_CAP_SECONDS,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> SizeResult:
+        """Total bytes and node count under a remote folder, via ``filesystem size``.
+
+        The figure is computed by Proton, so it costs one call whatever the folder holds
+        (1-4 s for most folders, about 27 s for a 171k-item root). It **includes trashed
+        descendants** until they are permanently deleted, so it can exceed the sum of a
+        listing. Proton rate-limits this endpoint per account (about 18 calls in quick
+        succession, then HTTP 429); the CLI waits out each ``retry-after`` without output,
+        so under throttling a call can take minutes. Give it a long ``timeout``.
+
+        :param remote_path: absolute Drive path of the folder (escaped Drive form).
+        :param timeout: per-attempt timeout in seconds.
+        :param retries: throttle/timeout retries before giving up.
+        :param base_delay: first backoff delay in seconds (doubles per retry).
+        :param cap: maximum backoff delay in seconds.
+        :param sleep: sleep function (injected by tests).
+        :returns: the folder's :class:`SizeResult`.
+        :raises DriveThrottleError: when throttling or timeouts outlast ``retries``.
+        :raises DriveError: when the path is missing or trashed, or the output is not
+            ``{"size": int, "numberOfDescendants": int}``.
+
+        .. versionadded:: 3.4.0
+        """
+        result = _retry_with_backoff(
+            lambda: self._run_json(["filesystem", "size", remote_path], timeout=timeout),
+            describe=f"`size {remote_path}`",
+            retries=retries,
+            base_delay=base_delay,
+            cap=cap,
+            sleep=sleep,
+        )
+        size = result.get("size") if isinstance(result, dict) else None
+        descendants = result.get("numberOfDescendants") if isinstance(result, dict) else None
+        if not _is_count(size) or not _is_count(descendants):
+            raise DriveError(f"unexpected filesystem size output: {result!r}")
+        return SizeResult(size, descendants)
 
     def remote_identities(
         self,
@@ -1569,17 +1677,26 @@ class DriveClient:
                 raise
         return [self._restore_from_trash(path) for path in remote_paths]
 
-    def _node_uid(self, remote_path: str) -> str | None:
-        """The node UID of `remote_path`, via `filesystem info`."""
+    def node_uid(self, remote_path: str) -> str | None:
+        """The node UID of ``remote_path``, via ``filesystem info``.
+
+        :param remote_path: an absolute Drive path (a real path, not a bare UID).
+        :returns: the UID, or ``None`` when the result carries none.
+        :raises DriveError: when the path cannot be resolved.
+
+        .. versionadded:: 3.4.0
+        """
         result = self._run_json(["filesystem", "info", remote_path])
         return result.get("uid") if isinstance(result, dict) else None
+
+    _node_uid = node_uid
 
     def _restore_from_trash(self, original_path: str) -> dict:
         """Restore one node by translating its original path to a `/trash/<name>`
         path, guarding against proton-drive's first-match-wins name resolution."""
         stripped = original_path.rstrip("/")
         parent, _, name = stripped.rpartition("/")
-        same_named = [e for e in self.list("/trash") if decrypted_name(e) == name]
+        same_named = [e for e in self.list_trash() if decrypted_name(e) == name]
         if not same_named:
             raise DriveError(f"cannot restore {original_path}: no trashed item is named {name!r}")
         parent_uid = self._node_uid(parent or "/")
@@ -1621,18 +1738,99 @@ class DriveClient:
         result = self._run_json(["filesystem", "delete", *remote_paths])
         return result if isinstance(result, list) else []
 
+    def info(self, remote_path: str, *, timeout: float = LIST_TIMEOUT_SECONDS) -> dict:
+        """Return ``filesystem info`` for one node: its ``uid``, ``name``, ``type``,
+        ``treeEventScopeId`` (the volume) and ownership fields.
+
+        :param remote_path: absolute Drive path of the node.
+        :param timeout: seconds before the call is abandoned.
+        :returns: the record, or ``{}`` if the CLI printed something else.
+        :raises DriveError: on a Drive failure (e.g. a missing path).
+
+        .. versionadded:: 3.4.0
+        """
+        result = self._run_json(["filesystem", "info", remote_path], timeout=timeout)
+        return result if isinstance(result, dict) else {}
+
     def parent_name(self, parent_uid: str) -> str | None:
-        """Best-effort decrypted name of a trashed node's original parent, given its
-        ``parentUid`` from a `/trash` listing entry. proton-drive accepts a bare node
-        UID in place of a path segment (per `filesystem info --help`), so this is
-        tried directly; returns None on any failure or undecryptable name so callers
-        (``protonfs trash list``) can show "(unknown)" rather than fail the listing.
+        """Decrypted name of the node ``parent_uid``, or ``None`` when it can't be read.
+
+        :param parent_uid: a bare node UID, e.g. a ``parentUid`` from a `/trash` entry.
+        :returns: the name, or ``None`` on any failure.
+
+        .. deprecated:: 3.4.0
+           proton-drive 0.9.0 rejects a bare UID as a whole path (``Path "<uid>" not
+           supported``), so this returns ``None`` for every UID. Use
+           :meth:`find_folder_paths` to resolve folder UIDs to paths (#231).
         """
         try:
             result = self._run_json(["filesystem", "info", parent_uid])
         except DriveError:
             return None
         return decrypted_name(result) if isinstance(result, dict) else None
+
+    def find_folder_paths(
+        self,
+        root: str,
+        wanted: set[str],
+        *,
+        max_lists: int = FOLDER_SEARCH_MAX_LISTS,
+        time_budget: float = FOLDER_SEARCH_TIME_BUDGET_SECONDS,
+        timeout: float = LIST_TIMEOUT_SECONDS,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> tuple[dict[str, str], bool]:
+        """Resolve folder UIDs to display paths by walking the tree under ``root``.
+
+        proton-drive cannot look a node up by UID alone, but a UID works as a path
+        segment under its real parent, so the walk lists each folder by UID path
+        (robust to duplicate or undecryptable names) and records the decrypted-name path
+        for every folder whose UID is in ``wanted``. It is breadth-first and stops as
+        soon as everything is found, or when ``max_lists`` listings or ``time_budget``
+        seconds are used, or after a listing fails (that subtree is skipped).
+
+        :param root: absolute Drive folder to search under; ``root`` itself is not matched.
+        :param wanted: the folder UIDs to find.
+        :param max_lists: most ``filesystem list`` calls to make.
+        :param time_budget: most seconds to spend before giving up; each listing's timeout
+            is also capped at the budget remaining.
+        :param timeout: per-listing timeout in seconds.
+        :param clock: monotonic clock (overridable for tests).
+        :returns: ``(paths, complete)``: ``paths`` maps each found UID to its path;
+            ``complete`` is true when every wanted UID was found, or the whole subtree was
+            searched (so a UID missing from ``paths`` is then known not to be under
+            ``root``); when false it may just not have been reached.
+
+        .. versionadded:: 3.4.0
+        """
+        found: dict[str, str] = {}
+        if not wanted:
+            return found, True
+        root = root.rstrip("/")
+        queue: deque[tuple[str, str]] = deque([(root, root)])
+        deadline = clock() + time_budget
+        lists = 0
+        complete = True
+        while queue and len(found) < len(wanted):
+            remaining = deadline - clock()
+            if lists >= max_lists or remaining <= 0:
+                return found, False
+            walk_path, shown = queue.popleft()
+            lists += 1
+            try:
+                children = self.list(walk_path, timeout=min(timeout, remaining))
+            except (DriveError, subprocess.TimeoutExpired):
+                complete = False
+                continue
+            for entry in children:
+                if entry.get("type") != "folder" or not entry.get("uid"):
+                    continue
+                name = decrypted_name(entry)
+                label = name.replace("/", "\\/") if name is not None else f"<{entry['uid']}>"
+                child_shown = f"{shown}/{label}"
+                if entry["uid"] in wanted:
+                    found[entry["uid"]] = child_shown
+                queue.append((f"{walk_path}/{entry['uid']}", child_shown))
+        return found, complete
 
     def empty_trash(self) -> None:
         """Permanently empty /trash for the whole account. Irreversible and NOT

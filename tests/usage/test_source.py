@@ -1,0 +1,243 @@
+from __future__ import annotations
+
+import threading
+import time
+
+import pytest
+
+from protonfs.drive import DriveError, DriveLockError, SizeResult
+from protonfs.usage.source import (
+    SIZE_TIMEOUT,
+    CliDriveSource,
+    list_timeout,
+    normalise_entry,
+)
+
+
+class StubClient:
+    """Records calls; ``hold`` (an Event) keeps each call in flight until it is set."""
+
+    def __init__(self, fail=0, delay=0.0, hold=None):
+        self.fail = fail
+        self.delay = delay
+        self.hold = hold
+        self.calls = []
+        self.inflight = 0
+        self.max_inflight = 0
+        self._cond = threading.Condition()
+
+    def _enter(self):
+        with self._cond:
+            self.inflight += 1
+            self.max_inflight = max(self.max_inflight, self.inflight)
+            self._cond.notify_all()
+        if self.hold is not None:
+            assert self.hold.wait(10), "test never released the held call"
+        time.sleep(self.delay)
+        with self._cond:
+            self.inflight -= 1
+            self._cond.notify_all()
+
+    def wait_inflight(self, n):
+        """Block until ``n`` calls are in flight at once (10 s safety limit)."""
+        with self._cond:
+            assert self._cond.wait_for(lambda: self.inflight >= n, 10), self.inflight
+
+    def _maybe_fail(self):
+        if self.fail:
+            self.fail -= 1
+            raise DriveLockError("locked")
+
+    def list_with_backoff(self, path, *, timeout):
+        self.calls.append(("list_with_backoff", path, timeout))
+        self._enter()
+        self._maybe_fail()
+        return [{"type": "file", "uid": "u", "name": {"ok": True, "value": "f"},
+                 "totalStorageSize": 7}]
+
+    def list(self, path, timeout=None):
+        self.calls.append(("list", path, timeout))
+        self._enter()
+        self._maybe_fail()
+        return []
+
+    def list_trash(self, timeout=None):
+        self.calls.append(("list_trash", "/trash", timeout))
+        self._enter()
+        self._maybe_fail()
+        return []
+
+    def size(self, path, **kw):
+        self.calls.append(("size", path))
+        self.size_kwargs = kw
+        self._enter()
+        self._maybe_fail()
+        return SizeResult(1, 2)
+
+
+def test_list_timeout_scales():
+    assert list_timeout(None) == 45
+    assert list_timeout(22470) == pytest.approx(1378.2)
+    assert list_timeout(10**9) == 3600
+
+
+def test_device_entry_is_folder():
+    e = normalise_entry({"type": "Windows", "rootFolderUid": "r",
+                         "name": {"ok": True, "value": "Polaris"}, "uid": "u"})
+    assert e.kind == "folder" and e.name == "Polaris" and e.size is None
+
+
+def test_file_and_folder_entries():
+    f = normalise_entry({"type": "file", "uid": "u", "parentUid": "p", "treeEventScopeId": "s",
+                         "totalStorageSize": 9, "modificationTime": "t", "trashTime": "x",
+                         "name": {"ok": True, "value": "f"}})
+    assert (f.kind, f.size, f.parent_uid, f.scope, f.mtime, f.trash_time, f.decrypted) == (
+        "file", 9, "p", "s", "t", "x", True)
+    d = normalise_entry({"type": "folder", "uid": "u", "name": {"ok": True, "value": "d"}})
+    assert d.kind == "folder" and d.size is None and d.trash_time is None
+
+
+def test_undecryptable_name_uses_uid():
+    e = normalise_entry({"type": "file", "uid": "uid1", "name": {"ok": False}})
+    assert e.name == "uid1" and e.decrypted is False
+
+
+def test_lock_error_retried_then_raised():
+    sleeps = []
+    c = StubClient(fail=7)
+    src = CliDriveSource(c, sleep=sleeps.append)
+    with pytest.raises(DriveLockError):
+        src.size("/my-files")
+    assert len(c.calls) == 7
+    assert sleeps == [0.5, 1, 2, 4, 4, 4]
+
+
+def test_lock_error_then_ok():
+    sleeps = []
+    c = StubClient(fail=3)
+    src = CliDriveSource(c, sleep=sleeps.append)
+    assert src.size("/my-files") == SizeResult(1, 2)
+    assert sleeps == [0.5, 1, 2]
+
+
+def test_non_lock_error_not_retried():
+    class C(StubClient):
+        def size(self, path, **kw):
+            raise DriveError("nope")
+
+    sleeps = []
+    with pytest.raises(DriveError):
+        CliDriveSource(C(), sleep=sleeps.append).size("/x")
+    assert sleeps == []
+
+
+def test_list_dir_and_trash_use_client():
+    c = StubClient()
+    src = CliDriveSource(c)
+    (e,) = src.list_dir("/my-files", expected_entries=100)
+    assert e.name == "f" and e.size == 7
+    assert c.calls[0] == ("list_with_backoff", "/my-files", list_timeout(100))
+    assert src.list_trash(timeout=12.5) == []
+    assert c.calls[1] == ("list_trash", "/trash", 12.5)
+
+
+def test_list_trash_defaults_to_the_clients_configurable_timeout():
+    """No timeout means DriveClient.list_trash's own, PROTONFS_TRASH_LIST_TIMEOUT (#235)."""
+    c = StubClient()
+    assert CliDriveSource(c).list_trash() == []
+    assert c.calls == [("list_trash", "/trash", None)]
+
+
+def test_semaphore_bounds_concurrency():
+    release = threading.Event()
+    c = StubClient(hold=release)
+    src = CliDriveSource(c, concurrency=4)
+    threads = [threading.Thread(target=src.list_dir, args=("/x",)) for _ in range(8)]
+    for t in threads:
+        t.start()
+    c.wait_inflight(4)  # four overlap while held ...
+    release.set()
+    for t in threads:
+        t.join(10)
+    assert c.max_inflight == 4  # ... and the semaphore never lets a fifth in
+    assert len(c.calls) == 8
+    assert src.concurrency == 4
+
+
+def test_size_calls_run_one_at_a_time():
+    """Proton rate-limits the size endpoint per account, so sizes never overlap."""
+    client = StubClient(delay=0.05)
+    src = CliDriveSource(client, concurrency=4, sleep=lambda s: None)
+    threads = [threading.Thread(target=src.size, args=(f"/my-files/d{i}",)) for i in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(5)
+    assert len([c for c in client.calls if c[0] == "size"]) == 4
+    assert client.max_inflight == 1
+
+
+def test_lists_overlap_while_a_size_runs():
+    release = threading.Event()
+    client = StubClient(hold=release)
+    src = CliDriveSource(client, concurrency=4, sleep=lambda s: None)
+    sizer = threading.Thread(target=src.size, args=("/my-files/a",))
+    sizer.start()
+    client.wait_inflight(1)
+    client.hold = None  # the lists below are not held
+    src.list_dir("/my-files/l0")  # returns while the size is still in flight
+    assert client.max_inflight == 2
+    release.set()
+    sizer.join(10)
+    assert not sizer.is_alive()
+
+
+def test_size_waits_out_throttling_instead_of_restarting():
+    """A throttled size call is left to finish its retry-after wait: long timeout, no restarts."""
+    client = StubClient()
+    CliDriveSource(client, sleep=lambda s: None).size("/my-files/a")
+    assert client.size_kwargs == {"timeout": SIZE_TIMEOUT, "retries": 0}
+    assert SIZE_TIMEOUT >= 600
+
+
+def test_slow_size_is_reported_once_past_the_threshold():
+    seen = []
+    reported = threading.Event()  # the size call is held until the callback has fired
+
+    def on_slow(path):
+        seen.append(path)
+        reported.set()
+
+    src = CliDriveSource(StubClient(hold=reported), sleep=lambda s: None)
+    src.slow_after = 0.01
+    src.on_slow_size = on_slow
+    src.size("/my-files/a")
+    assert seen == ["/my-files/a"]
+
+
+def test_fast_size_cancels_its_slow_timer(monkeypatch):
+    timers = []
+
+    class RecordingTimer:
+        def __init__(self, interval, fn, args=()):
+            self.interval, self.fn, self.args = interval, fn, args
+            self.started = self.cancelled = False
+            self.daemon = False
+            timers.append(self)
+
+        def start(self):
+            self.started = True
+
+        def cancel(self):
+            self.cancelled = True
+
+    monkeypatch.setattr("protonfs.usage.source.threading.Timer", RecordingTimer)
+    seen = []
+    src = CliDriveSource(StubClient(), sleep=lambda s: None)
+    src.slow_after = 5.0
+    src.on_slow_size = seen.append
+    src.size("/my-files/a")
+    assert len(timers) == 1
+    (timer,) = timers
+    assert timer.interval == 5.0 and timer.started and timer.cancelled
+    assert seen == []
