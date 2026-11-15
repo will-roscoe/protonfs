@@ -10,6 +10,7 @@ state plus cumulative local/indexed sizes, #97/#94), filter to specific sync sta
 from __future__ import annotations
 
 import json
+import posixpath
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -305,7 +306,7 @@ def render_ls(
             table = Table("dir", "files", "local size", "indexed size", "states")
             for s in summaries:
                 table.add_row(
-                    s.path,
+                    ctx.shown(posixpath.normpath(posixpath.join(subpath or ".", s.path))),
                     str(s.files),
                     human_size(s.local_bytes),
                     human_size(s.indexed_bytes),

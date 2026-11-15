@@ -174,10 +174,18 @@ class Reporter:
             tail = "" if to is None else f" -> {self.show(to)}"
             self._emit(f"  {action} {self.show(path)}{tail}")
 
-    def warn(self, msg: str) -> None:
-        """Surface a warning at every level (always shown)."""
+    def warn(self, msg: str, *, shown: str | None = None) -> None:
+        """Surface a warning at every level (always shown).
+
+        :param msg: the message, with store-relative paths; this is what the event log records.
+        :param shown: the same message with paths as typed from the current directory, for
+            the stream; defaults to ``msg``.
+
+        .. versionchanged:: 3.4.0
+           Added ``shown`` (#232).
+        """
         _events_logger.warning("%s", msg)
-        self._emit(f"! {msg}")
+        self._emit(f"! {msg if shown is None else shown}")
 
     def done(self, msg: str, **fields) -> None:
         """Announce phase/command completion. Rendered at level >= 1."""

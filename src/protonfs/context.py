@@ -54,6 +54,11 @@ class RepoContext:
 
         return HashCache(self.root)
 
+    @functools.cached_property
+    def _invocation(self) -> Path:
+        cwd = Path.cwd().resolve()
+        return cwd if cwd == self.root or self.root in cwd.parents else self.root
+
     def invocation_dir(self) -> Path:
         """The directory PATH arguments are relative to: the current directory when it is
         inside the store, else the store root (only a context built for another
@@ -61,8 +66,7 @@ class RepoContext:
 
         .. versionadded:: 3.4.0
         """
-        cwd = Path.cwd().resolve()
-        return cwd if cwd == self.root or self.root in cwd.parents else self.root
+        return self._invocation
 
     def store_path(self, arg: str, *, glob: bool = True) -> str:
         """Map a PATH argument, typed relative to the current directory (or absolute),

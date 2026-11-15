@@ -398,3 +398,133 @@ def test_hint_commands_name_paths_as_typed_from_the_current_directory(
     failures = verify_exported(load_context(), ["sim/mload005/d1"])
     assert failures, "the edit must be detected"
     assert "`protonfs push mload005/d1`" in failures[0]["error"]
+
+
+# --- round 3 -------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("command", ["rm", "restore"])
+def test_rm_and_restore_refuse_the_store_root_itself(store, monkeypatch, command) -> None:
+    root, drive = store
+    assert _run("push", ".").exit_code == 0
+    monkeypatch.chdir(root / "sim")
+    for arg in ("..", str(root), "../"):
+        extra = ["-r", "--yes"] if command == "rm" else []
+        result = _run(command, *extra, arg)
+        assert result.exit_code == 2, (arg, result.output)
+        assert "store root" in result.output
+    assert not drive.trashed and not drive.restored
+    monkeypatch.chdir(root)
+    result = _run(command, *(["-r", "--yes"] if command == "rm" else []), ".")
+    assert result.exit_code == 2 and not drive.trashed and not drive.restored
+
+
+def test_rm_prompt_and_errors_name_paths_as_typed(store, monkeypatch) -> None:
+    root, _ = store
+    assert _run("push", ".").exit_code == 0
+    monkeypatch.chdir(root / "sim")
+    result = _run("rm", "mload005")
+    assert "'mload005' is a directory" in result.output
+    assert "sim/mload005" not in result.output
+    result = CliRunner().invoke(main, ["rm", "-r", "mload005"], input="n\n")
+    assert "Trash 'mload005' on Drive?" in result.output
+
+
+GLOBBY = "run[1]"
+
+
+@pytest.fixture
+def globby(store, monkeypatch):
+    root, drive = store
+    for name in (GLOBBY, "run1"):
+        (root / name).mkdir()
+        (root / name / "x").write_bytes(name.encode())
+    return root, drive
+
+
+def test_literal_path_in_a_glob_named_directory_stays_literal(globby, monkeypatch) -> None:
+    root, _ = globby
+    monkeypatch.chdir(root / GLOBBY)
+    assert _run("push", "x").exit_code == 0
+    ctx = load_context(root)
+    assert ctx.index.get("run[1]/x") is not None
+    assert ctx.index.get("run1/x") is None
+
+
+def test_literal_pull_and_scan_in_a_glob_named_directory_stay_literal(
+    globby, monkeypatch
+) -> None:
+    root, _ = globby
+    assert _run("push", ".").exit_code == 0
+    for rel in ("run[1]/x", "run1/x"):
+        (root / rel).unlink()
+    monkeypatch.chdir(root / GLOBBY)
+    assert _run("pull", "x").exit_code == 0
+    assert (root / "run[1]" / "x").exists()
+    assert not (root / "run1" / "x").exists()
+    # a scan command: status of the literal path counts one file, not both
+    result = _run("status", "x")
+    assert "locally-indexed: 1" in result.output
+
+
+def test_bare_slash_means_the_whole_store_from_anywhere(store, monkeypatch) -> None:
+    root, _ = store
+    for where in (root, root / "sim" / "mload005"):
+        monkeypatch.chdir(where)
+        result = _run("push", "/")
+        assert result.exit_code == 0, result.output
+    assert load_context(root).index.get("other/x") is not None
+    assert _run("status", "/").exit_code == 0
+
+
+def test_cwd_inside_dot_protonfs_finds_the_store(store, monkeypatch) -> None:
+    root, _ = store
+    monkeypatch.chdir(root / ".protonfs")
+    result = _run("config", "get", "remote_root")
+    assert result.exit_code == 0, result.output
+    assert result.output.strip() == "/my-files/test"
+
+
+def test_deinit_in_a_directory_holding_its_own_dot_protonfs_acts_there(
+    store, monkeypatch
+) -> None:
+    root, _ = store
+    (root / "other" / ".protonfs").mkdir()
+    monkeypatch.chdir(root / "other")
+    result = _run("deinit", "--yes")
+    assert "must be run from the store root" not in result.output
+    assert "other" in result.output  # it names this directory, not the parent store
+
+
+def test_offload_skip_warning_is_store_relative_in_the_event_log(store, monkeypatch) -> None:
+    root, _ = store
+    assert _run("push", ".").exit_code == 0
+    (root / "sim" / "mload005" / "d1").write_bytes(b"edited after push")
+    monkeypatch.chdir(root / "sim")
+    result = _run("--event-log", "offload", "--yes", "--min-age=0", "mload005")
+    assert "skip mload005/d1: unsynced local edits" in result.output
+    log = (root / ".protonfs" / "events.log").read_text()
+    assert "skip sim/mload005/d1: unsynced local edits" in log
+    assert "skip mload005/d1" not in log
+
+
+def test_ls_dirs_table_rows_are_as_typed_but_machine_rows_are_not(store, monkeypatch) -> None:
+    import json
+
+    root, _ = store
+    assert _run("push", ".").exit_code == 0
+    monkeypatch.chdir(root / "sim")
+    table = _run("ls", "--dirs", "mload005")
+    assert "sim/mload005" not in table.output
+    assert "../other" in _run("ls", "--dirs").output  # no PATH: the whole store, as typed
+    rows = json.loads(_run("ls", "--dirs", "--format", "json", "mload005").output)
+    assert rows[0]["path"] == "."  # unchanged machine contract: relative to the listed PATH
+
+
+def test_invocation_dir_is_resolved_once(store, monkeypatch) -> None:
+    root, _ = store
+    monkeypatch.chdir(root / "sim")
+    ctx = load_context()
+    assert ctx.invocation_dir() == (root / "sim").resolve()
+    monkeypatch.chdir(root)
+    assert ctx.invocation_dir() == (root / "sim").resolve()

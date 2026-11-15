@@ -469,7 +469,7 @@ class RecordingReporter:
     def item(self, a, p, to=None):
         self.calls.append(("item", p if to is None else f"{p} -> {to}"))
 
-    def warn(self, m):
+    def warn(self, m, shown=None):
         self.calls.append(("warn", m))
 
     def done(self, m, **f):

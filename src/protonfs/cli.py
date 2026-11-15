@@ -210,10 +210,16 @@ def _store_paths(ctx, path: tuple[str, ...], *, glob: bool = True) -> tuple[str,
     mapped: list[str] = []
     outside: list[str] = []
     for arg in path:
+        if arg.startswith("/") and not arg.strip("/"):
+            mapped.append(".")  # a bare "/" has always meant the whole store
+            continue
         try:
-            mapped.append(ctx.store_path(arg, glob=glob))
+            rel = ctx.store_path(arg, glob=glob)
         except ValueError:
             outside.append(arg)
+            continue
+        # a path with no glob character is literal, even when its directory prefix has one
+        mapped.append(_Literal(rel) if glob and not _is_pattern(arg) else rel)
     if outside:
         listed = ", ".join(map(repr, outside))
         raise click.UsageError(
@@ -227,6 +233,17 @@ def _schedule_path(ctx, path: str | None) -> str | None:
     the store root) needs; with no ``--path``, :func:`_implicit_scope`'s subtree."""
     mapped = _store_paths(ctx, (path,) if path is not None else ())
     return mapped[0] if mapped else None
+
+
+def _refuse_store_root(verb: str, mapped: tuple[str, ...]) -> None:
+    """Refuse ``rm``/``restore`` of the store root itself (``.``, ``..`` up to it, its
+    absolute path or ``/``): that would trash or restore the whole remote root, and the
+    index would be left describing files that are gone."""
+    if any(p in (".", "") for p in mapped):
+        raise click.UsageError(
+            f"refusing to {verb} the store root itself (it would act on the whole remote "
+            "root); name a path inside it."
+        )
 
 
 def _runnable_git(ctx, command: str) -> str:
@@ -280,9 +297,16 @@ def _normalize_paths(paths: tuple[str, ...]) -> list[str | None]:
 _GLOB_CHARS = frozenset("*?[")
 
 
+class _Literal(str):
+    """A store-relative PATH that was typed without a glob character: never a pattern,
+    even if the directory it was typed in has ``*``, ``?`` or ``[`` in its name."""
+
+
 def _is_pattern(pathspec: str) -> bool:
     """True if `pathspec` contains a glob metacharacter, so it should be expanded rather
-    than treated as a literal path."""
+    than treated as a literal path (a :class:`_Literal` never is)."""
+    if isinstance(pathspec, _Literal):
+        return False
     return any(c in pathspec for c in _GLOB_CHARS)
 
 
@@ -705,7 +729,7 @@ def deinit(dry_run: bool, yes: bool) -> None:
 
     root = Path.cwd()
     store = find_store_root(root)
-    if store is not None and store != root.resolve():
+    if store is not None and store != root.resolve() and not (root / ".protonfs").exists():
         raise click.UsageError(
             f"deinit must be run from the store root: cd {store} first "
             f"(this directory is inside the store at {store})."
@@ -2023,6 +2047,7 @@ def rm(path: tuple[str, ...], recursive: bool, force: bool, yes: bool) -> None:
     from protonfs.locking import repo_lock
 
     ctx = load_context()
+    _refuse_store_root("rm", _store_paths(ctx, path, glob=False))
     removed: list[str] = []
     with repo_lock(ctx.root):
         try:
@@ -2054,6 +2079,7 @@ def restore(path: tuple[str, ...]) -> None:
     from protonfs.locking import repo_lock
 
     ctx = load_context()
+    _refuse_store_root("restore", _store_paths(ctx, path, glob=False))
     with repo_lock(ctx.root):
         # dedupe only; no whole-repo default for restore
         for subpath in dict.fromkeys(_store_paths(ctx, path, glob=False)):

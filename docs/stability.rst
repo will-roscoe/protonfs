@@ -260,6 +260,10 @@ every command behaves as it did before 3.4.0; run from a subdirectory, which fai
   store-relative paths, as git pathspecs are: ``protonfs push mload005`` in ``sim/`` means
   what ``protonfs push sim/mload005`` means at the root. ``.`` is the current directory and
   ``..`` works. An absolute local path is accepted.
+* A bare ``/`` still means the whole store, from the store root and from any
+  subdirectory (it is not a path outside the store). ``rm`` and ``restore`` refuse the
+  store root itself (``.``, ``..`` up to it, its absolute path or ``/``) with a usage
+  error (exit ``2``), because that would act on the whole remote root.
 * A ``PATH`` that resolves outside the discovered store is a usage error (exit ``2``)
   naming it; nothing is run.
 * A quoted glob pattern expands relative to the current directory, with the matching rules
@@ -268,10 +272,11 @@ every command behaves as it did before 3.4.0; run from a subdirectory, which fai
   literally.
 * Human-readable messages print paths as you would type them from the current directory
   (``../sibling/x`` from a sibling directory). From the store root they are the
-  store-relative paths they always were. That includes the ``ls`` table and ``-v``
-  narration; the machine formats (``--format json`` and ``plain``) always carry
+  store-relative paths they always were. That includes the ``ls`` table (including ``--dirs``) and
+  ``-v`` narration; the machine formats (``--format json`` and ``plain``) always carry
   store-relative paths, wherever they are run. The event log
-  (``.protonfs/events.log``) and the remote manifest always record store-relative paths.
+  (``.protonfs/events.log``, warnings included) and the remote manifest always record
+  store-relative paths.
 * ``setup`` keeps creating a store in the directory it is run from. ``deinit`` run from a
   subdirectory is a usage error (exit ``2``) naming the store root to run it from.
   ``config get``/``config set`` (without ``--global``), ``schedule``, ``doctor`` and
