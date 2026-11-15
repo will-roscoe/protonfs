@@ -91,7 +91,8 @@ Every ``protonfs`` command follows the same top-level convention:
   A user declining a confirmation prompt (no ``--yes``/``--force``) also exits ``1``.
 
 ``du`` adds ``3`` (partial results; see its row under `Command surface`_): the output is
-printed in full, but a row failed to measure or the trash pass was incomplete.
+printed in full, but a row failed to measure, or the trash total of ``du /`` (the ``/``
+row's ``in_trash``) is incomplete.
 
 ``status`` and ``auth status`` layer additional meaning onto exit code ``1``/``2`` for
 unattended callers, documented in the table below.
@@ -531,7 +532,9 @@ flag/argument name; these names, not just their presence, are frozen.
        ``--gui``, and ``-d`` with ``--mindepth``/``--maxdepth``); ``3`` partial results:
        a row is in state ``error``, the ``/`` or ``/devices`` total leaves out an
        unmeasurable section or device, or
-       the trash pass was incomplete (a ``-x``/``-X`` you gave is not partial). The output is
+       the ``/`` row's In trash is incomplete, whether from the trash pass or from a folder
+       listed since it whose trash is unknown, with a line below the table saying which
+       (a ``-x``/``-X`` you gave is not partial). The output is
        printed in full in every case.
 
 Sync states

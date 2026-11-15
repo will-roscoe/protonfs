@@ -403,9 +403,9 @@ def _common_base(paths: Sequence[str]) -> str:
     return base
 
 
-_LISTED_UNATTRIBUTED = "listed since the last trash pass with a subfolder that has no size"
-_LISTED_UNRECONCILED = ("listed since the last trash pass, but its remainder is unreconciled "
-                        "(figures from different passes, or it changed while measured)")
+_LISTED_UNATTRIBUTED = "its listing has a subfolder with no size"
+_LISTED_UNRECONCILED = ("its listing's remainder is unreconciled: figures from different "
+                        "passes, or it changed while measured")
 
 
 def loose_file_groups(engine: UsageEngine, summary: TrashSummary) -> list[TrashGroup]:

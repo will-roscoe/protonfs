@@ -96,7 +96,9 @@ folder counts as 0 B.
 
 A figure ``du`` could not complete is shown as a lower bound with how much it could not
 check, e.g. ``≥ 12.4 GiB (190.0 GiB / 13% unchecked)``. Below the table, ``du /`` says
-which trashed folders it could not measure and why, and it exits ``3``. Listing a very
+which trashed folders it could not measure and why, and which folders listed since the
+trash pass have trash it cannot tell (an ``(unreconciled)`` remainder, say), and it exits
+``3``. Listing a very
 large trash can take minutes; it is given :envvar:`PROTONFS_TRASH_LIST_TIMEOUT` seconds
 (default 900), after which the trash total is shown as partial.
 

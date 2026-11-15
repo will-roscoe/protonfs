@@ -331,6 +331,45 @@ def test_du_root_counts_a_trashed_file_once_after_its_folder_is_listed(du_live, 
     assert top["in_trash"] == 5000 and top["in_trash_complete"] is True
 
 
+def test_du_root_exits_3_and_says_why_when_a_newer_listing_leaves_trash_unknown(du_live, drive):
+    """N2/R37: a folder listed since the pass with an unreconciled remainder makes the /
+    In trash a lower bound; du / says which folder and exits 3."""
+    drive.add_file("/my-files/A/sub2/y", 10)
+    assert du_live("/my-files/A").exit_code == 0
+    du_live.clock.advance(10)
+    assert du_live("/").exit_code == 0
+    drive.trash("/my-files/A/f1")
+    du_live.clock.advance(3000)
+    assert du_live("/my-files/A/sub", "--refresh", "0").exit_code == 0
+    drive.add_file("/my-files/A/sub2/z", 7)
+    du_live.clock.advance(3000)
+    gaps = [r["gap_kind"] for r in _rows(du_live("/my-files/A", "--refresh", "1h", "--json"))
+            if r["kind"] == "gap"]
+    assert gaps == ["unreconciled"]
+    du_live.clock.advance(10)
+    res = du_live("/", "--json")
+    assert res.exit_code == 3, res.output + res.stderr
+    doc = json.loads(res.stdout)
+    assert doc["trash"]["complete"] is True and _rows(res)[0]["in_trash_complete"] is False
+    table = du_live("/")
+    assert table.exit_code == 3
+    line = next(ln for ln in table.stdout.splitlines() if "since the last trash pass" in ln)
+    assert "/my-files/A" in line and "unreconciled" in line and "--refresh 0" in line
+
+
+def test_du_root_says_when_a_loose_trashed_file_may_already_be_counted(du_live, drive):
+    drive.add_file("/my-files/A/G/F/old", 5000)
+    drive.trash("/my-files/A/G/F/old")
+    assert du_live("/").exit_code == 0
+    du_live.clock.advance(60)
+    drive.trash("/my-files/A/G")
+    assert du_live("/my-files/A").exit_code == 0
+    res = du_live("/")
+    assert res.exit_code == 3, res.output + res.stderr
+    assert "may already be counted" in res.stdout and "larger figure" in res.stdout
+    assert "≥ 4.9 KiB" in res.stdout.splitlines()[1]
+
+
 def test_du_root_trashed_empty_folder_is_complete(du, drive):
     drive.add_folder("/my-files/A/empty")
     assert du("/my-files/A").exit_code == 0

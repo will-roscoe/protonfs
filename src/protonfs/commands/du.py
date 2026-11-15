@@ -292,6 +292,35 @@ def _trash_lines(summary) -> list:
     return lines
 
 
+def _since_pass_lines(figure, summary) -> list:
+    """Lines for the trash the ``/`` figure leaves unknown beyond what the summary says."""
+    if figure is None or figure.complete:
+        return []
+    said = {g.parent_path for g in summary.groups if g.folders and g.bytes is None}
+    lines = []
+    for path, reason in figure.unknown:
+        if path is None:
+            lines.append(f"trash: {reason}, so / shows the larger figure "
+                         "(`du / --refresh 0` measures it)")
+        elif path not in said:
+            lines.append(f"trash in {path} since the last trash pass: unknown ({reason}); "
+                         f"`du {path} --refresh 0` measures it")
+    return lines
+
+
+def _root_trash_unknown(figure, rules) -> bool:
+    """Whether the ``/`` figure leaves trash unknown for a reason other than this run's
+    ``-x``/``-X``."""
+    from protonfs.usage.trash import EXCLUDED_REASON, excluded
+
+    if figure is None or figure.complete:
+        return False
+    return any(
+        not (reason == EXCLUDED_REASON and path is not None and excluded(rules, path))
+        for path, reason in figure.unknown
+    )
+
+
 def _trash_incomplete(summary, rules) -> bool:
     """Whether the trash summary is incomplete for a reason other than this run's ``-x``/``-X``.
 
@@ -357,9 +386,10 @@ def run_du(
     :returns: ``0`` complete; ``1`` a target's own figure could not be measured; ``3``
         partial results (a row in state ``error``, including a target whose size was
         measured but whose listing failed, a ``/`` or ``/devices`` total that leaves out
-        a section or device, an unmeasurable ``/devices`` row, or an incomplete trash
-        pass; a user's ``-x``/``-X`` alone is not partial); ``130`` after Ctrl-C, having
-        said on ``err`` what a re-run would reuse.
+        a section or device, an unmeasurable ``/devices`` row, or a ``/`` In trash figure
+        that is incomplete, from the trash pass or a folder listed since; a user's
+        ``-x``/``-X`` alone is not partial); ``130`` after Ctrl-C, having said on ``err``
+        what a re-run would reuse.
 
     .. versionadded:: 3.4.0
     """
@@ -454,9 +484,13 @@ def _report(engine, targets, options, policy, rules, *, out, say, end_line) -> i
                 say(f"! {r.path}: {r.error or 'measurement failed'}")
         end_line()  # the result starts on a line of its own
         summary = engine.trash_summary()
-        # Only du / runs the trash pass, so only it answers for the account's trash.
+        # Only du / runs the trash pass, so only it answers for the account's trash: its
+        # In trash cell, from the pass and any folder listed since.
+        root_trash = (engine.trash_for("/") if target.remote == "/" and summary is not None
+                      else None)
         if target.remote == "/":
-            partial = partial or _trash_incomplete(summary, rules)
+            partial = (partial or _trash_incomplete(summary, rules)
+                       or _root_trash_unknown(root_trash, rules))
         if options.fmt == "json":
             docs.append(to_json(shown, target=target.remote, trash=summary,
                                 used_total=engine.used_total(), plan_size=options.plan_size,
@@ -468,7 +502,7 @@ def _report(engine, targets, options, policy, rules, *, out, say, end_line) -> i
             render_table(shown, console, title=target.remote if len(targets) > 1 else None,
                          now=now)
             if target.remote == "/":
-                for line in _trash_lines(summary):
+                for line in _trash_lines(summary) + _since_pass_lines(root_trash, summary):
                     out.write(line + "\n")
             hint = hint or options.plan_size is None
             need_used = need_used or (engine.used_total() is None and options.fmt == "table")
