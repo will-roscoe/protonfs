@@ -222,6 +222,8 @@ Table
    shows the trash total, whether it is complete or why it is partial, how many trashed
    folders have no known size, and how old the trash pass is; an *In trash* figure that
    cannot rule out unmeasured trashed folders says so instead of reporting 0% unchecked.
+   When you open the folder a trashed folder came from, the page measures the trash
+   again so that folder's size can be counted.
 Chart
    A treemap or a sunburst of the same figures; the sunburst can switch to an icicle
    layout. Hovering or clicking a block selects its row; double-clicking a folder opens

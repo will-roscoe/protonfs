@@ -618,3 +618,36 @@ def test_root_trash_dict_has_known_total_and_completeness(make, engine, monkeypa
     assert trash["total_known"] == 700 and trash["complete"] is False
     assert trash["unresolved_folders"] == 2 and trash["partial"] == "timed out"
     assert trash["at"] == 5.0
+
+
+def test_trash_pass_reruns_once_an_unresolved_parent_is_cached(engine, drive, monkeypatch):
+    # at "/" with depth 1 the trash pass runs before /my-files is listed, so a trashed
+    # folder's original parent is unknown; once the page lists that parent, the next
+    # refetch re-runs the pass (once), and the folder's bytes are then measured
+    drive.add_file("/my-files/P/T/x", 500)
+    drive.trash("/my-files/P/T")
+    engine.check_account(RefreshPolicy.parse("5d"))  # as serve() does: records the account
+    holder = {}
+    jobs = JobQueue(engine, lambda: holder["api"].settings)
+    holder["api"] = api = Api(engine, jobs, GuiSettings("/"))
+    try:
+        submitted = _record_submits(api, monkeypatch)
+        api.tree("/", 1)
+        _wait_idle(api)
+        assert engine.trash_summary().unresolved_folders == 1
+        del submitted[:]
+        api.tree("/", 1, queue="new")
+        assert "/" not in submitted  # nothing new is known yet
+        api.tree("/my-files", 1)
+        _wait_idle(api)
+        del submitted[:]
+        api.tree("/", 1, queue="new")
+        assert submitted.count("/") == 1
+        _wait_idle(api)
+        summary = engine.trash_summary()
+        assert summary.unresolved_folders == 0 and summary.total_known > 0
+        del submitted[:]
+        api.tree("/", 1, queue="new")
+        assert "/" not in submitted  # resolved: no further passes
+    finally:
+        jobs.close()

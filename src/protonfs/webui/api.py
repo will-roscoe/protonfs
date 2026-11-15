@@ -84,6 +84,7 @@ class Api:
         self.settings = settings
         self.plan_size = plan_size
         self._invalid_queued: set = set()
+        self._trash_rerun_for: float | None = None  # summary.at a re-run was queued for
         self._walk_cancel = threading.Event()
         self._walk_lock = threading.Lock()
 
@@ -137,12 +138,26 @@ class Api:
         if queue != "none" and not policy.never:
             for bd in bds.values():
                 self._queue_if_due(bd, policy, now, only_new=queue == "new")
+            self._queue_trash_if_resolvable(policy)
         return {
             "rows": [{k: getattr(r, k) for k in JSON_ROW_KEYS} for r in rows],
             "breakdowns": {p: to_jsonable(bd) for p, bd in bds.items()},
             "pending": self.jobs.pending(),
             "now": now,
         }
+
+    def _queue_trash_if_resolvable(self, policy: RefreshPolicy) -> None:
+        # The trash pass runs inside the "/" job. When the page has since cached the
+        # original parent of a trashed folder the last pass could not place, re-run it, at
+        # most once per stored summary: a pass that still cannot place it must not loop.
+        if self.settings.target != "/":
+            return
+        summary = self.engine.trash_summary()
+        if summary is None or summary.at == self._trash_rerun_for:
+            return
+        if self.engine.trash_parent_now_cached():
+            self._trash_rerun_for = summary.at
+            self.jobs.submit("breakdown", "/", policy)
 
     def _queue_if_due(self, bd, policy: RefreshPolicy, now: float, *, only_new: bool) -> None:
         if bd.state in (NodeState.EXCLUDED, NodeState.ERROR):

@@ -473,6 +473,20 @@ class UsageEngine:
         self.cache.put_trash(summary.to_json(), summary.at)
         self.in_trash_pass = False
 
+    def trash_parent_now_cached(self) -> bool:
+        """Return whether the stored trash summary left a trashed folder's original parent
+        unresolved that the cache now holds, so a new pass would measure it.
+
+        No Drive calls. ``False`` without a stored summary, or for one stored before
+        unresolved parents were recorded.
+
+        .. versionadded:: 3.4.0
+        """
+        summary = self.trash_summary()
+        if summary is None or not summary.unresolved_parents:
+            return False
+        return any(self.cache.path_for_uid(u) is not None for u in summary.unresolved_parents)
+
     def _trash_can_improve(self, summary: TrashSummary, rules: ExcludeRules) -> bool:
         """Whether running the pass again now could measure more than ``summary`` did."""
         if summary.partial is not None:
