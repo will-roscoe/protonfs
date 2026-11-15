@@ -253,10 +253,11 @@ def run_du(
     :param out: stream for the result (default ``sys.stdout``).
     :param err: stream for warnings, the plan hint and ``-p`` progress (default
         ``sys.stderr``).
-    :returns: ``0`` complete; ``1`` a target's own figure failed; ``3`` partial results
-        (a row in state ``error``, a ``/`` total that leaves out a section, an unmeasurable
-        ``/devices`` row, or an incomplete trash pass). A user's ``-x``/``-X`` alone is not
-        partial.
+    :returns: ``0`` complete; ``1`` a target's own figure could not be measured; ``3``
+        partial results (a row in state ``error``, including a target whose size was
+        measured but whose listing failed, a ``/`` total that leaves out a section, an
+        unmeasurable ``/devices`` row, or an incomplete trash pass). A user's ``-x``/``-X``
+        alone is not partial.
 
     .. versionadded:: 3.4.0
     """
@@ -304,9 +305,12 @@ def run_du(
         now = engine.clock()
         rows = collect_rows(engine, target.remote, policy, rules, maxdepth=options.maxdepth,
                             plan_size=options.plan_size, now=now)
-        fatal = fatal or rows[0].state == "error"
-        partial = partial or (rows[0].state == "partial"
-                           and not (options.exclude or options.exclude_updates)) or any(
+        # Only a target with no figure is fatal; one whose listing failed after its size
+        # was measured still printed its total, so that is partial.
+        fatal = fatal or (rows[0].state == "error" and rows[0].size is None)
+        partial = partial or rows[0].state == "error" or (
+            rows[0].state == "partial"
+            and not (options.exclude or options.exclude_updates)) or any(
             r.state == "error"
             or (r.kind == "section" and r.size is None and r.exclusion == "none"
                 and r.path != "/photos")

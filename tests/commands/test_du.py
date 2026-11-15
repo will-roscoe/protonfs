@@ -177,6 +177,15 @@ def test_du_exit_1_when_target_size_fails(du, drive):
     assert res.exit_code == 1
 
 
+def test_du_exit_3_when_only_the_target_listing_fails(du, drive):
+    """Its size was measured and printed, so the run is partial, not a failure."""
+    drive.fail_next("list", "/my-files/A", DriveError("list boom"), times=5)
+    res = du("/my-files/A", "--json")
+    assert res.exit_code == 3, res.output + res.stderr
+    top = _rows(res)[0]
+    assert top["state"] == "error" and top["size"] == 1450 and top["error"] == "list boom"
+
+
 def test_du_plan_hint_once(du):
     res = du("/my-files", "/my-files/A")
     assert res.stderr.count("du.plan_size") == 1
