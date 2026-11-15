@@ -40,6 +40,8 @@ dev = [
     "genbadge[coverage]>=1.1",
     "interrogate>=1.7",
     "pre-commit>=3",
+    "playwright>=1.49",
+    "pytest-playwright>=0.6",
 ]
 docs = [
     # sphinx-click 6.2.0 (latest) is incompatible with Sphinx 9 (its `mock()` call hits a
@@ -72,6 +74,10 @@ select = ["E", "F", "I", "UP"]
 testpaths = ["tests"]
 # Tests share fakes as tests.<pkg>.<module>; plain pytest needs the root on sys.path.
 pythonpath = ["."]
+markers = [
+    "browser: drives a headless Chromium through Playwright (skipped when unavailable)",
+    "slow: builds a wheel or otherwise takes several seconds",
+]
 
 [tool.interrogate]
 # Docstring-coverage gate (issue: raise docs coverage for 1.0). Tests are excluded

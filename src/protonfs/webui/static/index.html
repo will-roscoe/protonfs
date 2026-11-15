@@ -1,5 +1,88 @@
 <!doctype html>
 <html lang="en">
-<head><meta charset="utf-8"><meta name="pfs-token" content="{{PFS_TOKEN}}"><title>protonfs du</title></head>
-<body><div id="app"></div><script src="/static/app.js"></script></body>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="pfs-token" content="{{PFS_TOKEN}}">
+<title>protonfs du</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header id="topbar">
+  <h1>protonfs du</h1>
+  <div id="sizemode" role="group" aria-label="Size column">
+    <button type="button" data-mode="abs" aria-pressed="true">Size</button>
+    <button type="button" data-mode="plan" aria-pressed="false">% plan</button>
+    <button type="button" data-mode="used" aria-pressed="false">% used</button>
+    <button type="button" data-mode="parent" aria-pressed="false">% parent</button>
+  </div>
+  <button type="button" id="walk" title="Measure everything under the current folder">Walk</button>
+  <button type="button" id="walk-cancel" hidden>Cancel walk</button>
+  <button type="button" id="refresh-here" title="Re-measure the current folder now">Refresh</button>
+  <span id="progress" role="status" aria-live="polite"></span>
+  <button type="button" id="settings-toggle" aria-expanded="false" aria-controls="settings">Settings</button>
+</header>
+
+<div id="notice" role="status" aria-live="polite" hidden>
+  <span id="notice-text"></span>
+  <button type="button" id="notice-dismiss" aria-label="Dismiss notice">&times;</button>
+</div>
+
+<section id="settings" hidden aria-label="Settings">
+  <label>Refresh threshold
+    <input id="refresh" type="text" size="8" value="5d" spellcheck="false" aria-describedby="refresh-msg">
+  </label>
+  <span id="refresh-msg" class="msg" role="alert"></span>
+  <label>Depth <input id="depth" type="range" min="1" max="6" value="3"><output id="depth-out">3</output></label>
+  <label><input id="dirs-only" type="checkbox"> Folders only</label>
+  <fieldset id="excludes">
+    <legend>Exclusions</legend>
+    <div id="exclude-rows"></div>
+    <button type="button" id="exclude-add">Add pattern</button>
+    <span id="excludes-msg" class="msg" role="alert"></span>
+  </fieldset>
+</section>
+
+<main id="main">
+  <section id="explorer" aria-label="Explorer">
+    <nav id="nav">
+      <button type="button" id="goup" title="Go up (Backspace)" aria-label="Go up">&#8593;</button>
+      <ol id="breadcrumb" aria-label="Path"></ol>
+    </nav>
+    <div id="tablewrap">
+      <table id="table">
+        <thead>
+          <tr>
+            <th scope="col" data-sort="name" aria-sort="none"><button type="button">Name</button></th>
+            <th scope="col" data-sort="size" aria-sort="descending" class="num"><button type="button" id="sizehead">Size</button></th>
+            <th scope="col" data-sort="descendants" aria-sort="none" class="num"><button type="button">Items</button></th>
+            <th scope="col" data-sort="in_trash" aria-sort="none" class="num"><button type="button">In trash</button></th>
+            <th scope="col" data-sort="age_seconds" aria-sort="none" class="num"><button type="button">Age</button></th>
+            <th scope="col">State</th>
+          </tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+    <p id="status" role="status"></p>
+  </section>
+  <div id="splitter" role="separator" aria-orientation="vertical" aria-label="Resize panels"
+       aria-valuemin="15" aria-valuemax="85" aria-valuenow="45" tabindex="0"></div>
+  <section id="charts" aria-label="Charts">
+    <div id="tabs" role="tablist">
+      <button type="button" role="tab" data-tab="treemap" aria-selected="true">Treemap</button>
+      <button type="button" role="tab" data-tab="sunburst" aria-selected="false">Sunburst</button>
+    </div>
+    <div class="pane" id="pane-treemap" role="tabpanel" data-pane="treemap">
+      <div class="chart-body" id="chart-treemap"></div>
+    </div>
+    <div class="pane" id="pane-sunburst" role="tabpanel" data-pane="sunburst" hidden>
+      <label class="icicle"><input id="icicle-toggle" type="checkbox"> Icicle layout</label>
+      <div class="chart-body" id="chart-sunburst"></div>
+    </div>
+  </section>
+</main>
+<script src="/static/vendor/d3.v7.9.0.min.js"></script>
+<script src="/static/app.js"></script>
+</body>
 </html>
