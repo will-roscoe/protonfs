@@ -213,7 +213,8 @@ def collect_rows(
         rules.match(relative(target, base), True), None, True, bd.error,
     )
     col.row(0, entry, None, bd=bd, at=bd.oldest_at if bd.oldest_at is not None else bd.at)
-    col.children(0, bd)
+    if limit > 0:
+        col.children(0, bd)
     # used_total is only known once the breakdowns have populated the cache
     used = engine.used_total()
     if used != col.used:

@@ -86,6 +86,13 @@ def test_du_depth_conflicts_with_maxdepth(du):
     assert du("/my-files", "-d", "1", "--maxdepth", "2").exit_code == 2
 
 
+@pytest.mark.parametrize("target", ["/", "/my-files"])
+def test_du_depth_zero_prints_only_the_target(du, target):
+    res = du(target, "--json", "-d", "0")
+    assert res.exit_code in (0, 3), res.output + res.stderr
+    assert [(r["depth"], r["path"]) for r in _rows(res)] == [(0, target)]
+
+
 def test_du_dirs_only(du):
     rows = _rows(du("/my-files/A", "--json", "--dirs-only", "--maxdepth", "2"))
     assert rows and all(r["kind"] != "file" for r in rows)
