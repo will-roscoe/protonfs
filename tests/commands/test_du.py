@@ -374,3 +374,12 @@ def test_du_root_cache_only_with_nothing_cached_is_partial(du, drive):
     assert drive.calls == []
     states = {r["path"]: r["state"] for r in _rows(res)}
     assert states["/devices"] == "unmeasured" and states["/"] == "partial"
+
+
+def test_build_options_records_an_explicit_depth(monkeypatch, tmp_path):
+    from protonfs.commands.du import build_options
+
+    monkeypatch.setenv("PROTONFS_CONFIG", str(tmp_path / "global.json"))
+    assert build_options(gui=True, n_paths=1).maxdepth_given is False
+    assert build_options(gui=True, depth="1", n_paths=1).maxdepth_given is True
+    assert build_options(gui=True, maxdepth=2, n_paths=1).maxdepth_given is True

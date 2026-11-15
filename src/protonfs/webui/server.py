@@ -425,8 +425,8 @@ def run_gui(
     """Run ``du --gui`` for ``target_remote`` with the parsed ``options``.
 
     Builds the production engine, seeds :class:`~protonfs.webui.settings.GuiSettings` from
-    the options (nesting depth ``options.maxdepth`` when the user raised it above the CLI
-    default of 1, else 3), and serves until interrupted.
+    the options (nesting depth from ``-d``/``--maxdepth`` when given, clamped to the
+    page's 1-6 range; 3 otherwise), and serves until interrupted.
 
     :param target_remote: the escaped Drive path to open the GUI on.
     :param options: the parsed ``du`` options (``listen``, ``port`` and ``log`` are used).
@@ -444,11 +444,16 @@ def run_gui(
     from .settings import DEPTH_RANGE
 
     port = parse_port(options.port)
-    depth = options.maxdepth if options.maxdepth and options.maxdepth > 1 else 3
+    if not options.maxdepth_given:
+        depth = 3
+    elif options.maxdepth is None:  # -d MIN- : no maximum, so the deepest the page allows
+        depth = DEPTH_RANGE[1]
+    else:
+        depth = options.maxdepth
     settings = GuiSettings(
         target=target_remote,
         refresh=options.refresh,
-        maxdepth=min(depth, DEPTH_RANGE[1]),
+        maxdepth=max(DEPTH_RANGE[0], min(depth, DEPTH_RANGE[1])),
         dirs_only=options.dirs_only,
         freeze=list(options.exclude_updates),
         hide=list(options.exclude),

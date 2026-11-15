@@ -65,6 +65,8 @@ class DuOptions:
     :ivar listen: ``--listen`` value.
     :ivar port: ``--port`` value.
     :ivar log: ``--log`` value.
+    :ivar maxdepth_given: ``-d`` or ``--maxdepth`` was given (so ``--gui`` keeps an
+        explicit depth of 1 instead of its own default).
 
     .. versionadded:: 3.4.0
     """
@@ -82,6 +84,7 @@ class DuOptions:
     listen: str | None = None
     port: str | None = None
     log: str | None = None
+    maxdepth_given: bool = False
 
 
 def _depth_range(
@@ -167,6 +170,7 @@ def build_options(
     return DuOptions(
         tuple(exclude_updates), tuple(exclude), low, high, dirs_only, text,
         fmt or "table", plan, progress, gui, listen, port, log,
+        depth is not None or maxdepth is not None,
     )
 
 

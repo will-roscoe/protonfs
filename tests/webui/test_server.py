@@ -432,7 +432,8 @@ def test_run_gui_end_to_end(tmp_path, tree_drive, monkeypatch):
     engine = UsageEngine(tree_drive, cache, clock=FakeClock())
     monkeypatch.setattr("protonfs.commands.du.default_engine", lambda: engine)
     out, err, stop = io.StringIO(), io.StringIO(), threading.Event()
-    options = DuOptions(maxdepth=9, refresh="1h", dirs_only=True, exclude=("tmp",),
+    options = DuOptions(maxdepth=9, maxdepth_given=True, refresh="1h", dirs_only=True,
+                        exclude=("tmp",),
                         exclude_updates=("frozen",), plan_size=1000,
                         log=str(tmp_path / "logs") + "/")
     result = []
@@ -472,3 +473,27 @@ def test_slow_size_publishes_a_notice(srv):
         if name == "notice":
             break
     assert "rate-limiting folder sizes" in data["message"]
+
+
+@pytest.mark.parametrize(
+    "kwargs, want",
+    [
+        ({}, 3),  # no depth flag: the GUI default
+        ({"maxdepth": 1, "maxdepth_given": True}, 1),  # an explicit -d 1 is honoured
+        ({"maxdepth": 0, "maxdepth_given": True}, 1),  # clamped to the slider's range
+        ({"maxdepth": 9, "maxdepth_given": True}, 6),
+        ({"maxdepth": None, "maxdepth_given": True}, 6),  # -d 0- (no maximum)
+    ],
+)
+def test_run_gui_depth_seed(kwargs, want, monkeypatch, tmp_path):
+    from protonfs.commands.du import DuOptions
+    from protonfs.webui import server as server_mod
+
+    seen = {}
+    monkeypatch.setattr("protonfs.commands.du.default_engine", lambda: object())
+    monkeypatch.setattr(server_mod, "serve",
+                        lambda engine, settings, **kw: seen.setdefault("s", settings))
+    options = DuOptions(log=str(tmp_path / "logs") + "/", **kwargs)
+    assert server_mod.run_gui("/my-files", options, stdout=io.StringIO(),
+                              stderr=io.StringIO()) == 0
+    assert seen["s"].maxdepth == want
