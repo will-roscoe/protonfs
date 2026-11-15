@@ -263,7 +263,9 @@ every command behaves as it did before 3.4.0; run from a subdirectory, which fai
 * A bare ``/`` still means the whole store, from the store root and from any
   subdirectory (it is not a path outside the store). ``rm`` and ``restore`` refuse the
   store root itself (``.``, ``..`` up to it, its absolute path or ``/``) with a usage
-  error (exit ``2``), because that would act on the whole remote root.
+  error (exit ``2``), because that would act on the whole remote root. Before 3.4.0,
+  ``rm -r .`` at the store root was accepted: it trashed the whole remote root and left
+  the index unchanged.
 * A ``PATH`` that resolves outside the discovered store is a usage error (exit ``2``)
   naming it; nothing is run.
 * A quoted glob pattern expands relative to the current directory, with the matching rules
