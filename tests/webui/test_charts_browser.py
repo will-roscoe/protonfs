@@ -45,6 +45,8 @@ def page(pw_browser, demo_server):
     pg.goto(demo_server.url)
     pg.wait_for_selector('tr[data-path="/my-files/A"]')
     pg.wait_for_selector('#chart-treemap g.node[data-path="/my-files/A"]')
+    # let the background listing of a cold cache settle before the test acts
+    pg.wait_for_function("PFS.state.pending.length === 0")
     yield pg
     ctx.close()
     assert not errors, errors

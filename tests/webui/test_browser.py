@@ -44,6 +44,9 @@ def pw_page(pw_browser, demo_server):
     pg.on("pageerror", lambda e: errors.append(str(e)))
     pg.goto(demo_server.url)
     pg.wait_for_selector('tr[data-path="/my-files/A"]')
+    # a cold cache lists the shown folders in the background and every result re-renders
+    # the table; start each test once that has settled (an answer with nothing pending)
+    pg.wait_for_function("PFS.state.pending.length === 0")
     yield pg
     ctx.close()
     assert not errors, errors
@@ -193,7 +196,9 @@ def test_wide_table_stays_reachable_at_default_split(pw_page):
     row.wait_for()
     cell = row.locator("td.name")
     assert cell.get_attribute("title") == LONG_NAME
-    assert cell.locator(".nm").evaluate("e => e.scrollWidth > e.clientWidth")  # ellipsised
+    pw_page.wait_for_function(  # ellipsised
+        "[...document.querySelectorAll('tr[data-path] td.name .nm')]"
+        ".some(e => e.parentElement.title.length > 100 && e.scrollWidth > e.clientWidth)")
     geom = pw_page.evaluate(
         "(() => { const w = document.querySelector('#tablewrap');"
         " const h = document.querySelector('th[data-sort=name]').parentElement.lastElementChild"
