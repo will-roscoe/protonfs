@@ -396,8 +396,9 @@ def trash_cell(row: DuRow, *, now: float | None = None) -> str:
     head = f"≥ {human_size(row.in_trash)}"
     if row.unchecked_bytes is None or not row.size:
         return f"{head} ({', '.join(['unchecked: unknown', *old])})"
-    share = round(row.unchecked_bytes / row.size * 100)
-    note = f"{human_size(row.unchecked_bytes)} / {share}% unchecked"
+    unchecked = min(row.unchecked_bytes, row.size)  # never more than the row itself
+    share = round(unchecked / row.size * 100)
+    note = f"{human_size(unchecked)} / {share}% unchecked"
     return f"{head} ({', '.join([note, *old])})"
 
 

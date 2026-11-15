@@ -80,6 +80,11 @@ def test_trash_cell_forms():
     assert trash_cell(_row(unchecked_bytes=None)) == "≥ 500 B (unchecked: unknown)"
 
 
+def test_trash_cell_never_claims_more_than_the_row_unchecked():
+    """N7: a newer figure behind the bound can exceed the row's own size."""
+    assert trash_cell(_row(unchecked_bytes=1010)) == "≥ 500 B (1000 B / 100% unchecked)"
+
+
 def test_table_has_columns_and_blank_size(usage_cache, clock):
     buf = io.StringIO()
     render_table([_row(size=None, state="excluded", exclusion="freeze")],

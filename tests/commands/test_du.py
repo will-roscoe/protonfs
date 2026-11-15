@@ -357,6 +357,26 @@ def test_du_root_exits_3_and_says_why_when_a_newer_listing_leaves_trash_unknown(
     assert "/my-files/A" in line and "unreconciled" in line and "--refresh 0" in line
 
 
+def test_du_root_unchecked_never_exceeds_the_row(du_live, drive):
+    """N7: the bound (A's size, measured after / was) is clamped to the / row's size."""
+    drive.purge("/my-files/B")
+    assert du_live("/my-files/A").exit_code == 0
+    du_live.clock.advance(10)
+    assert du_live("/").exit_code == 0
+    drive.trash("/my-files/A/f1")
+    du_live.clock.advance(3000)
+    assert du_live("/my-files/A/sub", "--refresh", "0").exit_code == 0
+    drive.add_file("/my-files/A/f3", 200)  # A grows after / was measured
+    du_live.clock.advance(3000)
+    assert du_live("/my-files/A", "--refresh", "1h").exit_code == 0
+    du_live.clock.advance(10)
+    res = du_live("/", "--json", "--refresh", "never")
+    top = _rows(res)[0]
+    assert top["in_trash_complete"] is False
+    assert top["unchecked_bytes"] == top["size"]
+    assert "100% unchecked" in du_live("/", "--refresh", "never").stdout
+
+
 def test_du_root_says_when_a_loose_trashed_file_may_already_be_counted(du_live, drive):
     drive.add_file("/my-files/A/G/F/old", 5000)
     drive.trash("/my-files/A/G/F/old")

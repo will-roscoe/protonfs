@@ -180,7 +180,8 @@ class TrashFigure:
         leaves out: the bytes of the folders whose trash is unknown; ``None`` when
         complete, or when no bound exists (a partial trash listing, or trashed items whose
         original folder is not in the cache, which could be anywhere).
-    :ivar unchecked_share: ``unchecked_bytes`` as a fraction of the subtree's size.
+    :ivar unchecked_share: ``unchecked_bytes`` as a fraction of the subtree's size (at
+        most 1: the bound is capped at that size).
     :ivar at: Unix time of the oldest measurement behind ``known``: the trash pass, or,
         when every folder in the subtree was listed after it, the oldest of those
         listings; ``None`` without a stored pass.
@@ -584,6 +585,9 @@ class _PassFigures:
             unchecked = None if unbounded or len(folders) < len(unknown[p]) \
                 else _unknown_bytes(self.engine, folders)
             size = self.engine.used_total() if whole else _size(self.engine, p)
+            if unchecked is not None and size is not None:
+                # the folders behind the bound may have been measured after this one
+                unchecked = min(unchecked, size)
             share = unchecked / size if unchecked is not None and size else None
             out[p] = TrashFigure(total, False, unchecked, share, at, tuple(unknown[p]))
         return out
