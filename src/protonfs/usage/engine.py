@@ -674,10 +674,30 @@ class UsageEngine:
             tuple(rows),
         )
         self.cache.put_snapshot(written)
+        self._recheck_against_newer_figures(path, written, children, now)
         for p in sized:
             self._errors.pop(p, None)
         self._errors.update(failed)
         return written
+
+    def _recheck_against_newer_figures(
+        self, path: str, written: Snapshot, children: list, now: float
+    ) -> None:
+        """Invalidate ``written`` if a child was measured after this pass and differs.
+
+        Another engine on the same cache file can size a child after this pass started and
+        invalidate the snapshot this pass then replaces. Its newer figure is still stored,
+        so it is compared here, just after the write; a figure stored later is caught by
+        that engine's own check of this (now stored) snapshot.
+        """
+        for (_, child), row in zip(children, written.rows):
+            if row.kind != "folder" or row.size is None:
+                continue
+            fig = self.cache.figure(child)
+            if (fig is not None and fig.at > now
+                    and (fig.size, fig.descendants) != (row.size, row.descendants)):
+                self.cache.invalidate(path)
+                return
 
     def _has_fresh_figure(self, path: str, policy: RefreshPolicy, now: float) -> bool:
         """Whether a pass may reuse ``path``'s cached figure instead of sizing it again.

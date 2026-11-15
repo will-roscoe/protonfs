@@ -879,3 +879,30 @@ def test_check_account_detects_a_switch_to_an_empty_account(usage_cache, clock):
     assert eng.check_account(FIVE_DAYS) is True
     assert usage_cache.figure(F + "/old") is None
     assert usage_cache.get_meta("scope") == "vol-2"
+
+
+def test_newer_contradicting_child_figure_invalidates_a_snapshot_written_after_it(
+    usage_cache, clock, monkeypatch
+):
+    """Another engine on the same cache measures a child after this pass started: the
+    snapshot this pass writes is outdated the moment it lands, so it must not be valid."""
+    d = _tree()
+    eng_a = UsageEngine(d, usage_cache, clock=clock)
+    other = UsageCache(usage_cache.path)
+    eng_b = UsageEngine(d, other, clock=clock)
+    real_put = usage_cache.put_snapshot
+
+    def put_after_race(snap):
+        if snap.path == F:
+            clock.advance(1)
+            d.add_file(F + "/c2/new", 7)
+            eng_b.breakdown(F + "/c2", ZERO, NO_RULES, target=F)
+        real_put(snap)
+
+    monkeypatch.setattr(usage_cache, "put_snapshot", put_after_race)
+    try:
+        eng_a.breakdown(F, FIVE_DAYS, NO_RULES, target=F)
+    finally:
+        other.close()
+    assert usage_cache.figure(F + "/c2").size == 2307
+    assert usage_cache.snapshot(F).invalid
