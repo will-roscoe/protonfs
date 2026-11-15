@@ -100,7 +100,10 @@ which trashed folders it could not measure and why, and which folders listed sin
 trash pass have trash it cannot tell (an ``(unreconciled)`` remainder, say), and it exits
 ``3``. Listing a very
 large trash can take minutes; it is given :envvar:`PROTONFS_TRASH_LIST_TIMEOUT` seconds
-(default 900), after which the trash total is shown as partial.
+(default 900), after which the trash total is shown as partial, with its age. A listing
+that timed out is tried again only once that figure is stale (``--refresh``), when you
+have raised the timeout since, or with ``du / --refresh 0``; any other failure is retried
+on the next ``du /``.
 
 Caching and ``--refresh``
 -------------------------

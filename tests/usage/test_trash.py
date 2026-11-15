@@ -136,7 +136,11 @@ def test_trash_listing_timeout_is_partial(usage_cache, clock):
     assert not summary.complete
 
 
-def test_trash_pass_leaves_the_listing_timeout_to_the_source(usage_cache, clock):
+def test_trash_pass_lists_with_the_configured_timeout(usage_cache, clock, monkeypatch):
+    """The timeout in effect is PROTONFS_TRASH_LIST_TIMEOUT (#235), recorded on a timeout."""
+    from protonfs.drive import DriveTrashListTimeoutError
+
+    monkeypatch.setattr("protonfs.drive.TRASH_LIST_TIMEOUT_SECONDS", 123.0)
     d, eng = _trashed(usage_cache, clock)
     seen = []
     real = d.list_trash
@@ -146,8 +150,12 @@ def test_trash_pass_leaves_the_listing_timeout_to_the_source(usage_cache, clock)
         return real(timeout=timeout)
 
     d.list_trash = recording
-    run_trash_pass(eng, REVAL)
-    assert seen == [None]
+    assert run_trash_pass(eng, REVAL).timed_out_after is None
+    assert seen == [123.0]
+    d.fail_next("list_trash", "/trash", DriveTrashListTimeoutError("slow"))
+    assert run_trash_pass(eng, REVAL).timed_out_after == 123.0
+    d.fail_next("list_trash", "/trash", DriveError("down"))
+    assert run_trash_pass(eng, REVAL).timed_out_after is None
 
 
 def test_trash_list_timeout_error_is_partial_with_its_advice(usage_cache, clock):

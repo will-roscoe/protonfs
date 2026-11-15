@@ -59,6 +59,7 @@ from .trash import (
     excluded,
     figure_for,
     run_trash_pass,
+    trash_list_timeout,
 )
 
 _SCOPE_KEY = "scope"
@@ -451,7 +452,9 @@ class UsageEngine:
         The pass (:func:`~protonfs.usage.trash.run_trash_pass`: ``filesystem list /trash``
         plus breakdowns, none under a folder ``rules`` exclude) runs when no summary is
         stored or it is stale under ``policy``, and also, however recent, when its listing
-        was partial (timed out or failed), when an original folder it could not resolve
+        failed, when it timed out and the timeout now in effect
+        (:func:`~protonfs.usage.trash.trash_list_timeout`) is longer than the one that
+        expired, when an original folder it could not resolve
         (of a trashed folder or file) is now in the cache, when it skipped a parent
         ``rules`` no longer exclude, or when it is incomplete and was stored before
         unresolved parents were recorded. Read the result with :meth:`trash_summary`.
@@ -498,6 +501,10 @@ class UsageEngine:
     def _trash_can_improve(self, summary: TrashSummary, rules: ExcludeRules) -> bool:
         """Whether running the pass again now could measure more than ``summary`` did."""
         if summary.partial is not None:
+            # A timeout repeats with the same timeout (and blocks that long); a fast
+            # failure (network, auth) is often transient.
+            if summary.timed_out_after is not None:
+                return trash_list_timeout() > summary.timed_out_after
             return True
         if summary.unresolved_parents is None:
             return not summary.complete

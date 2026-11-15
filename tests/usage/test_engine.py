@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import subprocess
 import threading
 from collections import Counter
 from dataclasses import replace
@@ -723,20 +722,49 @@ def test_tree_and_walk_at_root_skip_unmeasurable_entries(usage_cache, clock):
     assert not _touches(d.calls, "/photos")
 
 
-def test_partial_trash_summary_is_retried(usage_cache, clock):
+def test_failed_trash_listing_is_retried_at_once(usage_cache, clock):
+    """A listing that failed fast (not a timeout) is retried on the next root view."""
     d = _root_tree()
-    d.fail_next("list_trash", "/trash", subprocess.TimeoutExpired("proton-drive", 300))
+    d.fail_next("list_trash", "/trash", DriveError("network unreachable"))
     eng = UsageEngine(d, usage_cache, clock=clock)
     eng.root(FIVE_DAYS, NO_RULES)
-    assert eng.trash_summary().partial == "trash listing timed out after 300 s"
+    assert eng.trash_summary().partial == "network unreachable"
 
     eng.root(NEVER, NO_RULES)
     assert d.calls.count(("list_trash", "/trash")) == 1
-    eng.root(FIVE_DAYS, NO_RULES)  # same moment: partial is stale anyway
+    eng.root(FIVE_DAYS, NO_RULES)  # same moment: a failed listing is retried anyway
     assert d.calls.count(("list_trash", "/trash")) == 2
     assert eng.trash_summary().partial is None
     eng.root(FIVE_DAYS, NO_RULES)  # complete and fresh: not re-run
     assert d.calls.count(("list_trash", "/trash")) == 2
+
+
+def test_timed_out_trash_listing_waits_for_a_longer_timeout_or_staleness(
+        usage_cache, clock, monkeypatch):
+    """R38: retrying a listing that timed out with the same timeout would only block that
+    long again; it is retried when the timeout grows, under --refresh 0, or once stale."""
+    from protonfs.drive import DriveTrashListTimeoutError
+
+    monkeypatch.setattr("protonfs.drive.TRASH_LIST_TIMEOUT_SECONDS", 900.0)
+    d = _root_tree()
+    d.fail_next("list_trash", "/trash", DriveTrashListTimeoutError("timed out"), times=3)
+    eng = UsageEngine(d, usage_cache, clock=clock)
+    eng.root(FIVE_DAYS, NO_RULES)
+    assert eng.trash_summary().timed_out_after == 900.0
+
+    def lists():
+        return d.calls.count(("list_trash", "/trash"))
+
+    eng.root(FIVE_DAYS, NO_RULES)
+    assert lists() == 1  # same timeout, still fresh
+    monkeypatch.setattr("protonfs.drive.TRASH_LIST_TIMEOUT_SECONDS", 1800.0)
+    eng.root(FIVE_DAYS, NO_RULES)
+    assert lists() == 2 and eng.trash_summary().timed_out_after == 1800.0
+    eng.root(ZERO, NO_RULES)
+    assert lists() == 3  # --refresh 0 always re-lists
+    clock.advance(5 * DAY)
+    eng.root(FIVE_DAYS, NO_RULES)
+    assert lists() == 4 and eng.trash_summary().partial is None  # stale: re-listed
 
 
 def test_check_account_clears_old_account_with_fresh_figures(usage_cache, clock):

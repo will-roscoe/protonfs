@@ -216,7 +216,8 @@ contract (see :doc:`../stability`).
    ``restore``, ``trash list``, ``rm --force``, ``ls --trash`` and the trash pass of
    ``du /``. On expiry the command fails with an error saying the trash is too large to
    list; nothing is changed. ``du`` instead shows its trash total as partial, with that
-   reason.
+   reason, and lists the trash again before that figure is stale only when this value
+   has been raised since (or under ``--refresh 0``).
 
    .. versionadded:: 3.4.0
 

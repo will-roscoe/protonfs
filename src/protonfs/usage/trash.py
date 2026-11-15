@@ -23,7 +23,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from ..drive import DriveError
+from .. import drive as _drive
+from ..drive import DriveError, DriveTrashListTimeoutError
 from .excludes import ExcludeRules, Exclusion
 from .model import Breakdown, GapKind, NodeState
 from .paths import child_path, join, relative, split
@@ -82,6 +83,10 @@ class TrashSummary:
     :ivar ended_at: Unix time the pass finished, or ``None`` for a summary stored before it
         was recorded. Only listings made after it count as newer than the pass; the
         pass's own breakdowns fall between :attr:`at` and this.
+    :ivar timed_out_after: the listing timeout in seconds when ``partial`` is because the
+        listing timed out, else ``None``. Such a summary is retried before it is stale
+        only with a longer timeout (see
+        :meth:`~protonfs.usage.engine.UsageEngine.refresh_trash`).
 
     .. versionadded:: 3.4.0
     """
@@ -92,6 +97,7 @@ class TrashSummary:
     partial: str | None
     unresolved_parents: tuple[str, ...] | None = ()
     ended_at: float | None = None
+    timed_out_after: float | None = None
 
     @property
     def listed_after(self) -> float:
@@ -128,6 +134,7 @@ class TrashSummary:
             "unresolved_parents": (None if self.unresolved_parents is None
                                    else list(self.unresolved_parents)),
             "ended_at": self.ended_at,
+            "timed_out_after": self.timed_out_after,
         })
 
     @classmethod
@@ -148,6 +155,7 @@ class TrashSummary:
                 d["partial"],
                 None if parents is None else tuple(str(u) for u in parents),
                 None if d.get("ended_at") is None else float(d["ended_at"]),
+                None if d.get("timed_out_after") is None else float(d["timed_out_after"]),
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError(f"not a trash summary: {exc}") from exc
@@ -193,6 +201,17 @@ class TrashFigure:
     unknown: tuple[tuple[str | None, str], ...] = ()
 
 
+def trash_list_timeout() -> float:
+    """Return the trash listing timeout now in effect, in seconds.
+
+    That is :data:`~protonfs.drive.TRASH_LIST_TIMEOUT_SECONDS`
+    (:envvar:`PROTONFS_TRASH_LIST_TIMEOUT`, default 900), read when called.
+
+    .. versionadded:: 3.4.0
+    """
+    return float(_drive.TRASH_LIST_TIMEOUT_SECONDS)
+
+
 def run_trash_pass(
     engine: UsageEngine,
     policy: RefreshPolicy,
@@ -217,12 +236,11 @@ def run_trash_pass(
     :param engine: the engine to measure with.
     :param policy: ``policy.never`` makes no calls and returns an empty partial summary.
     :param rules: freeze/hide rules relative to ``/`` (none by default).
-    :param timeout: seconds allowed for the trash listing, or ``None`` for the source's
-        default (:data:`~protonfs.drive.TRASH_LIST_TIMEOUT_SECONDS` for the CLI source,
-        set by ``PROTONFS_TRASH_LIST_TIMEOUT``).
+    :param timeout: seconds allowed for the trash listing, or ``None`` for
+        :func:`trash_list_timeout`.
     :returns: the summary. A timed-out or failed listing gives ``partial`` set (the error
         text, which for a timeout says how to wait longer) and only what could be
-        measured; it never looks complete.
+        measured; it never looks complete. A timeout also sets ``timed_out_after``.
 
     .. versionadded:: 3.4.0
     """
@@ -231,11 +249,14 @@ def run_trash_pass(
     if policy.never:
         return TrashSummary(now, (), 0, "trash not refreshed (refresh policy is never)",
                             (), now)
+    limit = trash_list_timeout() if timeout is None else timeout
     try:
-        entries = engine.source.list_trash(timeout=timeout)
+        entries = engine.source.list_trash(timeout=limit)
     except subprocess.TimeoutExpired as exc:
         return TrashSummary(now, (), 0, f"trash listing timed out after {exc.timeout:.0f} s",
-                            (), engine.clock())
+                            (), engine.clock(), float(exc.timeout))
+    except DriveTrashListTimeoutError as exc:
+        return TrashSummary(now, (), 0, str(exc), (), engine.clock(), limit)
     except DriveError as exc:
         return TrashSummary(now, (), 0, str(exc) or type(exc).__name__, (), engine.clock())
 
