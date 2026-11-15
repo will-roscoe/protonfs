@@ -37,10 +37,12 @@
   function hierarchy(state, depth) {
     var rows = state.rows || [];
     if (!rows.length) return null;
-    var base = rows[0].depth, stack = [], root = null;
+    var base = rows[0].depth, stack = [], root = null, negative = 0;
     rows.forEach(function (r) {
       var rel = r.depth - base;
       if (rel > depth || r.exclusion === "hide") return;
+      // a negative figure (an unreconciled remainder) has no area: it stays in the table
+      if (r.size != null && r.size < 0 && rel > 0) { negative += 1; return; }
       var node = {
         path: r.path, name: r.name, kind: r.kind, gapKind: r.kind === "gap" ? r.gap_kind : null,
         state: r.state, exclusion: r.exclusion, row: r, children: null, value: 0,
@@ -59,10 +61,29 @@
       stack.length = rel + 1;
     });
     if (!root) return null;
+    root.negative = negative;
+    var dirsOnly = !!(state.settings && state.settings.dirs_only);
     (function finish(n) {
       if (n.children) {
         n.children.forEach(finish);
         n.value = n.children.reduce(function (a, c) { return a + c.value; }, 0);
+        // the drawn children sum below the folder's own size (files left out by Folders
+        // only, items without a size): draw the shortfall so areas stay proportional
+        var size = n.row.size;
+        if (size != null && size > n.value && n.kind === "folder") {
+          var short = size - n.value;
+          n.children.push({
+            path: n.path + "/\u0000filler", name: dirsOnly ? "(files, hidden by Folders only)"
+              : "(not drawn)", kind: "gap", gapKind: "filler", state: "gap", exclusion: "none",
+            children: null, value: short, sized: false, placeholder: false, unsized: 0,
+            row: { path: n.path + "/\u0000filler", name: dirsOnly ?
+              "(files, hidden by Folders only)" : "(not drawn)", kind: "gap", size: short,
+              state: "gap", exclusion: "none", gap_kind: "filler", error: null,
+              age_seconds: null, descendants: null, pct_plan: null, pct_used: null,
+              pct_parent: null, in_trash: null, in_trash_complete: null }
+          });
+          n.value = size;
+        }
       } else {
         n.value = n.row.size == null ? 0 : n.row.size;
         n.placeholder = n.row.size == null;
@@ -109,7 +130,8 @@
       ", of parent " + pct(r.pct_parent));
     if (r.descendants != null) line(box, r.descendants + " items");
     if (r.in_trash != null) {
-      line(box, "in trash " + (r.in_trash_complete ? "" : "at least ") + humanSize(r.in_trash));
+      line(box, "in trash " + (r.in_trash_complete ? "" : "at least ") + humanSize(r.in_trash) +
+        (r.trash_unresolved > 0 ? " (" + r.trash_unresolved + " trashed folder(s) unmeasured)" : ""));
     } else if (r.kind === "folder") line(box, "in trash unknown");
     line(box, r.age_seconds == null ? "age unknown" : formatAge(r.age_seconds) + " ago");
     line(box, "state " + (r.exclusion === "none" ? r.state : r.state + " (" + r.exclusion + ")") +
@@ -247,12 +269,21 @@
         return fit(txt.trim(), pw, 6.4);
       });
     bind(g);
-    if (root.unsized) {
+    chartNotes(box, root);
+  }
+  function chartNotes(box, root) {
+    var texts = [];
+    if (root.unsized) texts.push(root.unsized + " item(s) without a size are not drawn.");
+    if (root.negative) {
+      texts.push(root.negative + " remainder(s) below zero (children measured larger than " +
+        "their folder) are not drawn; see the table.");
+    }
+    texts.forEach(function (t) {
       var note = document.createElement("p");
       note.className = "chart-note";
-      note.textContent = root.unsized + " item(s) without a size are not drawn.";
+      note.textContent = t;
       box.appendChild(note);
-    }
+    });
   }
 
   // ------------------------------------------------------------------ sunburst / icicle
@@ -329,6 +360,7 @@
         .on("click", function (ev) { if (ev.detail <= 1) PFS.up(); });
     }
     bind(g);
+    chartNotes(box, root);
   }
   function hasPlaceholder(n) {
     return n.placeholder || (n.children || []).some(hasPlaceholder);
@@ -354,6 +386,7 @@
     }).then(function (r) {
       return r.json().catch(function () { return {}; }).then(function (data) {
         if (!r.ok) say(label + " failed: " + (data.error || "HTTP " + r.status));
+        else if (data && data.queued === false) say(label + " did not start: the server is shutting down");
         return r.ok ? data : null;
       });
     }).catch(function (e) { say(label + " failed: " + e.message); return null; });

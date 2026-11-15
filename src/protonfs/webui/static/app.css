@@ -78,3 +78,9 @@ tr.pending td.name::after { content: ""; display: inline-block; width: 9px; heig
 #notice { display: flex; gap: 8px; align-items: center; padding: 4px 10px; background: #fff4d6; color: #5c3b00; border-bottom: 1px solid #e6c46a; }
 #notice span { flex: 1; }
 @media (prefers-color-scheme: dark) { #notice { background: #4a3a10; color: #ffe9a8; border-color: #7a6320; } }
+
+#trashline { margin: 0; padding: 4px 8px; color: var(--muted); border-bottom: 1px solid var(--line); }
+#trashline.incomplete { color: #8a4b00; }
+@media (prefers-color-scheme: dark) { #trashline.incomplete { color: #ffcf7a; } }
+.trash-age { color: var(--muted); font-size: 0.9em; }
+tr.outdated td.state .st { font-style: italic; text-decoration: underline dotted; }

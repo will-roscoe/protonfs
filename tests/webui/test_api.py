@@ -593,3 +593,28 @@ def test_job_queue_logs_notices_and_job_failures(engine, monkeypatch):
     assert "notice: slow now" in lines
     assert any(x.startswith(f"job failed {TARGET} in ") and x.endswith(": kaput") for x in lines)
     assert any(x.startswith("job queued ") and "refresh=0" in x for x in lines)
+
+
+def test_settings_carry_refresh_seconds_parsed_like_the_cli(make):
+    api = make(refresh="2h45m")
+    assert api.get_settings()["refresh_seconds"] == 9900.0
+    assert api.set_settings({"refresh": "1mo"})["refresh_seconds"] == 30 * 86400.0
+    assert api.set_settings({"refresh": "never"})["refresh_seconds"] is None
+    assert api.set_settings({"refresh": "0"})["refresh_seconds"] == 0.0
+
+
+def test_tree_reports_now_and_root_trash_totals(make, clock, drive):
+    api = make()
+    assert api.tree(TARGET, 1, queue="none")["now"] == clock()
+    assert api.root(queue="none")["trash"] is None
+
+
+def test_root_trash_dict_has_known_total_and_completeness(make, engine, monkeypatch):
+    from protonfs.usage.trash import TrashGroup, TrashSummary
+
+    summary = TrashSummary(5.0, (TrashGroup("/my-files", 2, 0, 700),), 2, "timed out")
+    monkeypatch.setattr(engine, "trash_summary", lambda: summary)
+    trash = make().root(queue="none")["trash"]
+    assert trash["total_known"] == 700 and trash["complete"] is False
+    assert trash["unresolved_folders"] == 2 and trash["partial"] == "timed out"
+    assert trash["at"] == 5.0

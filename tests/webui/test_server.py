@@ -501,7 +501,8 @@ def test_run_gui_end_to_end(tmp_path, tree_drive, monkeypatch):
         status, body = srv.json("GET", "/api/settings")
         assert status == 200
         assert body == {"target": f"{TARGET}/A", "refresh": "1h", "maxdepth": 6,
-                        "dirs_only": True, "freeze": ["frozen"], "hide": ["tmp"]}
+                        "dirs_only": True, "freeze": ["frozen"], "hide": ["tmp"],
+                        "refresh_seconds": 3600.0}
         rows = srv.json("GET", f"/api/tree?path={TARGET}/A&depth=1&queue=0")[1]["rows"]
         assert rows[0]["pct_plan"] is None or rows[0]["pct_plan"] >= 0  # plan_size accepted
     finally:

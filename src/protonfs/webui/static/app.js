@@ -12,7 +12,7 @@
     state: {
       path: null, rows: [], breakdowns: {}, selected: null, mode: "abs",
       settings: null, pending: [], trash: null, sort: { key: "size", dir: "desc" },
-      progress: null, tab: "treemap", icicle: false
+      progress: null, tab: "treemap", icicle: false, now: null
     },
     charts: {}
   };
@@ -34,11 +34,21 @@
     }
     return s.toFixed(0) + "s";
   }
+  // Fallback only: the server sends settings.refresh_seconds, parsed by the same grammar as
+  // the command line (compound values, mo and y). This mirrors that grammar for a server
+  // that does not send it.
+  var UNITS = { s: 1, m: 60, h: 3600, d: 86400, w: 604800, mo: 2592000, y: 31536000 };
   function parseDuration(text) {
-    var m = /^\s*(\d+(?:\.\d+)?)\s*([smhdw]?)\s*$/i.exec(text || "");
-    if (!m) return null;
-    var mult = { "": 1, s: 1, m: 60, h: 3600, d: 86400, w: 604800 }[m[2].toLowerCase()];
-    return parseFloat(m[1]) * mult;
+    var t = (text || "").trim().toLowerCase();
+    if (!t || !/^(\d+(\.\d+)?(s|mo|m|h|d|w|y))+$/.test(t)) return null;
+    var total = 0, re = /(\d+(?:\.\d+)?)(mo|s|m|h|d|w|y)/g, m;
+    while ((m = re.exec(t))) total += parseFloat(m[1]) * UNITS[m[2]];
+    return total;
+  }
+  function refreshSeconds(settings) {
+    if (!settings) return null;
+    return settings.refresh_seconds !== undefined ? settings.refresh_seconds
+      : parseDuration(settings.refresh);
   }
   function el(tag, attrs, text) {
     var e = document.createElement(tag);
@@ -65,10 +75,30 @@
     });
   }
   function setStatus(text) { $("#status").textContent = text || ""; }
-  function parentOf(path) {
-    var i = path.lastIndexOf("/");
-    return i <= 0 ? "/" : path.slice(0, i);
+  // Split an escaped Drive path into segments, keeping each segment's escaped form (raw)
+  // and its name. A literal "/" in a name is written "\\/" and a literal backslash "\\\\"
+  // (usage/paths.py), so a "/" preceded by an escape is not a separator.
+  function splitPath(path) {
+    var segs = [], raw = "", name = "";
+    for (var i = 0; i < path.length; i++) {
+      var ch = path[i];
+      if (ch === "\\" && i + 1 < path.length) { raw += ch + path[i + 1]; name += path[i + 1]; i++; }
+      else if (ch === "/") {
+        if (raw) segs.push({ raw: raw, name: name });
+        raw = ""; name = "";
+      } else { raw += ch; name += ch; }
+    }
+    if (raw) segs.push({ raw: raw, name: name });
+    return segs;
   }
+  function joinPath(segs) {
+    return segs.length ? "/" + segs.map(function (s) { return s.raw; }).join("/") : "/";
+  }
+  function parentOf(path) {
+    return joinPath(splitPath(path).slice(0, -1));
+  }
+  PFS.splitPath = splitPath;
+  PFS.parentOf = parentOf;
   function atTarget() { return !S.settings || S.path === S.settings.target; }
 
   // ------------------------------------------------------------------ loading
@@ -83,6 +113,7 @@
       S.rows = data.rows || [];
       S.breakdowns = data.breakdowns || {};
       S.pending = data.pending || [];
+      S.now = data.now != null ? data.now : null;
       if (data.trash !== undefined) S.trash = data.trash;
       if (S.selected && !S.rows.some(function (r) { return r.path === S.selected; })) S.selected = null;
       setStatus("");
@@ -178,8 +209,16 @@
     }
     return td;
   }
+  function nowSeconds() { return S.now != null ? S.now : Date.now() / 1000; }
+  function plural(n, word) { return n + " " + word + (n === 1 ? "" : "s"); }
   function trashText(r) {
     if (r.in_trash == null) return r.kind === "file" ? "—" : "";
+    // trashed folders of unknown size: the figure is a lower bound and nothing can be said
+    // to be "unchecked" (the engine sends unchecked_bytes null then)
+    if (r.trash_unresolved > 0) {
+      return "≥ " + humanSize(r.in_trash) + " (" + plural(r.trash_unresolved, "trashed folder") +
+        " unmeasured)";
+    }
     if (r.in_trash_complete) return humanSize(r.in_trash);
     var head = "≥ " + humanSize(r.in_trash);
     if (r.unchecked_bytes == null || !r.size) return head + " (unchecked: unknown)";
@@ -187,7 +226,7 @@
       Math.round(r.unchecked_bytes / r.size * 100) + "% unchecked)";
   }
   function fade(r) {
-    var th = S.settings ? parseDuration(S.settings.refresh) : null;
+    var th = refreshSeconds(S.settings);
     if (r.age_seconds == null || !th) return 1;
     return Math.max(0.6, 1 - 0.4 * Math.min(1, r.age_seconds / th));
   }
@@ -202,6 +241,9 @@
         unreconciled: "unreconciled" }[r.gap_kind] || "unattributed"));
       else cls.push(r.kind);
       if (r.state === "sized") cls.push("sized");
+      var bdr = r.kind === "folder" ? S.breakdowns[r.path] : null;
+      var outdated = !!(bdr && bdr.invalid);
+      if (outdated) cls.push("outdated");
       if (r.error) cls.push("error");
       if (r.exclusion !== "none" || r.state === "excluded") cls.push("excluded");
       if (r.kind !== "gap" && pending[r.path]) cls.push("pending");
@@ -221,6 +263,13 @@
       tr.appendChild(sizeCell(r));
       tr.appendChild(el("td", { "class": "num" }, r.descendants == null ? "" : String(r.descendants)));
       var tcell = el("td", { "class": "num" }, trashText(r));
+      if (r.in_trash != null && r.trash_at != null) {
+        var tAge = Math.max(0, nowSeconds() - r.trash_at);
+        tcell.title = "trash figure from " + formatAge(tAge) + " ago";
+        if (r.age_seconds == null || Math.abs(tAge - r.age_seconds) > 60) {
+          tcell.appendChild(el("span", { "class": "trash-age" }, " · " + formatAge(tAge)));
+        }
+      }
       tr.appendChild(tcell);
       var age = el("td", { "class": "num" }, r.age_seconds == null ? "" : formatAge(r.age_seconds));
       if (r.checked_at != null) age.title = new Date(r.checked_at * 1000).toLocaleString();
@@ -228,8 +277,9 @@
       var full = r.exclusion === "none" ? r.state : r.state + " (" + r.exclusion + ")";
       var st = el("td", { "class": "state" });
       st.appendChild(el("span", { "class": "st" }, r.exclusion === "freeze" ? "frozen"
-        : r.exclusion === "hide" ? "hidden" : r.state));
-      st.title = r.error ? full + ": " + r.error : full;
+        : r.exclusion === "hide" ? "hidden" : outdated ? "outdated" : r.state));
+      st.title = r.error ? full + ": " + r.error : outdated
+        ? "a child was measured after this listing, so the rows may not add up; re-checking" : full;
       tr.appendChild(st);
       frag.appendChild(tr);
     });
@@ -245,13 +295,14 @@
     var bc = $("#breadcrumb");
     bc.replaceChildren();
     var target = S.settings ? S.settings.target : "/";
-    var parts = target === "/" ? [] : target.split("/").filter(Boolean);
-    var acc = "";
+    var parts = splitPath(target);
     var crumbs = [{ label: "Drive", path: "/" }];
-    parts.forEach(function (p) { acc += "/" + p; crumbs.push({ label: p, path: acc }); });
-    var rest = S.path && S.path !== target ? S.path.slice(target === "/" ? 0 : target.length).split("/").filter(Boolean) : [];
-    var base = target === "/" ? "" : target;
-    rest.forEach(function (p) { base += "/" + p; crumbs.push({ label: p, path: base }); });
+    parts.forEach(function (p, i) { crumbs.push({ label: p.name, path: joinPath(parts.slice(0, i + 1)) }); });
+    var here = S.path ? splitPath(S.path) : [];
+    var rest = here.slice(parts.length);
+    rest.forEach(function (p, i) {
+      crumbs.push({ label: p.name, path: joinPath(here.slice(0, parts.length + i + 1)) });
+    });
     // paths above the target are not browsable: show them as plain text
     var targetIdx = parts.length;
     crumbs.forEach(function (c, i) {
@@ -268,6 +319,32 @@
     $("#goup").disabled = atTarget();
   }
 
+  function trashLine() {
+    var t = S.trash, box = $("#trashline");
+    if (!box) return;
+    var rootView = S.settings && S.settings.target === "/";
+    if (!atTarget()) { box.hidden = true; box.textContent = ""; return; }
+    if (!t) {
+      box.hidden = !rootView;
+      box.textContent = box.hidden ? "" : "Trash: not measured yet (open the root to measure it)";
+      box.className = "";
+      return;
+    }
+    var groups = t.groups || [];
+    var known = t.total_known != null ? t.total_known
+      : groups.reduce(function (a, g) { return a + (g[3] != null ? g[3] : g.bytes || 0); }, 0);
+    var complete = t.complete != null ? t.complete
+      : !t.partial && !t.unresolved_folders;
+    var parts = [complete ? "Trash: " + humanSize(known) + " (complete)"
+      : "Trash: at least " + humanSize(known) + " measured"];
+    if (t.partial) parts.push("partial: " + t.partial);
+    if (t.unresolved_folders) parts.push(plural(t.unresolved_folders, "trashed folder") + ", size unknown");
+    if (t.at != null) parts.push("pass " + formatAge(Math.max(0, nowSeconds() - t.at)) + " ago");
+    box.hidden = false;
+    box.className = complete ? "" : "incomplete";
+    box.textContent = parts.join("; ");
+  }
+
   function renderProgress() {
     var p = S.progress, box = $("#progress"), cancel = $("#walk-cancel");
     if (!p) { box.textContent = ""; cancel.hidden = true; $("#walk").hidden = false; return; }
@@ -281,6 +358,7 @@
 
   PFS.render = function () {
     renderNav();
+    trashLine();
     renderTable();
     renderProgress();
     document.querySelectorAll("#sizemode button").forEach(function (b) {
@@ -345,6 +423,7 @@
   $("#refresh-here").addEventListener("click", function () {
     api("POST", "/api/refresh", { path: S.path }).then(function (d) {
       S.pending = d.pending || S.pending; PFS.render();
+      if (d.queued === false) setStatus("Refresh did not start: the server is shutting down");
     }).catch(function (e) { setStatus("Refresh: " + e.message); });
   });
 

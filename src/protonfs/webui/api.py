@@ -111,8 +111,10 @@ class Api:
             only those with no listing that no job has tried since the page started, so the
             subfolders a finished job revealed get listed but refetches cannot feed
             themselves; ``"none"`` queues nothing.
-        :returns: ``{"rows": [...], "breakdowns": {path: {...}}, "pending": [paths]}`` where
-            rows have the :data:`~protonfs.usage.report.JSON_ROW_KEYS` keys.
+        :returns: ``{"rows": [...], "breakdowns": {path: {...}}, "pending": [paths],
+            "now": seconds}`` where rows have the :data:`~protonfs.usage.report.JSON_ROW_KEYS`
+            keys and ``now`` is the engine's clock (Unix time), the reference for every
+            ``age_seconds`` and timestamp in the answer.
         :raises ValueError: if ``path`` is outside the target, ``depth`` is out of range or
             ``queue`` is not a known mode.
         """
@@ -139,6 +141,7 @@ class Api:
             "rows": [{k: getattr(r, k) for k in JSON_ROW_KEYS} for r in rows],
             "breakdowns": {p: to_jsonable(bd) for p, bd in bds.items()},
             "pending": self.jobs.pending(),
+            "now": now,
         }
 
     def _queue_if_due(self, bd, policy: RefreshPolicy, now: float, *, only_new: bool) -> None:
@@ -164,10 +167,17 @@ class Api:
 
         :param queue: as for :meth:`tree`.
         :returns: the :meth:`tree` dict with a ``"trash"`` key: the cached trash summary as
-            a dict, or ``None`` when no trash pass has run.
+            a dict, or ``None`` when no trash pass has run. A summary dict also carries
+            ``total_known`` (measured bytes) and ``complete`` (whether that is the whole
+            trash).
         """
         out = self.tree(self.settings.target, self.settings.maxdepth, queue=queue)
-        out["trash"] = to_jsonable(self.engine.trash_summary())
+        summary = self.engine.trash_summary()
+        trash = to_jsonable(summary)
+        if trash is not None:
+            trash["total_known"] = summary.total_known
+            trash["complete"] = summary.complete
+        out["trash"] = trash
         return out
 
     # ----------------------------------------------------------------- commands
@@ -215,16 +225,26 @@ class Api:
             self._walk_cancel.set()
         return {"cancelled": True}
 
+    def _settings_dict(self) -> dict:
+        out = self.settings.to_dict()
+        out["refresh_seconds"] = self.settings.policy().threshold  # None under ``never``
+        return out
+
     def get_settings(self) -> dict:
-        """Return the current settings as a dict."""
-        return self.settings.to_dict()
+        """Return the current settings as a dict.
+
+        Besides the :class:`~protonfs.webui.settings.GuiSettings` fields it has
+        ``refresh_seconds``: the refresh threshold in seconds (``0`` for ``0``, ``None`` for
+        ``never``), parsed as the command line parses it.
+        """
+        return self._settings_dict()
 
     def set_settings(self, data: dict) -> dict:
         """Apply the editable fields of ``data`` and return the new settings.
 
         :param data: a patch of ``refresh``, ``maxdepth``, ``dirs_only``, ``freeze``,
             ``hide``; ``target`` may be present only if unchanged.
-        :returns: the new settings as a dict.
+        :returns: the new settings as a dict, as :meth:`get_settings` returns it.
         :raises ValueError: if ``data`` is not a dict or a field is invalid; nothing changes.
         """
         if not isinstance(data, dict):
@@ -240,7 +260,7 @@ class Api:
         except (TypeError, AttributeError) as exc:
             raise ValueError(f"invalid settings: {exc}") from exc
         self.settings = new
-        return self.settings.to_dict()
+        return self._settings_dict()
 
     # ------------------------------------------------------------------- events
 
