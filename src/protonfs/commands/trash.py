@@ -36,7 +36,7 @@ def list_trash(ctx: RepoContext, console: Console) -> None:
     name. A nonzero duplicate count is exactly the ambiguity `restore` warns about
     (#56): proton-drive would act on the first name-match, not necessarily this one.
     """
-    entries = ctx.drive.list("/trash")
+    entries = ctx.drive.list_trash()
     names = [decrypted_name(entry) for entry in entries]
     counts = Counter(name for name in names if name is not None)
 

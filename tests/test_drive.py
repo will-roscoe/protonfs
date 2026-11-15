@@ -15,6 +15,7 @@ from protonfs.drive import (
     DriveError,
     DriveThrottleError,
     DriveTransferTimeoutError,
+    DriveTrashListTimeoutError,
     SizeResult,
     TransferResult,
 )
@@ -1765,3 +1766,53 @@ def test_size_does_not_retry_a_missing_path(monkeypatch: pytest.MonkeyPatch) -> 
     with pytest.raises(DriveError, match="Node not found"):
         client.size("/my-files/x", sleep=lambda _: None)
     assert len(run.calls) == 1
+
+
+def test_list_trash_is_bounded_and_timeout_error_is_truthful(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # #193: every /trash listing carries a timeout (it used to be None -> hang forever),
+    # and expiry names what timed out, that nothing changed, and what to try.
+    client = _client(monkeypatch)
+    seen: list[float | None] = []
+
+    def hang(path, timeout=None):
+        seen.append(timeout)
+        raise subprocess.TimeoutExpired(cmd="proton-drive", timeout=timeout)
+
+    monkeypatch.setattr(client, "list", hang)
+    with pytest.raises(DriveTrashListTimeoutError) as info:
+        client.list_trash(timeout=7)
+
+    assert seen == [7]
+    message = str(info.value)
+    assert "/trash" in message and "7s" in message
+    assert "changed nothing" in message
+    assert "PROTONFS_TRASH_LIST_TIMEOUT" in message
+
+
+def test_list_trash_default_timeout_is_finite(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _client(monkeypatch)
+    seen: list[float | None] = []
+    monkeypatch.setattr(client, "list", lambda path, timeout=None: seen.append(timeout) or [])
+
+    assert client.list_trash() == []
+    assert seen == [drive_mod.TRASH_LIST_TIMEOUT_SECONDS] and seen[0] > 0
+
+
+def test_restore_trash_listing_timeout_does_not_restore(monkeypatch: pytest.MonkeyPatch) -> None:
+    # #193: restore lists /trash first; a timeout must stop before any restore call.
+    client = _client(monkeypatch)
+    calls: list[list[str]] = []
+
+    def run(cmd, **kw):
+        calls.append(list(cmd[1:4]))
+        if cmd[1:4] == ["filesystem", "list", "/trash"]:
+            raise subprocess.TimeoutExpired(cmd="proton-drive", timeout=kw.get("timeout"))
+        return subprocess.CompletedProcess(cmd, 1, 'Path "x" is not supported', "")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    with pytest.raises(DriveTrashListTimeoutError):
+        client.restore(["/my-files/test/a.bin"])
+
+    assert ["filesystem", "restore", "/trash/a.bin"] not in calls

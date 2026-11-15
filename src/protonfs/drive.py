@@ -62,6 +62,10 @@ _STRATEGY_RENAMES = {
 # directory (and is retried) instead of hanging the whole walk. Overridable via env for
 # low-latency vs. throttled hosts.
 LIST_TIMEOUT_SECONDS = float(os.environ.get("PROTONFS_LIST_TIMEOUT", "45"))
+# #193: `/trash` is one flat account-wide listing with no paging or filter, so a large trash
+# takes minutes (27 MB of JSON had streamed after 5 min on a measured account). It gets its
+# own, much longer bound; overridable for bigger trashes.
+TRASH_LIST_TIMEOUT_SECONDS = float(os.environ.get("PROTONFS_TRASH_LIST_TIMEOUT", "900"))
 LIST_MAX_RETRIES = int(os.environ.get("PROTONFS_LIST_RETRIES", "4"))
 LIST_BACKOFF_BASE_SECONDS = float(os.environ.get("PROTONFS_LIST_BACKOFF", "2"))
 LIST_BACKOFF_CAP_SECONDS = float(os.environ.get("PROTONFS_LIST_BACKOFF_CAP", "60"))
@@ -136,6 +140,17 @@ class DriveThrottleError(DriveError):
 
     Distinct from a generic DriveError so callers (and the CLI) can report "the remote is
     throttling" clearly, and so a whole-tree walk fails one directory rather than hanging.
+    """
+
+
+class DriveTrashListTimeoutError(DriveError):
+    """Listing ``/trash`` did not finish within its timeout (#193).
+
+    Raised by :meth:`DriveClient.list_trash`. The listing is read-only, so nothing was
+    changed by the timed-out call itself; the caller adds what, if anything, it had
+    already done before listing.
+
+    .. versionadded:: 3.4.0
     """
 
 
@@ -1236,6 +1251,30 @@ class DriveClient:
         result = self._run_json(["filesystem", "list", remote_path], timeout=timeout)
         return result if isinstance(result, list) else []
 
+    def list_trash(self, timeout: float | None = None) -> list[dict]:
+        """List every entry in ``/trash`` with a bounded timeout (#193).
+
+        :param timeout: seconds to wait, or ``None`` for
+            :data:`TRASH_LIST_TIMEOUT_SECONDS` (``PROTONFS_TRASH_LIST_TIMEOUT``, 900).
+        :returns: the raw ``filesystem list`` entries of the whole trash.
+        :raises DriveTrashListTimeoutError: when the listing does not finish in time
+            (a very large trash). The listing is read-only, so nothing was changed.
+        :raises DriveError: on any other Drive failure.
+
+        .. versionadded:: 3.4.0
+        """
+        limit = TRASH_LIST_TIMEOUT_SECONDS if timeout is None else timeout
+        try:
+            return self.list("/trash", timeout=limit)
+        except subprocess.TimeoutExpired as exc:
+            raise DriveTrashListTimeoutError(
+                f"listing /trash timed out after {limit:.0f}s; the trash is probably very "
+                "large. The listing itself changed nothing. Raise "
+                "PROTONFS_TRASH_LIST_TIMEOUT (seconds) and retry, or empty the trash in "
+                "the Proton Drive web app or with `protonfs trash empty` (irreversible, "
+                "account-wide)."
+            ) from exc
+
     def list_with_backoff(
         self,
         remote_path: str,
@@ -1645,7 +1684,7 @@ class DriveClient:
         path, guarding against proton-drive's first-match-wins name resolution."""
         stripped = original_path.rstrip("/")
         parent, _, name = stripped.rpartition("/")
-        same_named = [e for e in self.list("/trash") if decrypted_name(e) == name]
+        same_named = [e for e in self.list_trash() if decrypted_name(e) == name]
         if not same_named:
             raise DriveError(f"cannot restore {original_path}: no trashed item is named {name!r}")
         parent_uid = self._node_uid(parent or "/")

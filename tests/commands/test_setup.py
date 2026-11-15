@@ -320,6 +320,8 @@ def test_migrate_lfs_full_success_mutates_git_only_after_upload_and_confirm(
         events.append(("push",))
         return TransferResult(3, 0, 0, [])
 
+    monkeypatch.setattr("protonfs.commands.setup.lfs_tracked_paths", lambda root: ["a"])
+    monkeypatch.setattr("protonfs.commands.setup.verify_exported", lambda *a, **k: [])
     monkeypatch.setattr("protonfs.commands.setup.push_files", fake_push_files)
 
     confirm_calls = []
@@ -366,6 +368,8 @@ def test_migrate_lfs_confirm_declined_leaves_git_untouched(
         root=tmp_path, config=config, index=IndexStore(tmp_path), drive=make_fake_drive()
     )
 
+    monkeypatch.setattr("protonfs.commands.setup.lfs_tracked_paths", lambda root: ["a"])
+    monkeypatch.setattr("protonfs.commands.setup.verify_exported", lambda *a, **k: [])
     monkeypatch.setattr(
         "protonfs.commands.setup.push_files",
         lambda *a, **k: TransferResult(3, 0, 0, []),
@@ -419,6 +423,8 @@ def test_migrate_lfs_wraps_git_mutation_failure_in_click_exception(
         root=tmp_path, config=config, index=IndexStore(tmp_path), drive=make_fake_drive()
     )
 
+    monkeypatch.setattr("protonfs.commands.setup.lfs_tracked_paths", lambda root: ["a"])
+    monkeypatch.setattr("protonfs.commands.setup.verify_exported", lambda *a, **k: [])
     monkeypatch.setattr(
         "protonfs.commands.setup.push_files",
         lambda *a, **k: TransferResult(3, 0, 0, []),
@@ -1001,3 +1007,88 @@ def test_ensure_config_asks_again_after_a_prompted_root_drive_cannot_hold(
     assert result.exit_code == 0, result.output
     assert "must live under /my-files" in result.output
     assert "root=/my-files/proj" in result.output
+
+
+# --- migrate_lfs Drive verification (#206) --------------------------------------------
+
+
+def _lfs_ctx(tmp_path: Path, make_fake_drive) -> RepoContext:
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    (tmp_path / ".gitattributes").write_text("sim/*/* filter=lfs diff=lfs merge=lfs -text\n")
+    from protonfs.config import init_config
+
+    config = init_config(tmp_path, "/my-files/test")
+    return RepoContext(
+        root=tmp_path, config=config, index=IndexStore(tmp_path), drive=make_fake_drive()
+    )
+
+
+def test_migrate_lfs_aborts_untouched_when_a_file_is_unverified_on_drive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, make_fake_drive
+) -> None:
+    ctx = _lfs_ctx(tmp_path, make_fake_drive)
+    # push claims success (planned 3, delivered 3, no failure) yet one file is not on Drive
+    monkeypatch.setattr(
+        "protonfs.commands.setup.push_files", lambda *a, **k: TransferResult(3, 0, 0, [])
+    )
+    monkeypatch.setattr(
+        "protonfs.commands.setup.lfs_tracked_paths", lambda root: ["sim/a/x", "sim/a/y"]
+    )
+    monkeypatch.setattr(
+        "protonfs.commands.setup.verify_exported",
+        lambda ctx, paths, reporter=None: [
+            {"name": "sim/a/y", "error": "Drive check: missing", "kind": "unverified-drive"}
+        ],
+    )
+    ran: list[list[str]] = []
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda cmd, *a, **k: ran.append(cmd) or subprocess.CompletedProcess(cmd, 0),
+    )
+    monkeypatch.setattr(click, "confirm", lambda *a, **k: pytest.fail("must not reach confirm"))
+
+    with pytest.raises(click.ClickException) as excinfo:
+        migrate_lfs(ctx, dry_run=False)
+
+    message = str(excinfo.value)
+    assert "1 of 2" in message and "sim/a/y" in message
+    assert "stay tracked by git-LFS" in message and "--migrate-lfs" in message
+    assert "filter=lfs" in (tmp_path / ".gitattributes").read_text()
+    assert [c for c in ran if c[3] in ("add", "rm", "commit")] == []
+
+
+def test_migrate_lfs_aborts_when_lfs_files_cannot_be_listed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, make_fake_drive
+) -> None:
+    ctx = _lfs_ctx(tmp_path, make_fake_drive)
+    monkeypatch.setattr(
+        "protonfs.commands.setup.push_files", lambda *a, **k: TransferResult(1, 0, 0, [])
+    )
+
+    def boom(root):
+        raise RuntimeError("`git lfs ls-files` failed: nope")
+
+    monkeypatch.setattr("protonfs.commands.setup.lfs_tracked_paths", boom)
+    monkeypatch.setattr(
+        subprocess, "run", lambda cmd, *a, **k: subprocess.CompletedProcess(cmd, 0)
+    )
+    with pytest.raises(click.ClickException, match="nothing was untracked"):
+        migrate_lfs(ctx, dry_run=False)
+    assert "filter=lfs" in (tmp_path / ".gitattributes").read_text()
+
+
+def test_lfs_tracked_paths_lists_and_raises(tmp_path: Path, monkeypatch) -> None:
+    from protonfs import lfs
+
+    monkeypatch.setattr(
+        subprocess, "run",
+        lambda cmd, **k: subprocess.CompletedProcess(cmd, 0, stdout="a/b\nc d\n", stderr=""),
+    )
+    assert lfs.lfs_tracked_paths(tmp_path) == ["a/b", "c d"]
+    monkeypatch.setattr(
+        subprocess, "run",
+        lambda cmd, **k: subprocess.CompletedProcess(cmd, 2, stdout="", stderr="bad"),
+    )
+    with pytest.raises(RuntimeError, match="bad"):
+        lfs.lfs_tracked_paths(tmp_path)

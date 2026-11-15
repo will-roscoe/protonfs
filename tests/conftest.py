@@ -397,6 +397,9 @@ class FakeDrive:
             ]
         return []
 
+    def list_trash(self, timeout=None):
+        return self.list("/trash")
+
     def parent_name(self, parent_uid):
         self.parent_name_calls.append(parent_uid)
         return self._parent_names.get(parent_uid)
