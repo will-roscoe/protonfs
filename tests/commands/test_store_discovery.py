@@ -264,3 +264,65 @@ def test_status_phase_names_the_subpath_as_typed(store, monkeypatch) -> None:
     monkeypatch.chdir(root / "sim")
     result = _run("-v", "status", "mload005")
     assert "subpath=mload005" in result.output
+
+
+def test_path_into_an_outer_store_is_outside_the_inner_one(store, monkeypatch) -> None:
+    root, _ = store
+    init_config(root / "sim", "/my-files/inner")
+    monkeypatch.chdir(root / "sim" / "mload005")
+    result = _run("push", "../../other")
+    assert result.exit_code == 2, result.output
+    assert str((root / "sim").resolve()) in result.output  # names the store it is outside of
+
+
+def test_schedule_path_is_stored_relative_to_the_store(store, monkeypatch) -> None:
+    root, _ = store
+    seen: dict = {}
+
+    class Job:
+        id, cron, command, wrapper_path, log_path = "j", "* * * * *", "push", "w", "l"
+        drive_cache_home = None
+
+    def fake_add(repo, **kw):
+        seen.update(repo=repo, **kw)
+        return Job()
+
+    monkeypatch.setattr("protonfs.commands.schedule.add_job", fake_add)
+    monkeypatch.chdir(root / "sim")
+    result = _run("schedule", "--add", "--every", "daily", "--path", "mload00*")
+    assert result.exit_code == 0, result.output
+    assert seen["repo"] == root.resolve()
+    assert seen["path"] == "sim/mload00*"
+
+
+def test_upgrade_acts_on_the_discovered_store(store, monkeypatch) -> None:
+    root, _ = store
+    seen: dict = {}
+    monkeypatch.setattr(
+        "protonfs.commands.upgrade.run_upgrade", lambda r, **kw: seen.update(upgrade=r) or 0
+    )
+    monkeypatch.chdir(root / "sim")
+    assert _run("upgrade", "--check").exit_code == 0
+    assert seen["upgrade"] == root.resolve()
+
+
+def test_doctor_checks_the_discovered_store(store, monkeypatch) -> None:
+    from protonfs.commands import doctor as doctor_mod
+
+    class Drive:
+        binary = "proton-drive"
+
+        def binary_available(self) -> bool:
+            return False
+
+    root, _ = store
+    seen: list = []
+    monkeypatch.setattr(doctor_mod, "DriveClient", Drive)
+    monkeypatch.setattr(doctor_mod, "is_linux", lambda: False)
+    monkeypatch.setattr(doctor_mod, "repo_currency_checks", lambda r: seen.append(r) or [])
+    monkeypatch.setattr(
+        doctor_mod, "upstream_currency_check", lambda: doctor_mod.Check("u", True, "ok")
+    )
+    monkeypatch.chdir(root / "sim")
+    doctor_mod.run_doctor()
+    assert seen == [root.resolve()]

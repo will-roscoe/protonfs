@@ -732,6 +732,10 @@ def status(path: tuple[str, ...], fmt: str, remote: bool) -> None:
     1 = drift present (something to push/pull/prune), 2 = conflict present
     (conflict: a local change with no remote view to attribute it; both-modified:
     changed on both sides). Conflict outranks drift when both are present.
+
+    .. versionchanged:: 3.4.0
+       Run from a subdirectory of a store it finds the store, and PATH is read relative to
+       the current directory (#232).
     """
     from collections import Counter
 
@@ -863,6 +867,10 @@ def ls(
     local/indexed sizes) instead of listing thousands of files; --state filters to
     the states you care about; --format plain|json makes the output scriptable;
     --visual treemap|waffle draws a storage-usage chart of those directories.
+
+    .. versionchanged:: 3.4.0
+       Run from a subdirectory of a store it finds the store, and PATH is read relative to
+       the current directory (#232).
     """
     from rich.console import Console
 
@@ -1148,6 +1156,10 @@ def push(
        ``--allow-mass-delete``: with ``trash``, files deleted locally are moved to the
        Drive trash and counted as ``trashed=`` (a dry run lists them). Files deleted
        locally that stay on Drive are counted as ``local-deleted=`` (#197).
+
+    .. versionchanged:: 3.4.0
+       Run from a subdirectory of a store it finds the store, and PATH is read relative to
+       the current directory (#232).
     """
     from protonfs.commands.push import push as push_files
     from protonfs.context import load_context
@@ -1308,6 +1320,10 @@ def import_cmd(path: tuple[str, ...], dry_run: bool, strict: bool) -> None:
     error.
 
     .. versionadded:: 3.1.0
+
+    .. versionchanged:: 3.4.0
+       Run from a subdirectory of a store it finds the store, and PATH is read relative to
+       the current directory (#232).
     """
     from protonfs import gitops
     from protonfs.context import load_context
@@ -1455,6 +1471,10 @@ def export_cmd(path: tuple[str, ...], dry_run: bool, strict: bool, trash_remote:
     ``--trash-remote`` could not trash, or a Drive/lock error; 2 usage error.
 
     .. versionadded:: 3.1.0
+
+    .. versionchanged:: 3.4.0
+       Run from a subdirectory of a store it finds the store, and PATH is read relative to
+       the current directory (#232).
     """
     from protonfs import gitops
     from protonfs.context import load_context
@@ -1655,6 +1675,10 @@ def pull(
     .. versionchanged:: 3.3.2
        ``--resolve`` downloads files changed only on Drive again (3.0.0 to 3.3.1 left
        them alone). Without it, ``--refresh`` reports how many such files it left alone.
+
+    .. versionchanged:: 3.4.0
+       Run from a subdirectory of a store it finds the store, and PATH is read relative to
+       the current directory (#232).
     """
     from protonfs import manifest
     from protonfs.commands.pull import pull as pull_files
@@ -1835,6 +1859,10 @@ def offload(
     .. versionchanged:: 2.4.0
        File PATHs share one pass, so N files no longer cost N listings and index saves
        (#171).
+
+    .. versionchanged:: 3.4.0
+       Run from a subdirectory of a store it finds the store, and PATH is read relative to
+       the current directory (#232).
     """
     from protonfs.commands.offload import OffloadResult
     from protonfs.commands.offload import offload as offload_files
@@ -1910,6 +1938,10 @@ def prune(
 
     Exit code: 0 success (files offload refused are reported, not failed); 1 when the
     push that ran first failed for some file, or a Drive/lock error; 2 usage error.
+
+    .. versionchanged:: 3.4.0
+       Run from a subdirectory of a store it finds the store, and PATH is read relative to
+       the current directory (#232).
     """
     from protonfs.commands.offload import OffloadResult
     from protonfs.commands.prune import prune as prune_files
@@ -1966,7 +1998,12 @@ def prune(
 @click.option("--yes", is_flag=True, help="Skip confirmation prompt.")
 @_drive_error_boundary
 def rm(path: tuple[str, ...], recursive: bool, force: bool, yes: bool) -> None:
-    """Remove files/directories from Drive (trash by default, -f for permanent)."""
+    """Remove files/directories from Drive (trash by default, -f for permanent).
+
+    .. versionchanged:: 3.4.0
+       Run from a subdirectory of a store it finds the store, and PATH is read relative to
+       the current directory (#232).
+    """
     from protonfs.commands.rm import rm as rm_path
     from protonfs.context import load_context
     from protonfs.locking import repo_lock
@@ -1992,7 +2029,12 @@ def rm(path: tuple[str, ...], recursive: bool, force: bool, yes: bool) -> None:
 @click.argument("path", nargs=-1, required=True)
 @_drive_error_boundary
 def restore(path: tuple[str, ...]) -> None:
-    """Restore trashed files/directories on Drive."""
+    """Restore trashed files/directories on Drive.
+
+    .. versionchanged:: 3.4.0
+       Run from a subdirectory of a store it finds the store, and PATH is read relative to
+       the current directory (#232).
+    """
     from protonfs.commands.restore import restore as restore_path
     from protonfs.context import load_context
     from protonfs.locking import repo_lock
@@ -2009,7 +2051,12 @@ def restore(path: tuple[str, ...]) -> None:
 @click.option("--prune", is_flag=True, help="Drop index entries for files deleted on the remote.")
 @_drive_error_boundary
 def refresh(path: tuple[str, ...], prune: bool) -> None:
-    """Discover remote files and seed the local index (any number of PATHs)."""
+    """Discover remote files and seed the local index (any number of PATHs).
+
+    .. versionchanged:: 3.4.0
+       Run from a subdirectory of a store it finds the store, and PATH is read relative to
+       the current directory (#232).
+    """
     from protonfs.commands.refresh import RefreshResult
     from protonfs.commands.refresh import refresh as refresh_index
     from protonfs.context import load_context
@@ -2387,6 +2434,10 @@ def schedule(
     .. versionchanged:: 3.0.0
        Added ``--deletions`` for push and sync jobs and ``--no-restore`` for pull and
        sync jobs (#197).
+
+    .. versionchanged:: 3.4.0
+       Run from a subdirectory of a store it finds the store, and PATH is read relative to
+       the current directory (#232).
     """
     import json as _json
 
