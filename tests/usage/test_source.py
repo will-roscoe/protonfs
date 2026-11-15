@@ -15,21 +15,33 @@ from protonfs.usage.source import (
 
 
 class StubClient:
-    def __init__(self, fail=0, delay=0.0):
+    """Records calls; ``hold`` (an Event) keeps each call in flight until it is set."""
+
+    def __init__(self, fail=0, delay=0.0, hold=None):
         self.fail = fail
         self.delay = delay
+        self.hold = hold
         self.calls = []
         self.inflight = 0
         self.max_inflight = 0
-        self._lock = threading.Lock()
+        self._cond = threading.Condition()
 
     def _enter(self):
-        with self._lock:
+        with self._cond:
             self.inflight += 1
             self.max_inflight = max(self.max_inflight, self.inflight)
+            self._cond.notify_all()
+        if self.hold is not None:
+            assert self.hold.wait(10), "test never released the held call"
         time.sleep(self.delay)
-        with self._lock:
+        with self._cond:
             self.inflight -= 1
+            self._cond.notify_all()
+
+    def wait_inflight(self, n):
+        """Block until ``n`` calls are in flight at once (10 s safety limit)."""
+        with self._cond:
+            assert self._cond.wait_for(lambda: self.inflight >= n, 10), self.inflight
 
     def _maybe_fail(self):
         if self.fail:
@@ -45,6 +57,12 @@ class StubClient:
 
     def list(self, path, timeout=None):
         self.calls.append(("list", path, timeout))
+        self._enter()
+        self._maybe_fail()
+        return []
+
+    def list_trash(self, timeout=None):
+        self.calls.append(("list_trash", "/trash", timeout))
         self._enter()
         self._maybe_fail()
         return []
@@ -120,18 +138,29 @@ def test_list_dir_and_trash_use_client():
     assert e.name == "f" and e.size == 7
     assert c.calls[0] == ("list_with_backoff", "/my-files", list_timeout(100))
     assert src.list_trash(timeout=12.5) == []
-    assert c.calls[1] == ("list", "/trash", 12.5)
+    assert c.calls[1] == ("list_trash", "/trash", 12.5)
+
+
+def test_list_trash_defaults_to_the_clients_configurable_timeout():
+    """No timeout means DriveClient.list_trash's own, PROTONFS_TRASH_LIST_TIMEOUT (#235)."""
+    c = StubClient()
+    assert CliDriveSource(c).list_trash() == []
+    assert c.calls == [("list_trash", "/trash", None)]
 
 
 def test_semaphore_bounds_concurrency():
-    c = StubClient(delay=0.05)
+    release = threading.Event()
+    c = StubClient(hold=release)
     src = CliDriveSource(c, concurrency=4)
     threads = [threading.Thread(target=src.list_dir, args=("/x",)) for _ in range(8)]
     for t in threads:
         t.start()
+    c.wait_inflight(4)  # four overlap while held ...
+    release.set()
     for t in threads:
-        t.join()
-    assert 2 <= c.max_inflight <= 4  # bounded by the semaphore; overlap is timing-dependent
+        t.join(10)
+    assert c.max_inflight == 4  # ... and the semaphore never lets a fifth in
+    assert len(c.calls) == 8
     assert src.concurrency == 4
 
 
@@ -149,15 +178,18 @@ def test_size_calls_run_one_at_a_time():
 
 
 def test_lists_overlap_while_a_size_runs():
-    client = StubClient(delay=0.1)
+    release = threading.Event()
+    client = StubClient(hold=release)
     src = CliDriveSource(client, concurrency=4, sleep=lambda s: None)
-    threads = [threading.Thread(target=src.size, args=("/my-files/a",))]
-    threads += [threading.Thread(target=src.list_dir, args=(f"/my-files/l{i}",)) for i in range(3)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join(5)
-    assert client.max_inflight >= 2
+    sizer = threading.Thread(target=src.size, args=("/my-files/a",))
+    sizer.start()
+    client.wait_inflight(1)
+    client.hold = None  # the lists below are not held
+    src.list_dir("/my-files/l0")  # returns while the size is still in flight
+    assert client.max_inflight == 2
+    release.set()
+    sizer.join(10)
+    assert not sizer.is_alive()
 
 
 def test_size_waits_out_throttling_instead_of_restarting():
@@ -170,18 +202,42 @@ def test_size_waits_out_throttling_instead_of_restarting():
 
 def test_slow_size_is_reported_once_past_the_threshold():
     seen = []
-    src = CliDriveSource(StubClient(delay=0.3), sleep=lambda s: None)
-    src.slow_after = 0.05
-    src.on_slow_size = seen.append
+    reported = threading.Event()  # the size call is held until the callback has fired
+
+    def on_slow(path):
+        seen.append(path)
+        reported.set()
+
+    src = CliDriveSource(StubClient(hold=reported), sleep=lambda s: None)
+    src.slow_after = 0.01
+    src.on_slow_size = on_slow
     src.size("/my-files/a")
     assert seen == ["/my-files/a"]
 
 
-def test_fast_size_is_not_reported():
+def test_fast_size_cancels_its_slow_timer(monkeypatch):
+    timers = []
+
+    class RecordingTimer:
+        def __init__(self, interval, fn, args=()):
+            self.interval, self.fn, self.args = interval, fn, args
+            self.started = self.cancelled = False
+            self.daemon = False
+            timers.append(self)
+
+        def start(self):
+            self.started = True
+
+        def cancel(self):
+            self.cancelled = True
+
+    monkeypatch.setattr("protonfs.usage.source.threading.Timer", RecordingTimer)
     seen = []
     src = CliDriveSource(StubClient(), sleep=lambda s: None)
     src.slow_after = 5.0
     src.on_slow_size = seen.append
     src.size("/my-files/a")
-    time.sleep(0.05)
+    assert len(timers) == 1
+    (timer,) = timers
+    assert timer.interval == 5.0 and timer.started and timer.cancelled
     assert seen == []

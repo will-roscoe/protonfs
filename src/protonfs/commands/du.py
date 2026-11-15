@@ -131,13 +131,15 @@ def build_options(
     Resolves ``refresh`` and the plan size from ``du.refresh``/``du.plan_size`` (env var,
     then global config) when not given.
 
-    :raises click.UsageError: for any invalid combination of flags.
+    :raises click.UsageError: for any invalid combination of flags, or a ``-x``/``-X``
+        pattern that is not valid gitignore syntax.
     :raises click.ClickException: when the stored plan size is not a valid size.
 
     .. versionadded:: 3.4.0
     """
     from protonfs.commands.config import resolve_du_setting
     from protonfs.retention import RetentionError
+    from protonfs.usage.excludes import ExcludeRules
     from protonfs.usage.policy import RefreshPolicy, parse_size
 
     if as_json:
@@ -145,6 +147,12 @@ def build_options(
             raise click.UsageError("--json cannot be combined with --format " + fmt + ".")
         fmt = "json"
     low, high = _depth_range(depth, mindepth, maxdepth)
+    for flag, patterns, kind in (("-x/--exclude-updates", exclude_updates, "freeze"),
+                                 ("-X/--exclude", exclude, "hide")):
+        try:
+            ExcludeRules(**{kind: patterns})
+        except ValueError as exc:
+            raise click.UsageError(f"{flag}: {exc}") from exc
     if not gui and (listen is not None or port is not None or log is not None):
         raise click.UsageError("--listen, --port and --log are only valid with --gui.")
     if gui:
@@ -189,14 +197,76 @@ def default_engine() -> UsageEngine:
     )
 
 
+def remote_matches(pattern: str, engine: UsageEngine, policy) -> list[str]:
+    """Return the Drive paths a remote ``PATH`` pattern matches, for ``du``.
+
+    Expands with :func:`~protonfs.usage.paths.expand_pattern`, taking each folder's
+    entries from its cached listing when that is valid and fresh under ``policy``, else
+    from one ``filesystem list`` call (none under ``--refresh never``, where an uncached
+    folder matches nothing).
+
+    :param pattern: Drive path holding glob characters, e.g. ``/my-files/sim/run*``.
+    :param engine: the engine whose cache and source to use.
+    :param policy: the run's :class:`~protonfs.usage.policy.RefreshPolicy`.
+    :returns: the matching escaped Drive paths, sorted.
+    :raises protonfs.drive.DriveError: if a listing fails.
+
+    .. versionadded:: 3.4.0
+    """
+    from protonfs.usage.paths import expand_pattern
+
+    def children(path: str) -> list:
+        snap = engine.cache.snapshot(path)
+        if snap is not None and not snap.invalid and (
+                policy.never or not policy.is_stale(snap.at, engine.clock())):
+            return list(snap.rows)
+        if policy.never:
+            return []
+        if engine.on_call is not None:
+            engine.on_call("list", path)
+        return engine.source.list_dir(path)
+
+    return expand_pattern(pattern, children)
+
+
 PLAN_HINT = "% of plan needs your plan size: protonfs config set --global du.plan_size 3TB"
 
-#: Printed once to stderr when a ``size`` call is held up by Proton's rate limit.
-THROTTLE_NOTICE = (
+_THROTTLED = (
     "du: Proton is rate-limiting folder sizes (about 20 at a time, then a pause of a few "
-    "minutes), so this can take a while. Sizes measured so far are kept: Ctrl-C and run "
-    "again later to continue from them (not with --refresh 0)."
+    "minutes), so this can take a while."
 )
+
+#: Printed once to stderr when a ``size`` call is held up by Proton's rate limit, unless
+#: the run is under ``--refresh 0`` or in the trash pass, where a re-run would not
+#: continue from the sizes kept and the notice says what happens instead.
+THROTTLE_NOTICE = (
+    _THROTTLED + " Sizes measured so far are kept: Ctrl-C and run again later to continue "
+    "from them."
+)
+
+
+def _throttle_notice(policy, in_trash_pass: bool) -> str:
+    """The rate-limit notice that is true for this run at this moment."""
+    if in_trash_pass:
+        return (_THROTTLED + " An interrupted trash pass starts over from the beginning, so "
+                "let it finish if you can.")
+    if policy.fresh_only:
+        return (_THROTTLED + " Sizes measured so far are kept, but --refresh 0 measures "
+                "everything again: only a run without --refresh 0 can continue from them.")
+    return THROTTLE_NOTICE
+
+
+def _interrupt_message(policy, in_trash_pass: bool) -> str:
+    """What Ctrl-C left behind, said truthfully for the policy and the step it stopped."""
+    if in_trash_pass:
+        return ("interrupted during the trash pass -- an interrupted trash pass starts over "
+                "from the beginning next time.")
+    if policy.never:
+        return "interrupted."
+    if policy.fresh_only:
+        return ("interrupted -- sizes measured so far are kept, but --refresh 0 measures "
+                "everything again; a run without --refresh 0 picks up from them.")
+    return "interrupted -- sizes measured so far are kept; run again to continue."
 
 
 def _trash_lines(summary) -> list:
@@ -210,25 +280,56 @@ def _trash_lines(summary) -> list:
             f"trash: partial, >= {human_size(summary.total_known)} measured ({summary.partial})"
         )
     if summary.unresolved_folders:
-        lines.append(f"{summary.unresolved_folders} trashed folders, size unknown")
+        lines.append(
+            f"{summary.unresolved_folders} trashed folders, size unknown (the folders they "
+            "came from are not cached yet; once a deeper du has listed them, the next "
+            "du / measures these)"
+        )
+    for g in summary.groups:
+        if g.folders and g.bytes is None:
+            lines.append(f"trash from {g.parent_path}: {g.folders} trashed folder"
+                         f"{'' if g.folders == 1 else 's'}, size unknown ({g.reason})")
     return lines
 
 
-def _attach_throttle_notice(engine, err) -> None:
-    """Print :data:`THROTTLE_NOTICE` once when the engine's source reports a slow size."""
+def _trash_incomplete(summary, rules) -> bool:
+    """Whether the trash summary is incomplete for a reason other than this run's ``-x``/``-X``.
+
+    :param summary: the stored :class:`~protonfs.usage.trash.TrashSummary`, or ``None``.
+    :param rules: this run's rules, relative to ``/``.
+    """
+    from protonfs.usage.trash import EXCLUDED_REASON, excluded
+
+    if summary is None:
+        return False
+    if summary.partial is not None or summary.unresolved_folders:
+        return True
+    return any(
+        g.bytes is None and not (g.reason == EXCLUDED_REASON and g.parent_path is not None
+                                 and excluded(rules, g.parent_path))
+        for g in summary.groups
+    )
+
+
+def _attach_throttle_notice(engine, say, policy) -> None:
+    """Print a rate-limit notice with ``say`` when the engine's source reports a slow size.
+
+    The text depends on the policy and on whether the trash pass is running when it fires
+    (see :data:`THROTTLE_NOTICE`); each distinct text is printed once.
+    """
     source = getattr(engine, "source", None)
     if source is None or not hasattr(source, "on_slow_size"):
         return
     lock = threading.Lock()
-    shown = []
+    shown: set = set()
 
     def on_slow_size(path: str) -> None:
+        text = _throttle_notice(policy, getattr(engine, "in_trash_pass", False))
         with lock:
-            if shown:
+            if text in shown:
                 return
-            shown.append(path)
-            err.write(THROTTLE_NOTICE + "\n")
-            err.flush()
+            shown.add(text)
+        say(text)
 
     source.on_slow_size = on_slow_size
 
@@ -253,36 +354,50 @@ def run_du(
     :param out: stream for the result (default ``sys.stdout``).
     :param err: stream for warnings, the plan hint and ``-p`` progress (default
         ``sys.stderr``).
-    :returns: ``0`` complete; ``1`` a target's own figure failed; ``3`` partial results
-        (a row in state ``error``, a ``/`` total that leaves out a section, an unmeasurable
-        ``/devices`` row, or an incomplete trash pass). A user's ``-x``/``-X`` alone is not
-        partial.
+    :returns: ``0`` complete; ``1`` a target's own figure could not be measured; ``3``
+        partial results (a row in state ``error``, including a target whose size was
+        measured but whose listing failed, a ``/`` or ``/devices`` total that leaves out
+        a section or device, an unmeasurable ``/devices`` row, or an incomplete trash
+        pass; a user's ``-x``/``-X`` alone is not partial); ``130`` after Ctrl-C, having
+        said on ``err`` what a re-run would reuse.
 
     .. versionadded:: 3.4.0
     """
-    import json
-
-    from rich.console import Console
-
     from protonfs.reporting import Reporter, get_reporter
     from protonfs.usage.excludes import ExcludeRules
     from protonfs.usage.policy import RefreshPolicy
-    from protonfs.usage.report import collect_rows, render_plain, render_table, select_rows, to_json
 
     out = out if out is not None else sys.stdout
     err = err if err is not None else sys.stderr
     engine = (engine_factory or default_engine)()
-    _attach_throttle_notice(engine, err)
     policy = RefreshPolicy.parse(options.refresh)
     rules = ExcludeRules(options.exclude_updates, options.exclude)
+    # One lock for everything on err: progress ticks come from worker threads and the
+    # rate-limit notice from a timer thread.
+    lock = threading.RLock()
+    reporter = None
     if options.progress:
+        # The global --progress-inline/--progress-lines style, at verbosity 1 at least.
         reporter = Reporter(
             max(get_reporter().level, 1),
             progress_style="inline" if get_reporter().inline else "lines",
             stream=err,
         )
+
+    def end_line() -> None:
+        with lock:
+            if reporter is not None:
+                reporter.end_progress()
+
+    def say(text: str) -> None:
+        with lock:
+            end_line()
+            err.write(text + "\n")
+            err.flush()
+
+    _attach_throttle_notice(engine, say, policy)
+    if reporter is not None:
         state = {"n": 0, "t": 0.0}
-        lock = threading.Lock()
 
         def on_call(op: str, path: str) -> None:
             with lock:
@@ -290,11 +405,29 @@ def run_du(
                 now = time.monotonic()
                 if now - state["t"] >= 0.5:
                     state["t"] = now
-                    reporter.phase("du", calls=state["n"], last=f"{op} {path}")
+                    reporter.running("du", calls=state["n"], last=f"{op} {path}")
 
         engine.on_call = on_call
-    engine.check_account(policy)
+    try:
+        return _report(engine, targets, options, policy, rules, out=out, say=say,
+                       end_line=end_line)
+    except KeyboardInterrupt:
+        out.flush()
+        say("\n" + _interrupt_message(policy, getattr(engine, "in_trash_pass", False)))
+        return 130
+    finally:
+        end_line()
 
+
+def _report(engine, targets, options, policy, rules, *, out, say, end_line) -> int:
+    """Measure and print every target for :func:`run_du`; returns its exit code."""
+    import json
+
+    from rich.console import Console
+
+    from protonfs.usage.report import collect_rows, render_plain, render_table, select_rows, to_json
+
+    engine.check_account(policy)
     fatal = partial = need_used = need_trash = False
     docs = []
     hint = False
@@ -304,9 +437,12 @@ def run_du(
         now = engine.clock()
         rows = collect_rows(engine, target.remote, policy, rules, maxdepth=options.maxdepth,
                             plan_size=options.plan_size, now=now)
-        fatal = fatal or rows[0].state == "error"
-        partial = partial or (rows[0].state == "partial"
-                           and not (options.exclude or options.exclude_updates)) or any(
+        # Only a target with no figure is fatal; one whose listing failed after its size
+        # was measured still printed its total, so that is partial.
+        fatal = fatal or (rows[0].state == "error" and rows[0].size is None)
+        partial = partial or rows[0].state == "error" or (
+            rows[0].state == "partial"
+            and not (options.exclude or options.exclude_updates)) or any(
             r.state == "error"
             or (r.kind == "section" and r.size is None and r.exclusion == "none"
                 and r.path != "/photos")
@@ -315,11 +451,12 @@ def run_du(
         shown = select_rows(rows, mindepth=options.mindepth, dirs_only=options.dirs_only)
         for r in rows:
             if r.state == "error":
-                err.write(f"! {r.path}: {r.error or 'measurement failed'}\n")
-        summary = engine.trash_summary() if target.remote == "/" else None
-        partial = partial or bool(
-            summary is not None and (summary.partial or summary.unresolved_folders > 0)
-        )
+                say(f"! {r.path}: {r.error or 'measurement failed'}")
+        end_line()  # the result starts on a line of its own
+        summary = engine.trash_summary()
+        # Only du / runs the trash pass, so only it answers for the account's trash.
+        if target.remote == "/":
+            partial = partial or _trash_incomplete(summary, rules)
         if options.fmt == "json":
             docs.append(to_json(shown, target=target.remote, trash=summary,
                                 used_total=engine.used_total(), plan_size=options.plan_size,
@@ -328,22 +465,22 @@ def run_du(
             for line in render_plain(shown):
                 out.write(line + "\n")
         else:
-            render_table(shown, console, title=target.remote if len(targets) > 1 else None)
+            render_table(shown, console, title=target.remote if len(targets) > 1 else None,
+                         now=now)
             if target.remote == "/":
                 for line in _trash_lines(summary):
                     out.write(line + "\n")
             hint = hint or options.plan_size is None
             need_used = need_used or (engine.used_total() is None and options.fmt == "table")
             need_trash = need_trash or (target.remote != "/" and options.fmt == "table"
-                                        and engine.trash_summary() is None)
+                                        and summary is None)
     if options.fmt == "json":
         out.write(json.dumps(docs[0] if len(docs) == 1 else docs, indent=2) + "\n")
     if hint:
-        err.write(PLAN_HINT + "\n")
+        say(PLAN_HINT)
     if need_used:
-        err.write("(%Used needs `protonfs du /` once)\n")
+        say("(%Used needs `protonfs du /` once)")
     if need_trash:
-        err.write("(In trash needs `protonfs du /` once)\n")
+        say("(In trash needs `protonfs du /` once)")
     out.flush()
-    err.flush()
     return 1 if fatal else 3 if partial else 0

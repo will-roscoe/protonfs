@@ -815,6 +815,52 @@ def ls(
 
 
 
+def _du_targets(paths: tuple[str, ...], options) -> tuple[list, list[str], object]:
+    """Resolve ``du``'s PATHs, expanding quoted glob patterns as the sibling commands do.
+
+    A local pattern matches within its store via :func:`_glob_known` (the local tree and
+    the index, so offloaded folders match, and an existing literal path wins); a remote
+    one via :func:`protonfs.commands.du.remote_matches` (a listing of its literal
+    parent).
+
+    :returns: ``(targets, unmatched_patterns, engine)``; ``engine`` is the one built to
+        list a remote pattern's parent (to be reused for the run), else ``None``.
+    :raises protonfs.usage.paths.TargetError: for a PATH outside the supported sections
+        or outside any store.
+    """
+    import os
+
+    from protonfs.commands.du import default_engine, remote_matches
+    from protonfs.context import load_context
+    from protonfs.usage.paths import is_remote, resolve_target
+    from protonfs.usage.policy import RefreshPolicy
+
+    cwd = Path.cwd()
+    targets: list = []
+    unmatched: list[str] = []
+    engine = None
+    for arg in paths or (None,):
+        if arg is None or not _is_pattern(arg):
+            targets.append(resolve_target(arg, cwd))
+            continue
+        if is_remote(arg):
+            resolve_target(arg, cwd)  # rejects a section du cannot analyse
+            policy = RefreshPolicy.parse(options.refresh)
+            if engine is None:
+                engine = default_engine()
+                engine.check_account(policy)
+            found = [resolve_target(m, cwd) for m in remote_matches(arg, engine, policy)]
+        else:
+            store = resolve_target(arg, cwd).store_root  # rejects a path in no store
+            rel = Path(os.path.abspath(cwd / arg)).resolve().relative_to(store).as_posix()
+            ctx = load_context(store)
+            found = [resolve_target(str(store / m), cwd) for m in _glob_known(ctx, rel)]
+        if not found:
+            unmatched.append(arg)
+        targets.extend(t for t in found if t not in targets)
+    return targets, unmatched, engine
+
+
 @main.command()
 @click.argument("path", nargs=-1)
 @click.option("-x", "--exclude-updates", "exclude_updates", multiple=True, metavar="PATTERN",
@@ -831,12 +877,14 @@ def ls(
 @click.option("-D", "--dirs-only", "dirs_only", is_flag=True, help="Hide file rows.")
 @click.option("--refresh", default=None, metavar="DURATION|0|never",
               help="Re-measure figures older than this (default: config du.refresh, else "
-              "5d). 0 fetches everything fresh; never uses the cache only.")
+              "5d). 0 fetches everything fresh (but only du / reruns the trash pass); "
+              "never uses the cache only.")
 @click.option("--format", "fmt", type=click.Choice(["table", "plain", "json"]), default=None,
               help="Output format: rich table (default), tab-separated lines, or JSON.")
 @click.option("--json", "as_json", is_flag=True, help="Shorthand for --format json.")
 @click.option("-p", "--show-progress", "progress", is_flag=True,
-              help="Report Drive calls on stderr as they happen.")
+              help="Report Drive calls on stderr as they happen (one line rewritten in "
+              "place, or a line each with --progress-lines).")
 @click.option("--gui", is_flag=True,
               help="Serve a local web UI (loopback, token in the printed URL) "
               "instead of printing a report.")
@@ -849,8 +897,10 @@ def du(path, exclude_updates, exclude, mindepth, maxdepth, depth, dirs_only, ref
     """Show how much Proton Drive space remote paths take, trash included.
 
     PATH is a Drive path (/, /my-files/..., /devices/...) or a local path inside a
-    store; with none, the current directory. Every figure shows its age; a trash
-    figure that could not be fully measured is shown as a lower bound.
+    store; with none, the current directory. A quoted glob PATH expands: a local one
+    against the store's files and index (so offloaded folders match), a remote one
+    against a listing of its parent. Every figure shows its age; a trash figure that
+    could not be fully measured is shown as a lower bound.
 
     Exit codes: 0 complete, 1 the target could not be measured, 2 usage error,
     3 partial results (some row failed or the trash pass was incomplete). With several
@@ -859,7 +909,7 @@ def du(path, exclude_updates, exclude, mindepth, maxdepth, depth, dirs_only, ref
     .. versionadded:: 3.4.0
     """
     from protonfs.commands.du import build_options, run_du
-    from protonfs.usage.paths import TargetError, resolve_target
+    from protonfs.usage.paths import TargetError
 
     options = build_options(
         exclude_updates=exclude_updates, exclude=exclude, mindepth=mindepth,
@@ -867,19 +917,35 @@ def du(path, exclude_updates, exclude, mindepth, maxdepth, depth, dirs_only, ref
         as_json=as_json, progress=progress, gui=gui, listen=listen, port=port, log=log,
         n_paths=len(path),
     )
+    engine = None
     try:
-        targets = [resolve_target(a, Path.cwd()) for a in (path or (None,))]
+        targets, unmatched, engine = _du_targets(path, options)
     except TargetError as exc:
+        # --gui needs exactly one PATH or the current store mapping, else a usage error.
+        if gui:
+            raise click.UsageError(str(exc)) from exc
         raise click.ClickException(str(exc)) from exc
+    if unmatched:
+        listed = ", ".join(map(repr, unmatched))
+        click.echo(f"pattern(s) matched nothing, skipped: {listed}", err=True)
     if gui:
+        if len(targets) != 1:
+            raise click.UsageError(
+                f"--gui takes one PATH; {path[0]!r} matched {len(targets)} paths."
+            )
+        if engine is not None:
+            engine.cache.close()
         from protonfs.webui.server import run_gui
 
         sys.exit(run_gui(targets[0].remote, options, stdout=sys.stdout, stderr=sys.stderr))
+    if not targets:
+        return  # every PATH was a pattern that matched nothing, as pull does
     try:
-        code = run_du(targets, options)
-    except KeyboardInterrupt:
-        click.echo("\ninterrupted -- sizes measured so far are kept; run again to continue.",
-                   err=True)
+        # says itself what Ctrl-C left behind (130)
+        code = run_du(targets, options,
+                      engine_factory=(lambda: engine) if engine is not None else None)
+    except KeyboardInterrupt:  # before run_du could measure anything
+        click.echo("\ninterrupted.", err=True)
         sys.exit(130)
     if code:
         sys.exit(code)

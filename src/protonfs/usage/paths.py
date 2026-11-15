@@ -9,9 +9,12 @@ local path inside a protonfs store) to a Drive path.
 
 from __future__ import annotations
 
+import fnmatch
 import os
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Callable
 
 from protonfs.config import load_config
 from protonfs.context import find_store_root
@@ -182,6 +185,55 @@ def is_within(path: str, base: str) -> bool:
     """
     p, b = split(path), split(base)
     return p[: len(b)] == b
+
+
+_GLOB_CHARS = frozenset("*?[")
+
+
+def has_glob(text: str) -> bool:
+    """Return whether ``text`` holds a glob metacharacter (``*``, ``?`` or ``[``).
+
+    .. versionadded:: 3.4.0
+    """
+    return any(c in _GLOB_CHARS for c in text)
+
+
+def expand_pattern(pattern: str, children: Callable[[str], Sequence[Any]]) -> list[str]:
+    """Return the Drive paths matching a Drive path whose segments may hold glob patterns.
+
+    The segments before the first pattern are taken as they are; from there, each level
+    is matched against a listing of the folders matched so far, so only the pattern's
+    literal parent (and, for a pattern in an earlier segment, the folders it matches) is
+    listed. A pattern segment never crosses ``/``, as in a shell. Within one listing, a
+    name equal to the segment wins over glob matches, so a folder called ``run[7]`` is
+    not taken for a pattern; segments before the last match folders only.
+
+    :param pattern: Drive path, e.g. ``/my-files/sim/mload005*``.
+    :param children: returns the entries of a folder (objects with ``name``, ``kind``,
+        ``uid`` and ``decrypted``, like :class:`~protonfs.usage.source.RawEntry`), given
+        its escaped Drive path.
+    :returns: the matching escaped Drive paths, sorted; empty when nothing matches. A
+        pattern with no glob character returns itself, normalised, without a listing.
+
+    .. versionadded:: 3.4.0
+    """
+    segs = split(pattern)
+    first = next((i for i, seg in enumerate(segs) if has_glob(seg)), len(segs))
+    base = "/"
+    for seg in segs[:first]:
+        base = join(base, seg)
+    found = [base]
+    for i in range(first, len(segs)):
+        seg, last = segs[i], i == len(segs) - 1
+        nxt: list[str] = []
+        for parent in found:
+            named = [(node_segment(e.name, e.uid, e.decrypted), e) for e in children(parent)
+                     if last or e.kind == "folder"]
+            exact = [name for name, _ in named if name == seg]
+            hits = exact or [name for name, _ in named if fnmatch.fnmatchcase(name, seg)]
+            nxt.extend(join(parent, name) for name in hits)
+        found = nxt
+    return sorted(set(found))
 
 
 def _normalise_remote(arg: str) -> str:

@@ -23,9 +23,9 @@ class NodeState(enum.Enum):
       without being refreshed.
     - ``UNMEASURED``: no figure is known (nothing cached, or the node cannot be sized).
     - ``ERROR``: the Drive call for this node failed; see the ``error`` text.
-    - ``PARTIAL``: only for the ``/`` view: its total leaves out a section that counts
-      toward "used" (``/my-files``, ``/devices`` or a device) but has no figure or is
-      hidden. The entries show which.
+    - ``PARTIAL``: only for the ``/`` and ``/devices`` views: the total leaves out a
+      section or device that counts toward "used" (``/my-files``, ``/devices`` or a
+      device) but has no figure or is hidden. The entries show which.
 
     .. versionadded:: 3.4.0
     """
@@ -108,7 +108,8 @@ class Breakdown:
     :ivar state: ``LISTED`` with entries; ``SIZED`` when only the total is cached;
         ``UNMEASURED`` when nothing is known; ``EXCLUDED`` when the folder itself matches
         an exclusion rule; ``ERROR`` when its ``size`` or ``list`` call failed;
-        ``PARTIAL`` (``/`` only) when ``size`` leaves out an unmeasured or hidden section.
+        ``PARTIAL`` (``/`` and ``/devices`` only) when ``size`` leaves out an unmeasured
+        or hidden section or device.
     :ivar entries: the visible children in listing order; empty when no listing is cached
         or the folder's own call failed.
     :ivar gap: ``size`` minus the known child sizes, or ``None`` without a listing.

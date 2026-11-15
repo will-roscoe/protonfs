@@ -78,6 +78,17 @@ def test_put_snapshot_is_atomic(cache, monkeypatch):
     assert cache.snapshot("/a") == new
 
 
+def test_snapshots_newer_than_keeps_whole_segments(cache):
+    for path, at in [("/m/a", 20.0), ("/m/a/x", 30.0), ("/m/a\\/b", 30.0),
+                     ("/m/ab", 30.0), ("/m/a/old", 5.0), ("/m", 30.0)]:
+        cache.put_snapshot(_snap(path, at=at))
+    got = cache.snapshots_newer_than(10.0, under="/m/a")
+    assert got == {"/m/a": _snap("/m/a", at=20.0), "/m/a/x": _snap("/m/a/x", at=30.0)}
+    assert set(cache.snapshots_newer_than(10.0)) == {"/m/a", "/m/a/x", "/m/a\\/b", "/m/ab",
+                                                     "/m"}
+    assert set(cache.snapshots_newer_than(20.0, under="/m/a")) == {"/m/a/x"}
+
+
 def test_invalidate(cache):
     cache.put_snapshot(_snap())
     cache.invalidate("/a")

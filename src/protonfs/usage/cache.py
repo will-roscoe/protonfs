@@ -233,6 +233,40 @@ class UsageCache:
             ).fetchone()
         return r is not None
 
+    def snapshots_newer_than(self, at: float, *, under: str = "/") -> dict[str, Snapshot]:
+        """Return the stored snapshots (valid or not) captured after ``at``, by path.
+
+        Reads them in bulk (two queries), for callers that need many at once.
+
+        :param at: Unix time; snapshots captured at exactly ``at`` are left out.
+        :param under: only snapshots of this escaped Drive path and below it.
+        :returns: ``{path: snapshot}`` with each snapshot's rows in listing order.
+        """
+        if under == "/":
+            where, args = "s.at > ?", (at,)
+        else:
+            # Paths below `under` sort between "under/" and "under0" ("0" follows "/").
+            where = "s.at > ? AND (s.path = ? OR (s.path >= ? AND s.path < ?))"
+            args = (at, under, under + "/", under + "0")
+        with self._lock:
+            heads = self._db.execute(
+                "SELECT s.path, s.uid, s.at, s.pass_id, s.fp_size, s.fp_desc, s.width, "
+                f"s.invalid FROM snapshots s WHERE {where}", args,
+            ).fetchall()
+            found = self._db.execute(
+                "SELECT r.parent, r.name, r.kind, r.uid, r.size, r.descendants, r.at, "
+                "r.pass_id, r.mtime, r.decrypted FROM rows r JOIN snapshots s "
+                f"ON r.parent = s.path WHERE {where} ORDER BY r.parent, r.ord", args,
+            ).fetchall()
+        rows: dict[str, list[Row]] = {}
+        for r in found:
+            rows.setdefault(r[0], []).append(Row(*r[1:9], bool(r[9])))
+        return {
+            h[0]: Snapshot(h[0], h[1], h[2], h[3], (h[4], h[5]), h[6], bool(h[7]),
+                           tuple(rows.get(h[0], ())))
+            for h in heads
+        }
+
     def has_data(self) -> bool:
         """Return whether any figure, snapshot or trash summary is stored.
 

@@ -37,9 +37,16 @@ class ExcludeRules:
 
         :param freeze: Gitignore patterns for paths to list but not walk into.
         :param hide: Gitignore patterns for paths to leave out entirely.
+        :raises ValueError: if a pattern is not valid gitignore syntax (e.g. ``!`` or a
+            lone ``\\``); the message names the pattern.
         """
         self._freeze = list(freeze)
         self._hide = list(hide)
+        for pattern in (*self._freeze, *self._hide):
+            try:
+                GitIgnoreSpec.from_lines([pattern])
+            except ValueError as exc:
+                raise ValueError(f"invalid exclusion pattern {pattern!r}: {exc}") from exc
         self._freeze_spec: GitIgnoreSpec | None = (
             GitIgnoreSpec.from_lines(self._freeze) if self._freeze else None
         )
@@ -88,5 +95,6 @@ class ExcludeRules:
 
         :param data: Mapping with optional ``freeze`` and ``hide`` pattern lists.
         :returns: The compiled rules.
+        :raises ValueError: if a pattern is not valid gitignore syntax.
         """
         return cls(freeze=data.get("freeze", ()), hide=data.get("hide", ()))

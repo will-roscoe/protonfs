@@ -176,17 +176,24 @@ may appear.
 **``du --format json``** (added in 3.4.0) prints one object per target (a list of objects
 when several PATHs are given) with the keys ``target``, ``generated_at`` (Unix time),
 ``used_total`` (bytes or ``null``), ``plan_size`` (bytes or ``null``), ``trash`` and
-``rows``. ``trash`` is ``null`` when no trash pass has run, else an object with ``at``,
+``rows``. ``trash`` is ``null`` when no trash pass has run, else (whatever the target)
+the stored pass, an object with ``at``,
 ``known`` (bytes measured, a lower bound unless ``complete``), ``complete``, ``partial``
-(reason text or ``null``) and ``unresolved_folders``. Each row has the keys ``depth``,
+(reason text or ``null``), ``unresolved_folders`` and ``unattributed`` (the groups of
+trashed folders whose size could not be measured, each ``{parent, folders, reason}``).
+Each row has the keys ``depth``,
 ``path``, ``name``, ``kind`` (``file``, ``folder``, ``section`` or ``gap``), ``size``,
 ``descendants``, ``pct_parent``, ``pct_used``, ``pct_plan`` (percent 0 to 100, or
-``null``), ``in_trash``, ``in_trash_complete``, ``unchecked_bytes``, ``checked_at``
+``null``), ``in_trash`` (the trash pass, replaced folder by folder by any listing made
+since), ``in_trash_complete``, ``unchecked_bytes``, ``checked_at``
 (Unix time), ``age_seconds``, ``state`` (``listed``, ``sized``, ``excluded``,
-``unmeasured``, ``error``, ``partial`` (``/`` total leaves out a section) or
-``gap``), ``exclusion`` (``none``, ``freeze``, ``hide``),
-``gap_kind`` (``none``, ``in_trash``, ``unattributed``, ``unreconciled``) and ``error``
-(failure text when ``state`` is ``error``, else ``null``). ``--format
+``unmeasured``, ``error``, ``partial`` (``/`` or ``/devices`` total leaves out a
+section or device) or ``gap``), ``exclusion`` (``none``, ``freeze``, ``hide``),
+``gap_kind`` (``none``, ``in_trash``, ``unattributed``, ``unreconciled``), ``error``
+(failure text when ``state`` is ``error``, else ``null``), ``trash_at`` (Unix time of the
+oldest measurement behind ``in_trash``, which can be older than ``checked_at``, or
+``null``) and ``trash_unresolved`` (on the ``/`` row, the trashed folders whose size is
+unknown; ``0`` elsewhere). ``--format
 plain`` prints the row values tab-separated in that order, ``null`` as an empty string.
 A figure is never shown without ``checked_at``/``age_seconds`` unless it is unknown.
 
@@ -505,7 +512,9 @@ flag/argument name; these names, not just their presence, are frozen.
      - Read-only storage analysis of Proton Drive paths, trash included (added in
        3.4.0). Argument: ``PATH...`` (optional, repeatable; a Drive path under ``/``,
        ``/my-files`` or ``/devices``, or a local path inside a store; none means the
-       current directory). Options: ``-x``/``--exclude-updates``, ``-X``/``--exclude``,
+       current directory; a quoted glob pattern expands, a local one against the store's
+       files and index, a remote one against a listing of its parent, and one matching
+       nothing is reported on stderr and skipped). Options: ``-x``/``--exclude-updates``, ``-X``/``--exclude``,
        ``--mindepth``, ``--maxdepth``, ``-d``/``--depth``, ``-D``/``--dirs-only``,
        ``--refresh``, ``--format table|plain|json``, ``--json``, ``-p``/``--show-progress``,
        ``--gui``, ``--listen``, ``--port``, ``--log``. Only ``filesystem list``,
@@ -516,10 +525,12 @@ flag/argument name; these names, not just their presence, are frozen.
        written to stdout, ``http://HOST:PORT/?t=TOKEN`` (an IPv6 host in brackets). The
        HTTP API under ``/api/`` serves the bundled page and is not covered.
      - With ``--gui``: ``0`` when stopped with Ctrl-C; ``1`` when the port is in use, the
-       address cannot be bound or the log cannot be opened. Otherwise: ``0`` complete; ``1`` the target's own figure could not be measured, or a config
+       address cannot be bound or the log cannot be opened; ``2`` usage error, including no
+       ``PATH`` outside a store. Otherwise: ``0`` complete; ``1`` the target's own figure could not be measured, or a config
        or Drive error; ``2`` usage error (also ``--listen``/``--port``/``--log`` without
        ``--gui``, and ``-d`` with ``--mindepth``/``--maxdepth``); ``3`` partial results:
-       a row is in state ``error``, the ``/`` total leaves out an unmeasurable section, or
+       a row is in state ``error``, the ``/`` or ``/devices`` total leaves out an
+       unmeasurable section or device, or
        the trash pass was incomplete (a ``-x``/``-X`` you gave is not partial). The output is
        printed in full in every case.
 

@@ -186,7 +186,15 @@ def summarize_dirs(
 
 
 def human_size(n: int) -> str:
-    """``1536`` -> ``"1.5 KiB"``: binary-unit rendering for the --dirs size columns."""
+    """``1536`` -> ``"1.5 KiB"``: binary-unit rendering for the --dirs size columns.
+
+    A negative ``n`` renders as its magnitude with a leading ``-``.
+
+    .. versionchanged:: 3.4.0
+       Negative sizes keep their unit (``-50.0 GiB``) instead of printing raw bytes.
+    """
+    if n < 0:
+        return "-" + human_size(-n)
     value = float(n)
     for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
         if value < 1024 or unit == "TiB":

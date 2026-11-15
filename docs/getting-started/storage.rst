@@ -33,6 +33,20 @@ from, and the local folder doesn't have to exist (an offloaded folder works too)
 With no ``PATH``, the current directory is used, which must be inside a store (at its
 root or any subdirectory). A local path that is in no store is an error.
 
+A quoted glob pattern is expanded by ``du`` itself, like ``pull`` and ``status`` do, so it
+works for folders that are not on disk. A local pattern matches the store's files and its
+index, so offloaded folders match; a remote one matches a listing of the folder it
+names. Each match is its own section, and a pattern that matches nothing is reported
+and skipped:
+
+.. code-block:: bash
+
+   protonfs du 'sim/mload005*'              # every mload005 run, offloaded or not
+   protonfs du '/my-files/sph-dev/sim/*'    # each folder under sim
+
+``/devices`` is the sum of your devices: Proton's CLI cannot size ``/devices`` itself, so
+``du`` lists the devices and sizes each one.
+
 What the columns mean
 ---------------------
 
@@ -49,6 +63,10 @@ In trash
    Bytes inside this folder that are in the trash. Trashed items keep counting against
    your plan, and keep counting in their original folders' totals, until the trash is
    emptied. The column is blank until ``protonfs du /`` has measured the trash once.
+   After that, each folder's figure comes from that trash pass, except where ``du`` has
+   listed a folder since: then the listing's ``(in trash)`` remainder counts instead, so
+   what you trash and re-check shows up at once. When the figure is older than the
+   row's Age, it says how old, e.g. ``0 B (2d old)``.
 Age
    How old the figure is. Figures come from a local cache (see below), so ``du`` always
    shows how old each one is.
@@ -66,10 +84,18 @@ folder's total holds beyond them appears as one extra row:
    being fetched), so they cannot be subtracted honestly. Run again with
    ``--refresh 0`` to fetch them together.
 
-At ``/``, ``du`` also measures the whole trash. A trashed folder can only be measured
-through the folder it was trashed from, so a figure ``du`` could not complete is shown as
-a lower bound with how much it could not check, e.g. ``≥ 12.4 GiB (190.0 GiB / 13%
-unchecked)``.
+At ``/``, ``du`` also measures the whole trash, after the breakdowns it was asked for. A
+trashed folder can only be measured through the folder it was trashed from, which ``du``
+must have listed. If it has not, ``du /`` reports the trashed folder as ``size
+unknown``; once a deeper ``du`` (or ``du / -d 2``) has listed the folder it came from,
+the next ``du /`` measures it, however recent its last trash pass. A trashed empty
+folder counts as 0 B.
+
+A figure ``du`` could not complete is shown as a lower bound with how much it could not
+check, e.g. ``≥ 12.4 GiB (190.0 GiB / 13% unchecked)``. Below the table, ``du /`` says
+which trashed folders it could not measure and why, and it exits ``3``. Listing a very
+large trash can take minutes; it is given :envvar:`PROTONFS_TRASH_LIST_TIMEOUT` seconds
+(default 900), after which the trash total is shown as partial.
 
 Caching and ``--refresh``
 -------------------------
@@ -85,7 +111,9 @@ minutes. ``du`` sizes one folder at a time and waits the pauses out, so the firs
 breakdown of a folder with hundreds of subfolders is slow (163 simulation folders took
 72 minutes). It prints a notice when this happens. Every size is kept as soon as it is
 measured, so you can press Ctrl-C and run the same command later to carry on where it
-stopped.
+stopped. Two exceptions, which the notice and the Ctrl-C message point out: a run with
+``--refresh 0`` measures everything again, so only a run without it carries on; and the
+trash pass of ``du /`` is not kept when interrupted, so it starts over next time.
 
 A figure older than the refresh threshold is re-checked when it is used. The threshold
 is checked every time a figure is used, so in a long-running GUI a folder you revisit
@@ -95,7 +123,9 @@ after the threshold has passed is re-checked then:
    Re-check anything older than five days. Durations combine units: ``2h45m``, ``1w``,
    ``1mo`` (30 days), ``1y`` (365 days); ``m`` is minutes.
 ``--refresh 0``
-   Fresh values only: everything shown is fetched now.
+   Fresh values only: everything shown is fetched now, except that below ``/`` the
+   In trash column still rests on the last trash pass for folders not listed since,
+   and shows its age. Only ``du /`` runs the trash pass.
 ``--refresh never``
    Answer from the cache alone, with no Drive calls at all.
 
@@ -119,13 +149,19 @@ anchors a pattern to the target.
 ``-X PATTERN`` / ``--exclude PATTERN``
    Leave matching folders out entirely.
 
+Both hold for the trash pass of ``du /`` as well: a trashed folder whose original folder
+is excluded is not measured, and ``du /`` says so below the table. That alone does not
+make it exit ``3``, and the next ``du /`` without the exclusion measures it.
+
 Depth, output and exit codes
 ----------------------------
 
 ``-d N`` limits the breakdown to depth ``N`` (the target is depth 0; the default is 1),
 ``-d MIN-MAX`` shows a range, and ``--mindepth``/``--maxdepth`` are the long forms.
 ``-D``/``--dirs-only`` hides files. ``--format table|plain|json`` (``--json`` for short)
-chooses the output, and ``-p``/``--show-progress`` reports progress on stderr.
+chooses the output, and ``-p``/``--show-progress`` reports progress on stderr: one line
+rewritten in place on a terminal, or a line per update with the global
+``--progress-lines`` flag (``protonfs --progress-lines du -p ...``).
 
 ``du`` exits ``0`` when everything it was asked for was produced, ``1`` when it could not
 produce its output, ``2`` for a usage error, and ``3`` when the output is complete but

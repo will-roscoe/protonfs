@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 
 import pytest
@@ -86,6 +87,13 @@ def test_du_depth_conflicts_with_maxdepth(du):
     assert du("/my-files", "-d", "1", "--maxdepth", "2").exit_code == 2
 
 
+@pytest.mark.parametrize("target", ["/", "/my-files"])
+def test_du_depth_zero_prints_only_the_target(du, target):
+    res = du(target, "--json", "-d", "0")
+    assert res.exit_code in (0, 3), res.output + res.stderr
+    assert [(r["depth"], r["path"]) for r in _rows(res)] == [(0, target)]
+
+
 def test_du_dirs_only(du):
     rows = _rows(du("/my-files/A", "--json", "--dirs-only", "--maxdepth", "2"))
     assert rows and all(r["kind"] != "file" for r in rows)
@@ -95,6 +103,10 @@ def test_du_json_keys_frozen(du):
     doc = json.loads(du("/my-files", "--json").stdout)
     assert set(doc) == {"target", "generated_at", "used_total", "plan_size", "trash", "rows"}
     assert all(set(r) == set(JSON_ROW_KEYS) for r in doc["rows"])
+    assert {"trash_at", "trash_unresolved"} <= set(JSON_ROW_KEYS)
+    root = json.loads(du("/", "--json").stdout)["trash"]
+    assert set(root) == {"at", "known", "complete", "partial", "unresolved_folders",
+                         "unattributed"}
 
 
 def test_du_plain_tab_separated(du):
@@ -164,10 +176,151 @@ def test_du_exit_3_on_partial_trash(du, drive, monkeypatch):
     assert json.loads(res.stdout)["trash"]["partial"]
 
 
+def test_du_root_exit_3_and_names_a_trash_group_it_could_not_measure(du, drive):
+    """I1: an incomplete trash total exits 3 even with no unresolved folder."""
+    drive.add_file("/my-files/A/other/o", 5)
+    assert du("/my-files/A").exit_code == 0  # caches A, so the trashed folder resolves
+    drive.trash("/my-files/A/sub")
+    drive.fail_next("size", "/my-files/A/other", DriveError("throttled"))
+    res = du("/")
+    assert res.exit_code == 3, res.output + res.stderr
+    assert "/my-files/A" in res.stdout and "size unknown" in res.stdout
+    doc = json.loads(du("/", "--json", "--refresh", "never").stdout)
+    assert doc["trash"]["complete"] is False
+
+
+@pytest.mark.parametrize("flag", ["-x", "-X"])
+def test_du_root_trash_pass_honours_exclusions(du, drive, flag):
+    """I3: no Drive calls under an excluded folder; a user's exclusion alone exits 0."""
+    assert du("/my-files/A").exit_code == 0
+    drive.trash("/my-files/A/sub")
+    drive.calls.clear()
+    res = du("/", flag, "my-files/A")
+    assert res.exit_code == 0, res.output + res.stderr
+    assert not [c for c in drive.calls if c[1].startswith("/my-files/A")]
+    assert "/my-files/A" in res.stdout and "excluded" in res.stdout
+
+
+def test_du_root_reruns_a_trash_pass_that_skipped_a_folder_no_longer_excluded(du, drive):
+    assert du("/my-files/A").exit_code == 0
+    drive.trash("/my-files/A/sub")
+    assert du("/", "-x", "my-files/A").exit_code == 0
+    # Cache-only, the stored summary still has the unmeasured group: partial now.
+    assert du("/", "--refresh", "never").exit_code == 3
+    res = du("/", "--json")
+    assert res.exit_code == 0, res.output + res.stderr
+    trash = json.loads(res.stdout)["trash"]
+    assert trash["complete"] and trash["known"] == 1300
+    assert drive.calls.count(("list_trash", "/trash")) == 2
+
+
+def test_du_root_retries_unresolved_trash_once_its_parent_is_cached(du, drive):
+    """I2: listing the parent makes the next ``du /`` measure the trashed folder."""
+    drive.trash("/my-files/A/sub")
+    first = du("/")
+    assert first.exit_code == 3 and "1 trashed folders, size unknown" in first.stdout
+    assert du("/my-files/A").exit_code == 0
+    res = du("/", "--json")
+    assert res.exit_code == 0, res.output + res.stderr
+    trash = json.loads(res.stdout)["trash"]
+    assert trash["complete"] and trash["unresolved_folders"] == 0 and trash["known"] == 1300
+    assert drive.calls.count(("list_trash", "/trash")) == 2
+
+
+def test_du_root_lists_before_the_trash_pass_on_a_cold_cache(du, drive):
+    """I2: ``du / -d 2`` lists /my-files first, so a folder trashed from it resolves."""
+    drive.trash("/my-files/B")
+    res = du("/", "-d", "2", "--json")
+    assert res.exit_code == 0, res.output + res.stderr
+    trash = json.loads(res.stdout)["trash"]
+    assert trash["complete"] and trash["known"] == 5000
+    assert drive.calls.count(("list_trash", "/trash")) == 1
+
+
+def test_du_root_reruns_an_incomplete_summary_stored_before_unresolved_parents(du, drive):
+    from protonfs.usage.trash import TrashSummary
+
+    du("/my-files/A")
+    drive.trash("/my-files/A/sub")
+    old = '{"at": 1800000000.0, "groups": [], "unresolved_folders": 1, "partial": null}'
+    assert not TrashSummary.from_json(old).complete
+    from protonfs.commands import du as du_command
+
+    du_command.default_engine().cache.put_trash(old, 1800000000.0)  # the fixture's engine
+    res = du("/", "--json")
+    assert res.exit_code == 0, res.output + res.stderr
+    assert json.loads(res.stdout)["trash"]["complete"]
+
+
+def _clock():
+    from protonfs.commands import du as du_command
+
+    return du_command.default_engine().clock  # the fixture's FakeClock
+
+
+def test_du_in_trash_shows_trash_found_by_a_newer_listing(du, drive):
+    """C1: prune, then re-check: the In trash cell agrees with the fresh remainder row."""
+    assert du("/my-files/A").exit_code == 0
+    assert du("/").exit_code == 0  # an empty, complete trash pass
+    _clock().advance(60)
+    drive.trash("/my-files/A/sub")
+    res = du("/my-files/A", "--refresh", "0", "--json")
+    assert res.exit_code == 0, res.output + res.stderr
+    doc = json.loads(res.stdout)
+    top = doc["rows"][0]
+    assert top["in_trash"] == 1300 and top["in_trash_complete"] is True
+    assert top["trash_at"] == top["checked_at"] and top["trash_unresolved"] == 0
+    gap = next(r for r in doc["rows"] if r["kind"] == "gap")
+    assert gap["name"] == "(in trash)" and gap["size"] == 1300
+    assert doc["trash"] is not None and doc["trash"]["known"] == 0  # the stored pass
+    table = du("/my-files/A", "--refresh", "never")
+    assert "1.3 KiB" in table.stdout.splitlines()[1]
+
+
+def test_du_in_trash_shows_its_own_age_when_it_rests_on_an_older_pass(du):
+    assert du("/").exit_code == 0
+    _clock().advance(2 * 86400)
+    res = du("/my-files", "--refresh", "0", "--json")
+    top = _rows(res)[0]
+    assert top["trash_at"] == top["checked_at"] - 2 * 86400
+    table = du("/my-files", "--refresh", "never")
+    assert "0 B (2d old)" in table.stdout.splitlines()[1]
+
+
+def test_du_root_row_counts_unresolved_trashed_folders(du, drive):
+    drive.trash("/my-files/A/sub")
+    res = du("/", "--json")
+    assert res.exit_code == 3
+    rows = _rows(res)
+    assert rows[0]["path"] == "/" and rows[0]["trash_unresolved"] == 1
+    assert rows[0]["in_trash_complete"] is False and rows[0]["unchecked_bytes"] is None
+    assert all(r["trash_unresolved"] == 0 for r in rows[1:])
+    assert "unchecked: unknown" in du("/", "--refresh", "never").stdout
+
+
+def test_du_root_trashed_empty_folder_is_complete(du, drive):
+    drive.add_folder("/my-files/A/empty")
+    assert du("/my-files/A").exit_code == 0
+    drive.trash("/my-files/A/empty")
+    res = du("/", "--json")
+    assert res.exit_code == 0, res.output + res.stderr
+    trash = json.loads(res.stdout)["trash"]
+    assert trash["complete"] is True and trash["known"] == 0
+
+
 def test_du_exit_1_when_target_size_fails(du, drive):
     drive.fail_next("size", "/my-files/A", DriveError("boom"), times=5)
     res = du("/my-files/A")
     assert res.exit_code == 1
+
+
+def test_du_exit_3_when_only_the_target_listing_fails(du, drive):
+    """Its size was measured and printed, so the run is partial, not a failure."""
+    drive.fail_next("list", "/my-files/A", DriveError("list boom"), times=5)
+    res = du("/my-files/A", "--json")
+    assert res.exit_code == 3, res.output + res.stderr
+    top = _rows(res)[0]
+    assert top["state"] == "error" and top["size"] == 1450 and top["error"] == "list boom"
 
 
 def test_du_plan_hint_once(du):
@@ -199,6 +352,60 @@ def test_du_local_path_in_other_store(du, tmp_path, monkeypatch):
     res = du(str(store / "sub"), "--json")
     assert res.exit_code == 0, res.output + res.stderr
     assert json.loads(res.stdout)["target"] == "/my-files/A/sub"
+
+
+@pytest.mark.parametrize(("flag", "pattern"), [("-x", "!"), ("-X", "\\"), ("-x", "\\")])
+@pytest.mark.parametrize("gui", [False, True])
+def test_du_invalid_exclusion_pattern_is_usage_error(du, gui_calls, flag, pattern, gui):
+    res = du("/my-files", flag, pattern, *(["--gui"] if gui else []))
+    assert res.exit_code == 2, res.output + res.stderr
+    assert repr(pattern) in res.stderr and "Traceback" not in res.output + res.stderr
+    assert gui_calls == []
+
+
+def test_du_remote_glob_expands_against_its_parent_listing(du, drive):
+    """I8/R33: a quoted remote pattern lists its literal parent and measures each match."""
+    res = du("/my-files/*", "--json")
+    assert res.exit_code == 0, res.output + res.stderr
+    assert [d["target"] for d in json.loads(res.stdout)] == ["/my-files/A", "/my-files/B"]
+    assert drive.calls[:2] == [("info", "/my-files"), ("list", "/my-files")]
+
+
+def test_du_glob_matching_nothing_is_skipped_with_a_warning(du):
+    res = du("/my-files/Z*", "/my-files/A", "--json")
+    assert res.exit_code == 0, res.output + res.stderr
+    assert json.loads(res.stdout)["target"] == "/my-files/A"
+    assert "matched nothing" in res.stderr and "'/my-files/Z*'" in res.stderr
+    alone = du("/my-files/Z*")
+    assert alone.exit_code == 0 and alone.stdout == "" and "matched nothing" in alone.stderr
+
+
+def test_du_local_glob_matches_offloaded_folders_through_the_index(du, tmp_path, monkeypatch):
+    """I8/R33: like pull, a local pattern matches the index, so offloaded folders count."""
+    from protonfs.context import load_context
+    from protonfs.index import IndexEntry
+
+    store = tmp_path / "sim"
+    store.mkdir()
+    init_config(store, "/my-files/A")
+    ctx = load_context(store)
+    for rel in ("sub/x", "subway/y", "other/z"):
+        ctx.index.set(rel, IndexEntry(1, 0.0, "", "", f"/my-files/A/{rel}", "d",
+                                      "metadata-only", ""))
+    ctx.index.save()
+    monkeypatch.chdir(tmp_path)
+    res = du("sim/sub*", "--json", "--refresh", "never")
+    assert res.exit_code == 0, res.output + res.stderr
+    assert [d["target"] for d in json.loads(res.stdout)] == [
+        "/my-files/A/sub", "/my-files/A/subway"]
+
+
+def test_du_gui_glob_needs_exactly_one_match(du, gui_calls):
+    assert du("--gui", "/my-files/*").exit_code == 2
+    assert gui_calls == []
+    res = du("--gui", "/my-files/A*")
+    assert res.exit_code == 0, res.output + res.stderr
+    assert gui_calls[0][0] == "/my-files/A"
 
 
 def test_du_listen_without_gui_is_usage_error(du):
@@ -238,6 +445,12 @@ def test_du_gui_allowed_flags_reach_gui_path(du, gui_calls, extra):
 def test_du_gui_forbidden_flags(du, extra):
     res = du("--gui", *extra)
     assert res.exit_code == 2
+
+
+def test_du_gui_outside_a_store_is_usage_error(du, gui_calls, tmp_path):
+    res = du("--gui")
+    assert res.exit_code == 2, res.output + res.stderr
+    assert str(tmp_path) in res.stderr and gui_calls == []
 
 
 def test_du_gui_exit_code_is_run_guis(du, monkeypatch):
@@ -340,14 +553,89 @@ def test_du_prints_throttle_notice_once(du, drive):
     assert res.stderr.count("rate-limiting folder sizes") == 1
 
 
-def test_du_ctrl_c_keeps_sizes_and_exits_130(du, drive):
-    def interrupt():
-        raise KeyboardInterrupt
+def _interrupt():
+    raise KeyboardInterrupt
 
-    drive.before("size", "/my-files/B", interrupt)
+
+class _TTY(io.StringIO):
+    def isatty(self):
+        return True
+
+
+@pytest.mark.parametrize("style", ["inline", "lines"])
+def test_du_progress_follows_the_global_progress_style(drive, tmp_path, monkeypatch, style):
+    """M12: -p rewrites one stderr line under --progress-inline, one line each otherwise."""
+    from protonfs.commands.du import build_options, run_du
+    from protonfs.reporting import Reporter
+    from protonfs.usage.paths import Target
+
+    monkeypatch.setenv("PROTONFS_CONFIG", str(tmp_path / "global.json"))
+    monkeypatch.setattr("protonfs.reporting._current",
+                        Reporter(0, progress_style=style, stream=_TTY()))
+    engine = UsageEngine(drive, UsageCache(tmp_path / "du.sqlite"), clock=FakeClock())
+    err = _TTY()
+    code = run_du([Target("/my-files", None)], build_options(progress=True),
+                  engine_factory=lambda: engine, out=_TTY(), err=err)
+    text = err.getvalue()
+    assert code == 0, text
+    assert "du calls=1 last=" in text
+    if style == "inline":
+        assert "\rdu calls=1 last=" in text
+        # the open progress line is ended before the plan hint is written
+        assert "\n% of plan" in text and "\r% of plan" not in text
+    else:
+        assert "\r" not in text and "du calls=1 last=" in text.splitlines()[0]
+    engine.cache.close()
+
+
+def test_du_ctrl_c_keeps_sizes_and_exits_130(du, drive):
+    drive.before("size", "/my-files/B", _interrupt)
+    res = du("/my-files", "--refresh", "1h")
+    assert res.exit_code == 130
+    assert "sizes measured so far are kept; run again to continue" in res.stderr
+
+
+def test_du_ctrl_c_under_refresh_0_does_not_promise_to_continue(du, drive):
+    """I4: --refresh 0 measures everything again, so a re-run with it does not continue."""
+    drive.before("size", "/my-files/B", _interrupt)
     res = du("/my-files", "--refresh", "0")
     assert res.exit_code == 130
     assert "sizes measured so far are kept" in res.stderr
+    assert "run again to continue" not in res.stderr and "--refresh 0" in res.stderr
+
+
+def test_du_ctrl_c_during_the_trash_pass_says_it_starts_over(du, drive):
+    assert du("/my-files/A").exit_code == 0
+    drive.trash("/my-files/A/sub")
+    drive.before("size", "/my-files/A", _interrupt)  # the trash pass re-sizes A
+    res = du("/")
+    assert res.exit_code == 130
+    assert "trash pass" in res.stderr and "starts over" in res.stderr
+    assert "continue" not in res.stderr
+
+
+@pytest.mark.parametrize(("args", "expect", "never"), [
+    (["/my-files", "--refresh", "1h"], "continue from them", "--refresh 0"),
+    (["/my-files", "--refresh", "0"], "without --refresh 0", "Ctrl-C and run again"),
+])
+def test_du_throttle_notice_says_what_a_rerun_would_reuse(du, drive, args, expect, never):
+    drive.on_slow_size = None
+
+    drive.before("size", "/my-files/A", lambda: drive.on_slow_size("/my-files/A"))
+    res = du(*args)
+    assert "rate-limiting folder sizes" in res.stderr
+    assert expect in res.stderr and never not in res.stderr
+
+
+def test_du_throttle_notice_in_the_trash_pass_says_it_starts_over(du, drive):
+    assert du("/my-files/A").exit_code == 0
+    drive.trash("/my-files/A/sub")
+    drive.on_slow_size = None
+    drive.before("size", "/my-files/A", lambda: drive.on_slow_size("/my-files/A"))
+    res = du("/")
+    assert res.exit_code == 0, res.output + res.stderr
+    assert "rate-limiting folder sizes" in res.stderr
+    assert "trash pass starts over" in res.stderr and "continue" not in res.stderr
 
 
 def test_du_trash_cells_blank_until_trash_measured(du):
@@ -391,6 +679,23 @@ def test_du_retries_a_child_whose_size_failed_once(du, drive):
     assert res.exit_code == 0, res.output + res.stderr
     row = next(r for r in _rows(res) if r["path"] == "/my-files/A")
     assert row["size"] is not None and row["error"] is None
+
+
+@pytest.mark.parametrize("depth", ["0", "1"])
+def test_du_devices_is_the_sum_of_its_devices(du, drive, depth):
+    """R35: the live CLI cannot size /devices, so du never asks it to."""
+    drive.add_device("laptop")
+    drive.add_file("/devices/laptop/a", 7)
+    drive.add_device("desk")
+    drive.add_file("/devices/desk/b", 5)
+    res = du("/devices", "--json", "-d", depth)
+    assert res.exit_code == 0, res.output + res.stderr
+    rows = _rows(res)
+    assert rows[0]["path"] == "/devices" and rows[0]["size"] == 12
+    if depth == "1":
+        assert {r["path"]: r["size"] for r in rows[1:]} == {
+            "/devices/laptop": 7, "/devices/desk": 5}
+    assert ("size", "/devices") not in drive.calls
 
 
 def test_du_root_depth_two_never_sizes_the_devices_placeholder(du, drive):
