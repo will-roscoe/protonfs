@@ -147,7 +147,7 @@ def test_live_trash_then_restore_roundtrip(tmp_path: Path, live_dir) -> None:
 
 
 def test_live_trash_list_shows_trashed_item(tmp_path: Path, live_dir) -> None:
-    # #70: `trash list` (via DriveClient.list("/trash") + parent_name) must see a
+    # #70: `trash list` (via DriveClient.list("/trash")) must see a
     # freshly trashed item and not blow up resolving its original parent. Never
     # empties trash here -- that's out of the live suite's scope by policy.
     from protonfs.drive import decrypted_name
@@ -167,8 +167,9 @@ def test_live_trash_list_shows_trashed_item(tmp_path: Path, live_dir) -> None:
 
     parent_uid = matches[0].get("parentUid")
     if parent_uid:
-        # Best-effort: must not raise, may legitimately return None.
-        client.parent_name(parent_uid)
+        # Must not raise; an unreachable parent just stays out of the result (#231).
+        found, _complete = client.find_folder_paths(remote_dir, {parent_uid}, max_lists=5)
+        assert found in ({}, {parent_uid: remote_dir})
 
     # Restore it so live_dir's trash-on-teardown cleanup still applies to a live node.
     client.restore([remote_file])

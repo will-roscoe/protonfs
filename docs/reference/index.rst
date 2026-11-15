@@ -1445,12 +1445,22 @@ trash list
 .. click:: protonfs.cli:trash_list_cmd
    :prog: protonfs trash list
 
-Lists every item currently in ``/trash``: its name, its original parent (resolved
-on a best-effort basis — shown as ``?`` when proton-drive can't resolve it), and
+Lists every item currently in ``/trash``: its name, its original parent path, and
 how many *other* trashed items share the same name. A nonzero duplicate count is
 exactly the ambiguity ``restore`` can refuse to resolve on its own (#56): proton-
 drive resolves ``/trash`` paths by name, first match wins, so same-named entries
 can silently block a restore or shadow one another.
+
+proton-drive cannot look a folder up by its UID alone, so the original parent is found
+by searching the :confval:`remote_root` subtree (at most 200 folder listings or two
+minutes). A parent that could not be placed is marked rather than guessed:
+``(outside <remote_root>)`` when the whole subtree was searched without finding it,
+``(not found within search limit)`` when the search was cut short,
+``(trashed folder <name>)`` when the parent is itself in the trash, and ``(unknown)``
+when the entry names no parent.
+
+.. versionchanged:: 3.4.0
+   The original parent is shown as a path; it was ``?`` for every item (#231).
 
 Examples::
 
