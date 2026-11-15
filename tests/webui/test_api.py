@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+import time
 
 import pytest
 from tests.usage.conftest import FakeClock
@@ -118,40 +119,54 @@ def test_unknown_queue_mode_is_rejected(make):
         make().tree(TARGET, 1, queue="sometimes")
 
 
-def _settle_all(api, q, n):
-    for _ in range(n):
-        _next(q, "breakdown")
-    deadline = threading.Event()
-    for _ in range(50):
-        if not api.jobs.pending():
-            return
-        deadline.wait(0.05)
-    raise AssertionError(f"still pending: {api.jobs.pending()}")
+def _record_submits(api, monkeypatch) -> list:
+    """Record every path submitted to the job queue (a job can finish before pending()
+    is read, so tests of what gets queued assert on this instead)."""
+    seen: list = []
+    real = api.jobs.submit
+
+    def submit(kind, path, policy):
+        seen.append(path)
+        return real(kind, path, policy)
+
+    monkeypatch.setattr(api.jobs, "submit", submit)
+    return seen
 
 
-def test_refetch_queues_folders_a_finished_job_revealed(make):
+def _wait_idle(api, timeout=5.0):
+    deadline = time.monotonic() + timeout
+    while api.jobs.pending():
+        if time.monotonic() > deadline:
+            raise AssertionError(f"still pending: {api.jobs.pending()}")
+        time.sleep(0.01)
+
+
+def test_refetch_queues_folders_a_finished_job_revealed(make, monkeypatch):
     # cold cache: navigation can only queue the target, because its subfolders are not
     # known yet; the event-driven refetch after it lands must queue them, or a -d 2 page
     # never lists them
     api = make(refresh="0")
-    q = api.jobs.subscribe()
-    assert api.tree(TARGET, 2)["pending"] == [TARGET]
-    _settle(api, q)
-    out = api.tree(TARGET, 2, queue="new")
-    assert sorted(out["pending"]) == [f"{TARGET}/A", f"{TARGET}/B"]
-    _settle_all(api, q, 2)
+    submitted = _record_submits(api, monkeypatch)
+    api.tree(TARGET, 2)
+    assert submitted == [TARGET]
+    _wait_idle(api)
+    api.tree(TARGET, 2, queue="new")
+    assert sorted(submitted[1:]) == [f"{TARGET}/A", f"{TARGET}/B"]
+    _wait_idle(api)
     shown = api.tree(TARGET, 2, queue="none")["breakdowns"]
     assert shown[f"{TARGET}/A"]["state"] == "listed"
     # under refresh 0 everything shown is stale, but a refetch never queues a folder
     # again once a job for it has finished, so refetches cannot feed themselves
-    assert api.tree(TARGET, 2, queue="new")["pending"] == []
+    del submitted[:]
+    api.tree(TARGET, 2, queue="new")
+    assert submitted == []
 
 
 def test_refetch_does_not_retry_a_failed_job(make, engine, monkeypatch):
     api = make()
-    q = api.jobs.subscribe()
+    submitted = _record_submits(api, monkeypatch)
     api.tree(TARGET, 2)
-    _settle(api, q)
+    _wait_idle(api)
     real = engine.breakdown
 
     def flaky(path, policy, *a, **kw):
@@ -160,13 +175,18 @@ def test_refetch_does_not_retry_a_failed_job(make, engine, monkeypatch):
         return real(path, policy, *a, **kw)
 
     monkeypatch.setattr(engine, "breakdown", flaky)
-    assert f"{TARGET}/A" in api.tree(TARGET, 2, queue="new")["pending"]
-    _next(q, "error")
-    _settle_all(api, q, 1)  # B
-    assert api.tree(TARGET, 2, queue="new")["pending"] == []
+    del submitted[:]
+    api.tree(TARGET, 2, queue="new")
+    assert sorted(submitted) == [f"{TARGET}/A", f"{TARGET}/B"]
+    _wait_idle(api)
+    assert api.jobs.tried(f"{TARGET}/A")
+    del submitted[:]
+    api.tree(TARGET, 2, queue="new")
+    assert submitted == []
     # navigating there again is the user asking, so it is retried
-    assert f"{TARGET}/A" in api.tree(TARGET, 2)["pending"]
-    _next(q, "error")
+    api.tree(TARGET, 2)
+    assert submitted == [f"{TARGET}/A"]
+    _wait_idle(api)
 
 
 def test_refresh_zero_queues_on_every_navigation(make):
