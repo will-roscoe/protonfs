@@ -170,6 +170,11 @@ class TreeDrive:
         return SizeResult(sum(n.size or 0 for n in below), len(below))
 
     @_locked
+    def volume_scope(self, path: str) -> str | None:
+        self._enter("info", path)
+        return self.scope
+
+    @_locked
     def list_trash(self, *, timeout: float) -> list[RawEntry]:
         self._enter("list_trash", "/trash")
         return [self._entry(n) for n in self._top_level_trashed()]

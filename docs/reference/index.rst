@@ -692,7 +692,8 @@ du
 
 Shows how much Proton Drive space remote paths take, from the whole account (``/``)
 down to one folder, including what is in the trash. Read-only: it issues only
-``filesystem list``, ``filesystem size`` and ``filesystem list /trash``.
+``filesystem list``, ``filesystem size``, ``filesystem list /trash`` and
+``filesystem info /my-files``.
 
 .. versionadded:: 3.4.0
 

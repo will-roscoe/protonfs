@@ -471,12 +471,13 @@ class UsageEngine:
     def check_account(self, policy: RefreshPolicy) -> bool:
         """Clear the cache if it belongs to a different account; run once before answering.
 
-        Unless ``policy.never`` or this engine has already read a volume scope from a
-        listing, lists ``/my-files`` (one call) and compares its scope with the cached
-        one. A different scope, or a cache that holds figures, snapshots or a trash
-        summary but has no recorded scope, clears the whole cache; an empty cache just
-        records the scope. A failed or empty listing changes nothing, and the next listing
-        that carries a scope checks again.
+        Unless ``policy.never`` or this engine has already read a volume scope, asks for
+        the scope of ``/my-files`` itself (one ``filesystem info`` call, so an empty
+        ``/my-files`` is covered; sources without ``volume_scope`` list it instead) and
+        compares it with the cached one. A different scope, or a cache that holds
+        figures, snapshots or a trash summary but has no recorded scope, clears the
+        whole cache; an empty cache just records the scope. A failed call changes
+        nothing, and the next listing that carries a scope checks again.
 
         :param policy: the run's refresh policy.
         :returns: whether the cache was cleared.
@@ -485,11 +486,16 @@ class UsageEngine:
         """
         if policy.never or self._scope_checked:
             return False
+        lookup = getattr(self.source, "volume_scope", None)
         try:
-            raw = self._list("/my-files", None)
+            if lookup is None:
+                return self._check_scope(self._list("/my-files", None))
+            if self.on_call is not None:
+                self.on_call("info", "/my-files")
+            scope = lookup("/my-files")
         except Exception:  # noqa: BLE001 - unverified; the next listing checks again
             return False
-        return self._check_scope(raw)
+        return self._apply_scope(scope)
 
     # ------------------------------------------------------------- breakdown pass
 
@@ -866,7 +872,10 @@ class UsageEngine:
         """
         if self._scope_checked:
             return False
-        scope = next((e.scope for e in raw if e.scope), None)
+        return self._apply_scope(next((e.scope for e in raw if e.scope), None))
+
+    def _apply_scope(self, scope: str | None) -> bool:
+        """Record ``scope``, clearing the cache first if it belongs to another account."""
         if scope is None:
             return False
         with self._lock:

@@ -1,8 +1,8 @@
 """The read-only Drive interface the ``du`` engine and GUI consume.
 
 :class:`DriveSource` is the protocol; :class:`CliDriveSource` implements it over
-:class:`~protonfs.drive.DriveClient`. Only ``filesystem list``, ``filesystem size`` and
-``filesystem list /trash`` are ever issued.
+:class:`~protonfs.drive.DriveClient`. Only ``filesystem list``, ``filesystem size``,
+``filesystem list /trash`` and ``filesystem info /my-files`` are ever issued.
 
 .. versionadded:: 3.4.0
 """
@@ -91,6 +91,17 @@ class DriveSource(Protocol):
         :param path: escaped Drive path.
         :returns: bytes and node count beneath ``path``.
         :raises DriveError: when the path is missing or the output is malformed.
+        """
+        ...
+
+    def volume_scope(self, path: str) -> str | None:
+        """Return the volume id (``treeEventScopeId``) of the node at ``path``.
+
+        Works for an empty folder, unlike reading it off a listing's entries.
+
+        :param path: escaped Drive path, normally ``/my-files``.
+        :returns: the scope, or ``None`` if the CLI did not report one.
+        :raises DriveError: when the path is missing or the call fails.
         """
         ...
 
@@ -236,6 +247,16 @@ class CliDriveSource:
             finally:
                 if timer is not None:
                     timer.cancel()
+
+    def volume_scope(self, path: str) -> str | None:
+        """Return the ``treeEventScopeId`` from ``filesystem info`` of ``path``.
+
+        :param path: escaped Drive path, normally ``/my-files``.
+        :returns: the scope, or ``None`` if the record has none.
+        :raises DriveError: on a Drive failure, including a persistent cache lock.
+        """
+        scope = self._call(lambda: self._client.info(path)).get("treeEventScopeId")
+        return scope if isinstance(scope, str) and scope else None
 
     def list_trash(self, *, timeout: float) -> list[RawEntry]:
         """Return the top-level trashed entries from ``filesystem list /trash``.

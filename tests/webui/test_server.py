@@ -367,13 +367,13 @@ def test_account_check_runs_before_listening(tmp_path, tree_drive):
     out = io.StringIO()
     seen = []
     # the URL is printed only once listening, so it must still be absent at the first call
-    tree_drive.before("list", "/my-files", lambda: seen.append(out.getvalue()))
+    tree_drive.before("info", "/my-files", lambda: seen.append(out.getvalue()))
     _, _, cache, _, _, stop, t, errors = _start(tmp_path, drive=tree_drive, out=out)
     stop.set()
     t.join(5)
     cache.close()
     assert not errors
-    assert seen == [""]  # check_account listed before anything was printed
+    assert seen == [""]  # check_account asked Drive before anything was printed
 
 
 @pytest.mark.parametrize("text, want", [(None, None), ("auto", None), ("AUTO", None),

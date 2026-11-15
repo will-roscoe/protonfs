@@ -749,7 +749,7 @@ def test_check_account_clears_old_account_with_fresh_figures(usage_cache, clock)
 
     assert eng.check_account(FIVE_DAYS) is True
 
-    assert d2.calls == [("list", "/my-files")]
+    assert d2.calls == [("info", "/my-files")]
     assert usage_cache.figure(F + "/old") is None and usage_cache.snapshot(F) is None
     assert usage_cache.get_meta("scope") == "vol-2"
     bd = eng.breakdown(F, FIVE_DAYS, NO_RULES, target=F)
@@ -769,7 +769,7 @@ def test_check_account_same_scope_or_never_keeps_cache(usage_cache, clock):
     d.calls.clear()
     assert later.check_account(NEVER) is False and d.calls == []
     assert later.check_account(FIVE_DAYS) is False
-    assert d.calls == [("list", "/my-files")]
+    assert d.calls == [("info", "/my-files")]
     assert usage_cache.snapshot(F) is not None
 
 
@@ -867,3 +867,15 @@ def test_walk_reports_folders_that_stay_unmeasured(usage_cache, clock):
     eng = UsageEngine(d, usage_cache, clock=clock)
     eng.walk(t, FIVE_DAYS, NO_RULES, on_error=lambda p, text: failed.append((p, text)))
     assert [p for p, _ in failed] == [child] and "gone" in failed[0][1]
+
+
+def test_check_account_detects_a_switch_to_an_empty_account(usage_cache, clock):
+    """The scope comes from /my-files itself, so an empty new account is still detected."""
+    d1 = TreeDrive(scope="vol-1")
+    d1.add_file(F + "/old/x", 10)
+    UsageEngine(d1, usage_cache, clock=clock).breakdown(F, FIVE_DAYS, NO_RULES, target=F)
+    d2 = TreeDrive(scope="vol-2")  # nothing at all in /my-files
+    eng = UsageEngine(d2, usage_cache, clock=clock)
+    assert eng.check_account(FIVE_DAYS) is True
+    assert usage_cache.figure(F + "/old") is None
+    assert usage_cache.get_meta("scope") == "vol-2"

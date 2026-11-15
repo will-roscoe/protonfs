@@ -1687,6 +1687,20 @@ class DriveClient:
         result = self._run_json(["filesystem", "delete", *remote_paths])
         return result if isinstance(result, list) else []
 
+    def info(self, remote_path: str, *, timeout: float = LIST_TIMEOUT_SECONDS) -> dict:
+        """Return ``filesystem info`` for one node: its ``uid``, ``name``, ``type``,
+        ``treeEventScopeId`` (the volume) and ownership fields.
+
+        :param remote_path: absolute Drive path of the node.
+        :param timeout: seconds before the call is abandoned.
+        :returns: the record, or ``{}`` if the CLI printed something else.
+        :raises DriveError: on a Drive failure (e.g. a missing path).
+
+        .. versionadded:: 3.4.0
+        """
+        result = self._run_json(["filesystem", "info", remote_path], timeout=timeout)
+        return result if isinstance(result, dict) else {}
+
     def parent_name(self, parent_uid: str) -> str | None:
         """Best-effort decrypted name of a trashed node's original parent, given its
         ``parentUid`` from a `/trash` listing entry. proton-drive accepts a bare node
