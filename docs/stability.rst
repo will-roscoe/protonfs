@@ -219,7 +219,8 @@ see the CHANGELOG for everything else.
 * Global options: ``-v``/``--verbose``, ``--progress-inline``/``--progress-lines``,
   ``--event-log``/``--no-event-log`` (1.3.0).
 * ``PATH...``: every command that takes a ``PATH`` accepts several, e.g. from a shell
-  glob (1.1.0).
+  glob (1.1.0). Store discovery from a subdirectory and ``PATH`` relative to the current
+  directory (3.4.0); see `Store discovery and PATH arguments`_.
 * ``ls``: ``--dirs``, ``--format``, ``--state`` (1.1.0); ``--visual`` (1.2.0).
 * ``status``: ``--format`` (1.1.0); ``--remote`` (2.0.0).
 * ``push``/``pull``: ``--strict`` (1.11.0). ``push``: ``--min-age`` (2.4.0);
@@ -246,6 +247,57 @@ see the CHANGELOG for everything else.
 **Deprecated:** ``ls --state synced``, until 4.0.0.
 
 **Removed:** nothing.
+
+Store discovery and PATH arguments
+----------------------------------
+*Added in 3.4.0* (#232). A command that works on a store finds it the way git finds a
+repository: the nearest ancestor of the current directory (itself included) that holds
+``.protonfs/config.json``; with nested stores, the innermost one. Run from the store root
+every command behaves as it did before 3.4.0; run from a subdirectory, which failed before
+3.4.0, it now works.
+
+* ``PATH`` arguments are relative to the **current directory** as typed, and are mapped to
+  store-relative paths, as git pathspecs are: ``protonfs push mload005`` in ``sim/`` means
+  what ``protonfs push sim/mload005`` means at the root. ``.`` is the current directory and
+  ``..`` works. An absolute local path is accepted.
+* **No PATH from a subdirectory** acts on that subdirectory only, as ``du`` does:
+  ``protonfs push`` in ``sim/`` is ``protonfs push sim``, and likewise for ``pull``,
+  ``status``, ``ls``, ``refresh``, ``offload``, ``prune``, ``import``, ``export`` and
+  ``schedule --add`` (whose job is stored with that path). Pass ``/`` (or ``..`` up to
+  the root) to cover the whole store. From the store root, no PATH means the whole store,
+  exactly as before. A note on stderr names the directory, and ``nothing to push``,
+  ``nothing to import`` and ``nothing to export`` say ``under '<dir>'``, so a summary is
+  never read as covering the whole store. Commands without a PATH (``verify``, ``trash``,
+  ``doctor``, ``config``, ``upgrade``) are unaffected.
+* A bare ``/`` still means the whole store, from the store root and from any
+  subdirectory (it is not a path outside the store). ``rm`` and ``restore`` refuse the
+  store root itself (``.``, ``..`` up to it, its absolute path or ``/``) with a usage
+  error (exit ``2``), because that would act on the whole remote root. Before 3.4.0,
+  ``rm -r .`` at the store root was accepted: it trashed the whole remote root and left
+  the index unchanged.
+* A ``PATH`` that resolves outside the discovered store is a usage error (exit ``2``)
+  naming it; nothing is run.
+* A quoted glob pattern expands relative to the current directory, with the matching rules
+  it already had (``push`` against the local tree, ``pull`` against the index). A
+  ``*``, ``?`` or ``[`` in the name of the directory you are standing in is taken
+  literally.
+* Human-readable messages print paths as you would type them from the current directory
+  (``../sibling/x`` from a sibling directory). From the store root they are the
+  store-relative paths they always were. That includes the ``ls`` table (including ``--dirs``) and
+  ``-v`` narration; the machine formats (``--format json`` and ``plain``) always carry
+  store-relative paths, wherever they are run. The event log
+  (``.protonfs/events.log``, warnings included) and the remote manifest always record
+  store-relative paths.
+* ``setup`` keeps creating a store in the directory it is run from. ``deinit`` run from a
+  subdirectory is a usage error (exit ``2``) naming the store root to run it from.
+  ``config get``/``config set`` (without ``--global``), ``schedule``, ``doctor`` and
+  ``upgrade`` act on the discovered store; ``schedule --path`` is read relative to the
+  current directory and stored relative to the store, because a job runs from the root.
+* ``du`` already resolved its targets this way (3.4.0) and is unchanged.
+* The per-store files (``.protonfs/``, the index, the lock, the event log) always belong
+  to the discovered store, never to the subdirectory. With no store above the current
+  directory the error is ``protonfs is not set up in this directory or any parent
+  directory``.
 
 Global options (before the subcommand)
 --------------------------------------

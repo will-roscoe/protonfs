@@ -10,6 +10,7 @@ each CLI command can call :func:`load_context` once and get everything it needs.
 from __future__ import annotations
 
 import functools
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -19,6 +20,8 @@ import click
 from protonfs.config import Config, MissingDeviceIdError, load_layered_config
 from protonfs.drive import DriveClient
 from protonfs.index import IndexStore
+from protonfs.reporting import get_reporter
+from protonfs.storeroot import find_store_root
 
 if TYPE_CHECKING:
     from protonfs.hashcache import HashCache
@@ -51,22 +54,103 @@ class RepoContext:
 
         return HashCache(self.root)
 
+    @functools.cached_property
+    def _invocation(self) -> Path:
+        cwd = Path.cwd().resolve()
+        return cwd if cwd == self.root or self.root in cwd.parents else self.root
+
+    def invocation_dir(self) -> Path:
+        """The directory PATH arguments are relative to: the current directory when it is
+        inside the store, else the store root (only a context built for another
+        directory, as in tests, has a current directory outside its store).
+
+        .. versionadded:: 3.4.0
+        """
+        return self._invocation
+
+    def store_path(self, arg: str, *, glob: bool = True) -> str:
+        """Map a PATH argument, typed relative to the current directory (or absolute),
+        to a store-relative POSIX path (``"."`` for the store root itself).
+
+        A glob pattern is mapped the same way: when it is relative and has no ``..``,
+        the directory prefix has its own glob characters escaped, so only the part the
+        user typed acts as a pattern.
+
+        :param arg: the PATH as typed.
+        :param glob: read ``*``, ``?`` and ``[`` in ``arg`` as a pattern; false for commands
+            that take literal paths.
+        :returns: the path relative to :attr:`root`.
+        :raises ValueError: if ``arg`` resolves outside the store.
+
+        .. versionadded:: 3.4.0
+        """
+        base = self.invocation_dir()
+        if (
+            glob
+            and not os.path.isabs(arg)
+            and any(c in arg for c in "*?[")
+            and ".." not in arg.split("/")
+        ):
+            prefix = base.relative_to(self.root).as_posix()
+            pattern = os.path.normpath(arg).replace(os.sep, "/")
+            if prefix == ".":
+                return pattern
+            return "/".join(_escape_glob(part) for part in prefix.split("/")) + "/" + pattern
+        full = Path(os.path.abspath(base / arg))
+        for candidate in (full, full.parent.resolve() / full.name):
+            try:
+                return candidate.relative_to(self.root).as_posix()
+            except ValueError:
+                continue
+        raise ValueError(arg)
+
+    def shown(self, rel: str | None) -> str:
+        """A store-relative path as the user would type it from the current directory
+        (``"."`` for the store root); identical to ``rel`` when run from the store root.
+
+        .. versionadded:: 3.4.0
+        """
+        target = self.root if rel in (None, ".", "") else self.root / rel
+        return Path(os.path.relpath(target, self.invocation_dir())).as_posix()
+
+    def typed_pattern(self, mapped: str) -> str:
+        """Undo :meth:`store_path` for a glob pattern, for messages naming it as typed."""
+        prefix = self.invocation_dir().relative_to(self.root).as_posix()
+        if prefix == ".":
+            return mapped
+        head = "/".join(_escape_glob(part) for part in prefix.split("/")) + "/"
+        return mapped[len(head):] if mapped.startswith(head) else mapped
+
+
+def _escape_glob(text: str) -> str:
+    """Make ``*``, ``?`` and ``[`` in ``text`` match themselves in a glob pattern."""
+    return "".join(f"[{c}]" if c in "*?[" else c for c in text)
+
 
 def load_context(start: Path | None = None) -> RepoContext:
-    """Resolve the repo root from ``start`` and build a :class:`RepoContext` for it.
+    """Find the store containing ``start`` and build a :class:`RepoContext` for it.
 
-    :param start: Directory to resolve the repo from; defaults to the current working
+    The store is the nearest ancestor of ``start`` (inclusive) holding
+    ``.protonfs/config.json``, as git finds a repository; nested stores resolve to the
+    innermost (:func:`find_store_root`).
+
+    :param start: Directory to search upward from; defaults to the current working
         directory.
     :returns: The assembled :class:`RepoContext`.
     :raises click.ClickException: If no layered config resolves for this directory
         (i.e. ``protonfs setup`` has not been run there, or has not been run on this
         machine yet) -- see :func:`~protonfs.config.load_layered_config`.
 
+    .. versionchanged:: 3.4.0
+       Searches ``start``'s ancestors for the store instead of requiring ``start`` to be
+       its root (#232).
+
     .. versionchanged:: 1.12.1
        A clone whose ``device_id`` has not been minted on this machine reports that,
        instead of raising :exc:`ValueError` as an uncaught traceback (#151).
     """
-    root = (start or Path.cwd()).resolve()
+    here = (start or Path.cwd()).resolve()
+    root = find_store_root(here) or here
     try:
         config = load_layered_config(root)
     except MissingDeviceIdError as exc:
@@ -81,28 +165,16 @@ def load_context(start: Path | None = None) -> RepoContext:
         ) from exc
     if config is None:
         raise click.ClickException(
-            "protonfs is not set up in this directory. Run `protonfs setup` first."
+            "protonfs is not set up in this directory or any parent directory. "
+            "Run `protonfs setup` first."
         )
     try:
         drive = DriveClient(clock_skew=config.defaults.clock_skew)
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
-    return RepoContext(root=root, config=config, index=IndexStore(root), drive=drive)
+    ctx = RepoContext(root=root, config=config, index=IndexStore(root), drive=drive)
+    get_reporter().path_view = ctx.shown  # narration names paths as typed from here
+    return ctx
 
 
-def find_store_root(start: Path) -> Path | None:
-    """Return the nearest ancestor of ``start`` (inclusive) holding ``.protonfs/config.json``.
-
-    :param start: A path, which need not exist; the search begins at its nearest existing
-        ancestor.
-    :returns: The resolved store root, or ``None`` if no ancestor is a protonfs store.
-
-    .. versionadded:: 3.4.0
-    """
-    current = Path(start).resolve()
-    while not current.exists() and current != current.parent:
-        current = current.parent
-    for candidate in (current, *current.parents):
-        if (candidate / ".protonfs" / "config.json").is_file():
-            return candidate
-    return None
+__all__ = ["RepoContext", "find_store_root", "load_context"]

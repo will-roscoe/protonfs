@@ -463,10 +463,13 @@ class RecordingReporter:
     def progress(self, d, t, **f):
         self.calls.append(("progress", d, t))
 
-    def item(self, a, p):
-        self.calls.append(("item", p))
+    def show(self, p):
+        return p
 
-    def warn(self, m):
+    def item(self, a, p, to=None):
+        self.calls.append(("item", p if to is None else f"{p} -> {to}"))
+
+    def warn(self, m, shown=None):
         self.calls.append(("warn", m))
 
     def done(self, m, **f):

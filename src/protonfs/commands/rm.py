@@ -67,12 +67,12 @@ def rm(
     local_target = ctx.root / rel_path
     if local_target.is_dir() and not recursive:
         raise click.ClickException(
-            f"'{rel_path}' is a directory; pass -r/--recursive to remove it."
+            f"'{ctx.shown(rel_path)}' is a directory; pass -r/--recursive to remove it."
         )
 
     if not confirmed:
         kind = "permanently delete" if force else "trash"
-        click.confirm(f"{kind.capitalize()} '{rel_path}' on Drive?", abort=True)
+        click.confirm(f"{kind.capitalize()} '{ctx.shown(rel_path)}' on Drive?", abort=True)
 
     entry = ctx.index.get(rel_path)
     remote_path = entry.remote_path if entry else f"{ctx.config.remote_root}/{rel_path}"

@@ -10,6 +10,7 @@ state plus cumulative local/indexed sizes, #97/#94), filter to specific sync sta
 from __future__ import annotations
 
 import json
+import posixpath
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -224,7 +225,10 @@ def render_ls(
     """Print tracked files (or ``--dirs`` aggregates, or a trash listing).
 
     :param ctx: the loaded repo context.
-    :param subpath: repo-root-relative subtree to list, or ``None`` for everything.
+    :param subpath: repo-root-relative subtree to list, or ``None`` for everything. The
+        ``table`` format prints file paths as typed from the current directory
+        (:meth:`~protonfs.context.RepoContext.shown`); ``plain`` and ``json`` always
+        print store-relative paths, wherever the command is run.
     :param remote: when true, cross-reference a recursive remote walk so remote-only
         and remote-changed states are shown (otherwise state is local-vs-index only).
     :param trash: when true, list ``/trash`` entries instead of tracked files;
@@ -302,7 +306,7 @@ def render_ls(
             table = Table("dir", "files", "local size", "indexed size", "states")
             for s in summaries:
                 table.add_row(
-                    s.path,
+                    ctx.shown(posixpath.normpath(posixpath.join(subpath or ".", s.path))),
                     str(s.files),
                     human_size(s.local_bytes),
                     human_size(s.indexed_bytes),
@@ -319,5 +323,5 @@ def render_ls(
     else:
         table = Table("path", "state")
         for entry in entries:
-            table.add_row(entry.rel_path, entry.state.value)
+            table.add_row(ctx.shown(entry.rel_path), entry.state.value)
         console.print(table)

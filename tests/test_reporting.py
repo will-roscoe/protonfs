@@ -158,3 +158,18 @@ def test_running_is_silent_at_level_zero() -> None:
     r = _reporter(0, style="inline", isatty=True)
     r.running("du", calls=1)
     assert r._stream.getvalue() == ""
+
+
+def test_item_shows_paths_through_path_view_but_logs_them_store_relative(caplog) -> None:
+    import io
+    import logging
+
+    from protonfs.reporting import Reporter
+
+    stream = io.StringIO()
+    reporter = Reporter(2, stream=stream)
+    reporter.path_view = lambda p: "../" + p
+    with caplog.at_level(logging.DEBUG, logger="protonfs.events"):
+        reporter.item("move", "a/x", to="a/y")
+    assert stream.getvalue() == "  move ../a/x -> ../a/y\n"
+    assert "move a/x -> a/y" in caplog.text

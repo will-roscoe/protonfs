@@ -169,6 +169,118 @@ def _install_signal_handlers() -> None:
             pass
 
 
+def _store_or_cwd() -> Path:
+    """The store containing the current directory, or the current directory when it is
+    in none: where a command that acts on the store (``config``, ``upgrade``) looks.
+
+    .. versionadded:: 3.4.0
+    """
+    from protonfs.storeroot import find_store_root
+
+    here = Path.cwd()
+    return find_store_root(here) or here
+
+
+def _implicit_scope(ctx, cwd: Path) -> str | None:
+    """The store-relative subtree a command acts on when given no PATH, run from ``cwd``.
+
+    The one place that decides what "no PATH" means from a subdirectory of a store
+    (#232): that subdirectory, as for ``du``. From the store root it is the whole store.
+
+    :param ctx: the loaded :class:`~protonfs.context.RepoContext`.
+    :param cwd: the directory the command was run from, inside ``ctx.root``.
+    :returns: a store-relative path, or ``None`` for the whole store.
+    """
+    rel = Path(cwd).relative_to(ctx.root).as_posix()
+    return None if rel == "." else rel
+
+
+def _store_paths(ctx, path: tuple[str, ...], *, glob: bool = True) -> tuple[str, ...]:
+    """Map PATH arguments typed relative to the current directory to store-relative ones.
+
+    With no PATH the result is :func:`_implicit_scope`'s subtree (empty when that is the
+    whole store, which every command already reads as "no PATH given"); a note on stderr
+    says so, so a summary is not read as covering the whole store.
+
+    :raises click.UsageError: naming every argument that resolves outside the store.
+
+    .. versionadded:: 3.4.0
+    """
+    if not path:
+        scope = _implicit_scope(ctx, ctx.invocation_dir())
+        if not scope:
+            return ()
+        click.echo(
+            f"note: no PATH given; acting on the current directory ({scope}), not the "
+            "whole store. Pass / for the whole store.",
+            err=True,
+        )
+        return (_Literal(scope),)
+    mapped: list[str] = []
+    outside: list[str] = []
+    for arg in path:
+        if arg.startswith("/") and not arg.strip("/"):
+            mapped.append(".")  # a bare "/" has always meant the whole store
+            continue
+        try:
+            rel = ctx.store_path(arg, glob=glob)
+        except ValueError:
+            outside.append(arg)
+            continue
+        # a path with no glob character is literal, even when its directory prefix has one
+        mapped.append(_Literal(rel) if glob and not _is_pattern(arg) else rel)
+    if outside:
+        listed = ", ".join(map(repr, outside))
+        raise click.UsageError(
+            f"path(s) outside the protonfs store at {ctx.root}: {listed}"
+        )
+    return tuple(mapped)
+
+
+def _under(ctx, path: tuple[str, ...]) -> str:
+    """`` under '<dir>'`` when a no-PATH command was scoped to the current subdirectory,
+    for summaries that would otherwise read as covering the whole store."""
+    scope = None if path else _implicit_scope(ctx, ctx.invocation_dir())
+    return f" under {scope!r}" if scope else ""
+
+
+def _schedule_path(ctx, path: str | None) -> str | None:
+    """``schedule --add --path`` as the store-relative pathspec the job (which runs from
+    the store root) needs; with no ``--path``, :func:`_implicit_scope`'s subtree."""
+    mapped = _store_paths(ctx, (path,) if path is not None else ())
+    return mapped[0] if mapped else None
+
+
+def _refuse_store_root(verb: str, mapped: tuple[str, ...]) -> None:
+    """Refuse ``rm``/``restore`` of the store root itself (``.``, ``..`` up to it, its
+    absolute path or ``/``): that would trash or restore the whole remote root, and the
+    index would be left describing files that are gone."""
+    if any(p in (".", "") for p in mapped):
+        raise click.UsageError(
+            f"refusing to {verb} the store root itself (it would act on the whole remote "
+            "root); name a path inside it."
+        )
+
+
+def _runnable_git(ctx, command: str) -> str:
+    """A ``git ...`` command protonfs runs from the store root, as the user can paste it
+    from where they are: prefixed with ``git -C <root>`` when that is not the root."""
+    if ctx.invocation_dir() == ctx.root:
+        return command
+    import shlex
+
+    return f"git -C {shlex.quote(str(ctx.root))} {command[len('git '):]}"
+
+
+def _echo_failure(ctx, failure: dict, *, rel: bool = False) -> None:
+    """Print one ``FAILED`` line; ``rel`` says ``failure["name"]`` is a store-relative path
+    (else it is a bare file name, which does not depend on where the command ran)."""
+    name = failure["name"]
+    if rel or failure.get("kind") == "trash":
+        name = ctx.shown(name)
+    click.echo(f"  FAILED {name}: {failure['error']}")
+
+
 def _normalize_paths(paths: tuple[str, ...]) -> list[str | None]:
     """Collapse a variadic ``PATH...`` argument into the subpath list a command loops over.
 
@@ -201,9 +313,16 @@ def _normalize_paths(paths: tuple[str, ...]) -> list[str | None]:
 _GLOB_CHARS = frozenset("*?[")
 
 
+class _Literal(str):
+    """A store-relative PATH that was typed without a glob character: never a pattern,
+    even if the directory it was typed in has ``*``, ``?`` or ``[`` in its name."""
+
+
 def _is_pattern(pathspec: str) -> bool:
     """True if `pathspec` contains a glob metacharacter, so it should be expanded rather
-    than treated as a literal path."""
+    than treated as a literal path (a :class:`_Literal` never is)."""
+    if isinstance(pathspec, _Literal):
+        return False
     return any(c in pathspec for c in _GLOB_CHARS)
 
 
@@ -354,7 +473,7 @@ def _resolve_pathspecs(
     return _normalize_paths(expanded), unmatched
 
 
-def _report_unmatched(unmatched: list[str], strict: bool, verb: str) -> None:
+def _report_unmatched(unmatched: list[str], strict: bool, verb: str, ctx=None) -> None:
     """Report pathspec patterns that matched nothing; under ``--strict``, make them fatal.
 
     Fails BEFORE any lock is taken or byte transferred, mirroring push's existing
@@ -368,6 +487,8 @@ def _report_unmatched(unmatched: list[str], strict: bool, verb: str) -> None:
     """
     if not unmatched:
         return
+    if ctx is not None:  # name each pattern as the user typed it
+        unmatched = [ctx.typed_pattern(p) for p in unmatched]
     listed = ", ".join(map(repr, unmatched))
     if strict:
         click.echo(f"error: pattern(s) matched nothing: {listed}", err=True)
@@ -409,9 +530,11 @@ def _resolve_scan_paths(ctx, path: tuple[str, ...]) -> list[str | None]:
 
     .. versionadded:: 3.3.1
     """
-    subpaths, unmatched = _resolve_pathspecs(path, lambda p: _glob_known(ctx, p))
+    subpaths, unmatched = _resolve_pathspecs(
+        _store_paths(ctx, path), lambda p: _glob_known(ctx, p)
+    )
     for pattern in unmatched:
-        click.echo(f"warning: no tracked path matches {pattern!r}", err=True)
+        click.echo(f"warning: no tracked path matches {ctx.typed_pattern(pattern)!r}", err=True)
     return subpaths
 
 
@@ -531,10 +654,9 @@ def _split_file_paths(
 )
 def main(verbose: int, progress_inline: bool | None, event_log: bool | None) -> None:
     """Sync a local directory tree with Proton Drive."""
-    from pathlib import Path
-
     from protonfs.config import load_layered_config
     from protonfs.logs import configure_logging
+    from protonfs.storeroot import find_store_root
 
     # #136: before anything can spawn proton-drive, make a kill signal unwind cleanly
     # rather than leave an orphaned child holding the Drive cache lock.
@@ -544,8 +666,14 @@ def main(verbose: int, progress_inline: bool | None, event_log: bool | None) -> 
     # repo config (unparseable .protonfs/config.json) must never take down every
     # command's group callback: `doctor`/`config set` are how you FIX a broken config,
     # and the command itself will surface config errors where they actually matter.
+    here = Path.cwd()
+    # #232: the store this invocation belongs to. `setup` creates a store where it is run,
+    # so it never belongs to an enclosing one.
+    root = here
+    if click.get_current_context().invoked_subcommand != "setup":
+        root = find_store_root(here) or here
     try:
-        cfg = load_layered_config(Path.cwd())
+        cfg = load_layered_config(root)
     except Exception:
         cfg = None
     cfg_style = cfg.defaults.progress_style if cfg else "inline"
@@ -555,7 +683,7 @@ def main(verbose: int, progress_inline: bool | None, event_log: bool | None) -> 
     else:
         style = "inline" if progress_inline else "lines"
     use_event_log = cfg_event if event_log is None else event_log
-    configure_logging(verbose, progress_style=style, event_log=use_event_log, root=Path.cwd())
+    configure_logging(verbose, progress_style=style, event_log=use_event_log, root=root)
 
 
 @main.command()
@@ -606,13 +734,22 @@ def deinit(dry_run: bool, yes: bool) -> None:
     Only protonfs's own bookkeeping under .protonfs/ (config, index, ignore/include,
     control .gitattributes/.gitignore) is removed -- synced payload files, local or
     remote, are never touched.
-    """
-    from pathlib import Path
 
+    .. versionchanged:: 3.4.0
+       Run from a subdirectory of a store, it refuses and names the store root to run it
+       from (#232): a teardown acts only where it is run.
+    """
     from protonfs.commands.deinit import ensure_deinit_target, run_deinit
     from protonfs.locking import repo_lock
+    from protonfs.storeroot import find_store_root
 
     root = Path.cwd()
+    store = find_store_root(root)
+    if store is not None and store != root.resolve() and not (root / ".protonfs").exists():
+        raise click.UsageError(
+            f"deinit must be run from the store root: cd {store} first "
+            f"(this directory is inside the store at {store})."
+        )
     ensure_deinit_target(root)
     with repo_lock(root):
         run_deinit(root, dry_run=dry_run, yes=yes)
@@ -649,6 +786,10 @@ def status(path: tuple[str, ...], fmt: str, remote: bool) -> None:
     1 = drift present (something to push/pull/prune), 2 = conflict present
     (conflict: a local change with no remote view to attribute it; both-modified:
     changed on both sides). Conflict outranks drift when both are present.
+
+    .. versionchanged:: 3.4.0
+       Run from a subdirectory of a store it finds the store, PATH is read relative to
+       the current directory, and with no PATH it acts on that subdirectory (#232).
     """
     from collections import Counter
 
@@ -780,6 +921,10 @@ def ls(
     local/indexed sizes) instead of listing thousands of files; --state filters to
     the states you care about; --format plain|json makes the output scriptable;
     --visual treemap|waffle draws a storage-usage chart of those directories.
+
+    .. versionchanged:: 3.4.0
+       Run from a subdirectory of a store it finds the store, PATH is read relative to
+       the current directory, and with no PATH it acts on that subdirectory (#232).
     """
     from rich.console import Console
 
@@ -1065,6 +1210,10 @@ def push(
        ``--allow-mass-delete``: with ``trash``, files deleted locally are moved to the
        Drive trash and counted as ``trashed=`` (a dry run lists them). Files deleted
        locally that stay on Drive are counted as ``local-deleted=`` (#197).
+
+    .. versionchanged:: 3.4.0
+       Run from a subdirectory of a store it finds the store, PATH is read relative to
+       the current directory, and with no PATH it acts on that subdirectory (#232).
     """
     from protonfs.commands.push import push as push_files
     from protonfs.context import load_context
@@ -1076,15 +1225,17 @@ def push(
     # #131: expand protonfs-side glob patterns against the local tree first -- push only
     # ever acts on files physically present, so the filesystem IS the right namespace here
     # (pull differs; see its matcher). Literal paths pass through untouched.
-    subpaths, unmatched = _resolve_pathspecs(path, lambda p: _glob_local(ctx.root, p))
-    _report_unmatched(unmatched, strict, "push")
+    subpaths, unmatched = _resolve_pathspecs(
+        _store_paths(ctx, path), lambda p: _glob_local(ctx.root, p)
+    )
+    _report_unmatched(unmatched, strict, "push", ctx)
     # Validate BEFORE taking the lock or hashing anything: a nonexistent local pathspec
     # can only be a typo (a shell glob expands to existing paths only), so fail fast and
     # loud rather than scan it to nothing and report a misleading success. Report every
     # bad path at once so the user fixes them in a single round trip.
     missing = [s for s in subpaths if s is not None and not (ctx.root / s).exists()]
     if missing:
-        listed = ", ".join(map(repr, missing))
+        listed = ", ".join(repr(ctx.shown(m)) for m in missing)
         raise click.UsageError(
             f"no such local path(s): {listed} "
             "(push uploads local files -- check the path or your shell glob)"
@@ -1126,13 +1277,13 @@ def push(
         # it is excluded by the ignore rules) would otherwise print only the bare zero
         # summary. Say so in plain language -- and at DEFAULT verbosity, which the Reporter
         # cannot do (reporter.done() renders only at -v and above).
-        click.echo("nothing to push")
+        click.echo(f"nothing to push{_under(ctx, path)}")
     click.echo(_transfer_summary(result))
     if dry_run:
         for rel in result.trashed:
-            click.echo(f"  trash {rel}")
+            click.echo(f"  trash {ctx.shown(rel)}")
     for failure in result.failures:
-        click.echo(f"  FAILED {failure['name']}: {failure['error']}")
+        _echo_failure(ctx, failure)
     if result.failed_items:
         under_delivered = [f for f in result.failures if f.get("kind") == "under-delivered"]
         unverified = [f for f in result.failures if f.get("kind") == "unverified"]
@@ -1223,6 +1374,10 @@ def import_cmd(path: tuple[str, ...], dry_run: bool, strict: bool) -> None:
     error.
 
     .. versionadded:: 3.1.0
+
+    .. versionchanged:: 3.4.0
+       Run from a subdirectory of a store it finds the store, PATH is read relative to
+       the current directory, and with no PATH it acts on that subdirectory (#232).
     """
     from protonfs import gitops
     from protonfs.context import load_context
@@ -1244,17 +1399,17 @@ def _import(ctx, path: tuple[str, ...], dry_run: bool, strict: bool) -> None:
     store_wide = check_import(ctx, []) if not gitops.in_work_tree(ctx.root) else []
     if store_wide:  # no git, or not in a work tree: refuse before expanding anything
         for refusal in store_wide:
-            click.echo(f"  REFUSED {refusal.path}: {refusal.reason}")
+            click.echo(f"  REFUSED {ctx.shown(refusal.path)}: {refusal.reason}")
         raise click.ClickException("nothing imported")
     tracked = {rel for rel in gitops.tracked_files(ctx.root) if not _git_control(rel)}
     matchable = _with_parent_dirs(tracked)
     subpaths, unmatched = _resolve_pathspecs(
-        path, lambda p: _glob_tracked(ctx.root, p, matchable)
+        _store_paths(ctx, path), lambda p: _glob_tracked(ctx.root, p, matchable)
     )
-    _report_unmatched(unmatched, strict, "import")
+    _report_unmatched(unmatched, strict, "import", ctx)
     files = _tracked_under(subpaths, tracked)
     if not files:
-        click.echo("nothing to import")
+        click.echo(f"nothing to import{_under(ctx, path)}")
         return
     with repo_lock(ctx.root), _resumable_on_interrupt(ctx, "import"):
         result = import_from_git(ctx, files, dry_run=dry_run)
@@ -1263,15 +1418,15 @@ def _import(ctx, path: tuple[str, ...], dry_run: bool, strict: bool) -> None:
             refused = {r.path for r in result.refusals}
             for rel in files:
                 if rel not in refused:
-                    click.echo(f"[dry-run] import {rel}")
+                    click.echo(f"[dry-run] import {ctx.shown(rel)}")
         for refusal in result.refusals:
-            click.echo(f"  REFUSED {refusal.path}: {refusal.reason}")
+            click.echo(f"  REFUSED {ctx.shown(refusal.path)}: {refusal.reason}")
         raise click.ClickException(
             f"nothing imported: {len(result.refusals)} path(s) refused"
         )
     if dry_run:
         for rel in files:
-            click.echo(f"[dry-run] import {rel}")
+            click.echo(f"[dry-run] import {ctx.shown(rel)}")
         upload = result.pushed.transferred_items
         click.echo(
             f"[dry-run] would push {upload} file(s), {len(files) - upload} already on "
@@ -1281,14 +1436,14 @@ def _import(ctx, path: tuple[str, ...], dry_run: bool, strict: bool) -> None:
         for line in result.gitignore_lines:
             click.echo(f"[dry-run] {line}")
         for command in result.git_commands:
-            click.echo(f"[dry-run] {command}")
+            click.echo(f"[dry-run] {_runnable_git(ctx, command)}")
         click.echo(
             "[dry-run] each file is verified on Drive and against HEAD when run for real"
         )
         return
     click.echo(f"{_transfer_summary(result.pushed)} untracked={result.untracked}")
     for failure in [*result.pushed.failures, *result.failures]:
-        click.echo(f"  FAILED {failure['name']}: {failure['error']}")
+        _echo_failure(ctx, failure, rel=failure in result.failures)
     if result.failures:
         raise click.ClickException(
             f"{len(result.failures)} problem(s); nothing changed in git. Fix them and "
@@ -1370,6 +1525,10 @@ def export_cmd(path: tuple[str, ...], dry_run: bool, strict: bool, trash_remote:
     ``--trash-remote`` could not trash, or a Drive/lock error; 2 usage error.
 
     .. versionadded:: 3.1.0
+
+    .. versionchanged:: 3.4.0
+       Run from a subdirectory of a store it finds the store, PATH is read relative to
+       the current directory, and with no PATH it acts on that subdirectory (#232).
     """
     from protonfs import gitops
     from protonfs.context import load_context
@@ -1407,15 +1566,15 @@ def _export(ctx, path: tuple[str, ...], dry_run: bool, strict: bool, trash_remot
     store_wide = check_export(ctx, []) if not gitops.in_work_tree(ctx.root) else []
     if store_wide:  # no git, or not in a work tree: refuse before expanding anything
         for refusal in store_wide:
-            click.echo(f"  REFUSED {refusal.path}: {refusal.reason}")
+            click.echo(f"  REFUSED {ctx.shown(refusal.path)}: {refusal.reason}")
         raise click.ClickException("nothing exported")
     subpaths, unmatched = _resolve_pathspecs(
-        path, lambda p: _expand_pattern_index(list(ctx.index.all()), p)
+        _store_paths(ctx, path), lambda p: _expand_pattern_index(list(ctx.index.all()), p)
     )
-    _report_unmatched(unmatched, strict, "export")
+    _report_unmatched(unmatched, strict, "export", ctx)
     files = _held_under(subpaths, ctx.index, gitops.tracked_files(ctx.root))
     if not files:
-        click.echo("nothing to export")
+        click.echo(f"nothing to export{_under(ctx, path)}")
         return
     with repo_lock(ctx.root), _resumable_on_interrupt(ctx, "export"):
         result = export_to_git(ctx, files, dry_run=dry_run, trash_remote=trash_remote)
@@ -1424,15 +1583,15 @@ def _export(ctx, path: tuple[str, ...], dry_run: bool, strict: bool, trash_remot
             refused = {r.path for r in result.refusals}
             for rel in files:
                 if rel not in refused:
-                    click.echo(f"[dry-run] export {rel}")
+                    click.echo(f"[dry-run] export {ctx.shown(rel)}")
         for refusal in result.refusals:
-            click.echo(f"  REFUSED {refusal.path}: {refusal.reason}")
+            click.echo(f"  REFUSED {ctx.shown(refusal.path)}: {refusal.reason}")
         raise click.ClickException(
             f"nothing exported: {len(result.refusals)} path(s) refused"
         )
     if dry_run:
         for rel in files:
-            click.echo(f"[dry-run] export {rel}")
+            click.echo(f"[dry-run] export {ctx.shown(rel)}")
         click.echo(
             f"[dry-run] would download {len(result.to_download)} offloaded file(s); "
             f"{len(files)} file(s), {human_size(result.total_bytes)} in all"
@@ -1446,7 +1605,7 @@ def _export(ctx, path: tuple[str, ...], dry_run: bool, strict: bool, trash_remot
         for line in result.ignore_lines:
             click.echo(f"[dry-run] {line}")
         for command in result.git_commands:
-            click.echo(f"[dry-run] {command}")
+            click.echo(f"[dry-run] {_runnable_git(ctx, command)}")
         if trash_remote:
             click.echo(f"[dry-run] would trash {len(files)} Drive copy(ies)")
         click.echo("[dry-run] each file is verified on Drive when run for real")
@@ -1464,7 +1623,7 @@ def _export(ctx, path: tuple[str, ...], dry_run: bool, strict: bool, trash_remot
         f"tracked={result.tracked}{trashed}"
     )
     for failure in result.failures:
-        click.echo(f"  FAILED {failure['name']}: {failure['error']}")
+        _echo_failure(ctx, failure, rel=True)
     if result.failures and not result.tracked:
         raise click.ClickException(
             f"{len(result.failures)} problem(s); nothing changed in git. Fix them and run "
@@ -1570,6 +1729,10 @@ def pull(
     .. versionchanged:: 3.3.2
        ``--resolve`` downloads files changed only on Drive again (3.0.0 to 3.3.1 left
        them alone). Without it, ``--refresh`` reports how many such files it left alone.
+
+    .. versionchanged:: 3.4.0
+       Run from a subdirectory of a store it finds the store, PATH is read relative to
+       the current directory, and with no PATH it acts on that subdirectory (#232).
     """
     from protonfs import manifest
     from protonfs.commands.pull import pull as pull_files
@@ -1578,6 +1741,7 @@ def pull(
     from protonfs.locking import repo_lock
 
     ctx = load_context()
+    path = _store_paths(ctx, path)
     result = TransferResult(0, 0, 0, [])
     with repo_lock(ctx.root), _resumable_on_interrupt(ctx, "pull"):
         if not refresh and not ctx.index.all():
@@ -1602,7 +1766,7 @@ def pull(
         subpaths, unmatched = _resolve_pathspecs(
             path, lambda p: _expand_pattern_index(list(ctx.index.all()), p)
         )
-        _report_unmatched(unmatched, strict, "pull")
+        _report_unmatched(unmatched, strict, "pull", ctx)
         # Asking for one file by name is asking for it back, --no-restore or not.
         named_files = {
             rel for rel in _normalize_paths(tuple(p for p in path if not _is_pattern(p)))
@@ -1659,7 +1823,7 @@ def pull(
             "--resolve remote PATH` to bring them down."
         )
     for failure in result.failures:
-        click.echo(f"  FAILED {failure['name']}: {failure['error']}")
+        _echo_failure(ctx, failure)
     if result.failed_items:
         raise click.exceptions.Exit(1)
 
@@ -1680,7 +1844,7 @@ def _parse_min_age(value: str) -> float:
         raise click.BadParameter(str(exc), param_hint="--min-age") from exc
 
 
-def _echo_offload_result(result, dry_run: bool) -> None:
+def _echo_offload_result(ctx, result, dry_run: bool) -> None:
     """The offload summary line and the per-reason detail lists (shared with prune)."""
     verb = "would offload" if dry_run else "offloaded"
     click.echo(
@@ -1690,28 +1854,28 @@ def _echo_offload_result(result, dry_run: bool) -> None:
         f"skipped_unsettled={result.skipped_unsettled}"
     )
     for p in result.offloaded_paths:
-        click.echo(f"  {'WOULD OFFLOAD' if dry_run else 'offloaded'} {p}")
+        click.echo(f"  {'WOULD OFFLOAD' if dry_run else 'offloaded'} {ctx.shown(p)}")
     if result.skipped_unverified:
         click.echo(
             f"  -> {result.skipped_unverified} file(s) could not be confirmed on the "
             "remote and were left untouched locally:"
         )
         for p in result.skipped_paths:
-            click.echo(f"      {p}")
+            click.echo(f"      {ctx.shown(p)}")
     if result.skipped_modified:
         click.echo(
             f"  -> {result.skipped_modified} file(s) have unsynced local edits and were "
             "left untouched; `push` them first, then offload:"
         )
         for p in result.modified_paths:
-            click.echo(f"      {p}")
+            click.echo(f"      {ctx.shown(p)}")
     if result.skipped_unsettled:
         click.echo(
             f"  -> {result.skipped_unsettled} file(s) were modified within the settle window "
             "(--min-age) and were left untouched; they may still be being written:"
         )
         for p in result.unsettled_paths:
-            click.echo(f"      {p}")
+            click.echo(f"      {ctx.shown(p)}")
 
 
 @main.command()
@@ -1749,6 +1913,10 @@ def offload(
     .. versionchanged:: 2.4.0
        File PATHs share one pass, so N files no longer cost N listings and index saves
        (#171).
+
+    .. versionchanged:: 3.4.0
+       Run from a subdirectory of a store it finds the store, PATH is read relative to
+       the current directory, and with no PATH it acts on that subdirectory (#232).
     """
     from protonfs.commands.offload import OffloadResult
     from protonfs.commands.offload import offload as offload_files
@@ -1763,7 +1931,7 @@ def offload(
         return
 
     if not yes and not dry_run:
-        shown = ", ".join(f"'{p}'" for p in subpaths if p) or "'.'"
+        shown = ", ".join(f"'{ctx.shown(p)}'" for p in subpaths if p) or f"'{ctx.shown(None)}'"
         click.confirm(
             f"Delete local copies of tracked files under {shown} (Drive copies are kept)?",
             abort=True,
@@ -1782,7 +1950,7 @@ def offload(
                     ctx, None, verify=verify, dry_run=dry_run, min_age=min_age_s, only=files
                 )
             )
-    _echo_offload_result(result, dry_run)
+    _echo_offload_result(ctx, result, dry_run)
 
 
 @main.command()
@@ -1824,6 +1992,10 @@ def prune(
 
     Exit code: 0 success (files offload refused are reported, not failed); 1 when the
     push that ran first failed for some file, or a Drive/lock error; 2 usage error.
+
+    .. versionchanged:: 3.4.0
+       Run from a subdirectory of a store it finds the store, PATH is read relative to
+       the current directory, and with no PATH it acts on that subdirectory (#232).
     """
     from protonfs.commands.offload import OffloadResult
     from protonfs.commands.prune import prune as prune_files
@@ -1837,7 +2009,7 @@ def prune(
     if not subpaths:
         return
     if not yes and not dry_run:
-        shown = ", ".join(f"'{p}'" for p in subpaths if p) or "'.'"
+        shown = ", ".join(f"'{ctx.shown(p)}'" for p in subpaths if p) or f"'{ctx.shown(None)}'"
         click.confirm(
             f"Push, then delete local copies of older tracked files under {shown} (keeping "
             f"the newest {keep} per directory; Drive copies are kept)?",
@@ -1863,12 +2035,12 @@ def prune(
             f"failed={pushed.failed_items}"
         )
         for failure in pushed.failures:
-            click.echo(f"  FAILED {failure['name']}: {failure['error']}")
+            _echo_failure(ctx, failure)
     click.echo(
         f"prune: {considered} tracked local file(s); keeping the newest {keep} per "
         f"directory and anything modified within {min_age} left {candidates} for offload"
     )
-    _echo_offload_result(offloaded, dry_run)
+    _echo_offload_result(ctx, offloaded, dry_run)
     if pushed.failed_items:
         raise click.exceptions.Exit(1)
 
@@ -1880,18 +2052,25 @@ def prune(
 @click.option("--yes", is_flag=True, help="Skip confirmation prompt.")
 @_drive_error_boundary
 def rm(path: tuple[str, ...], recursive: bool, force: bool, yes: bool) -> None:
-    """Remove files/directories from Drive (trash by default, -f for permanent)."""
+    """Remove files/directories from Drive (trash by default, -f for permanent).
+
+    .. versionchanged:: 3.4.0
+       Run from a subdirectory of a store it finds the store, PATH is read relative to
+       the current directory, and the store root itself (``.``, ``..`` up to it, its
+       absolute path or ``/``) is refused with a usage error (#232).
+    """
     from protonfs.commands.rm import rm as rm_path
     from protonfs.context import load_context
     from protonfs.locking import repo_lock
 
     ctx = load_context()
+    _refuse_store_root("rm", _store_paths(ctx, path, glob=False))
     removed: list[str] = []
     with repo_lock(ctx.root):
         try:
             # No None-mapping here: unlike the scan-scoped commands, rm has no
             # "whole repo" default -- each given path is removed as-is.
-            for subpath in dict.fromkeys(path):
+            for subpath in dict.fromkeys(_store_paths(ctx, path, glob=False)):
                 rm_path(ctx, subpath, recursive, force, confirmed=yes, manifest_forget=removed)
         finally:
             # #146: one manifest write for the whole run, covering what was removed.
@@ -1906,14 +2085,22 @@ def rm(path: tuple[str, ...], recursive: bool, force: bool, yes: bool) -> None:
 @click.argument("path", nargs=-1, required=True)
 @_drive_error_boundary
 def restore(path: tuple[str, ...]) -> None:
-    """Restore trashed files/directories on Drive."""
+    """Restore trashed files/directories on Drive.
+
+    .. versionchanged:: 3.4.0
+       Run from a subdirectory of a store it finds the store, PATH is read relative to
+       the current directory, and the store root itself (``.``, ``..`` up to it, its
+       absolute path or ``/``) is refused with a usage error (#232).
+    """
     from protonfs.commands.restore import restore as restore_path
     from protonfs.context import load_context
     from protonfs.locking import repo_lock
 
     ctx = load_context()
+    _refuse_store_root("restore", _store_paths(ctx, path, glob=False))
     with repo_lock(ctx.root):
-        for subpath in dict.fromkeys(path):  # dedupe only; no whole-repo default for restore
+        # dedupe only; no whole-repo default for restore
+        for subpath in dict.fromkeys(_store_paths(ctx, path, glob=False)):
             restore_path(ctx, subpath)
 
 
@@ -1922,7 +2109,12 @@ def restore(path: tuple[str, ...]) -> None:
 @click.option("--prune", is_flag=True, help="Drop index entries for files deleted on the remote.")
 @_drive_error_boundary
 def refresh(path: tuple[str, ...], prune: bool) -> None:
-    """Discover remote files and seed the local index (any number of PATHs)."""
+    """Discover remote files and seed the local index (any number of PATHs).
+
+    .. versionchanged:: 3.4.0
+       Run from a subdirectory of a store it finds the store, PATH is read relative to
+       the current directory, and with no PATH it acts on that subdirectory (#232).
+    """
     from protonfs.commands.refresh import RefreshResult
     from protonfs.commands.refresh import refresh as refresh_index
     from protonfs.context import load_context
@@ -1931,7 +2123,7 @@ def refresh(path: tuple[str, ...], prune: bool) -> None:
     ctx = load_context()
     result = RefreshResult()
     with repo_lock(ctx.root):
-        for subpath in _normalize_paths(path):
+        for subpath in _normalize_paths(_store_paths(ctx, path, glob=False)):
             part = refresh_index(ctx, subpath, prune)
             result.seeded += part.seeded
             result.remote_changed += part.remote_changed
@@ -1943,7 +2135,7 @@ def refresh(path: tuple[str, ...], prune: bool) -> None:
     if result.remote_changed:
         click.echo(f"  {result.remote_changed} file(s) changed on the remote (remote-changed):")
         for p in result.changed_paths:
-            click.echo(f"      {p}")
+            click.echo(f"      {ctx.shown(p)}")
         click.echo(
             "    -> `protonfs pull <path>` to take the remote version, "
             "or `protonfs push --resolve=local <path>` to keep your local copy (it replaces "
@@ -1953,7 +2145,7 @@ def refresh(path: tuple[str, ...], prune: bool) -> None:
         verb = "pruned" if prune else "found"
         click.echo(f"  {result.remote_deleted} file(s) deleted on the remote ({verb}):")
         for p in result.deleted_paths:
-            click.echo(f"      {p}")
+            click.echo(f"      {ctx.shown(p)}")
         if not prune:
             click.echo("    -> `protonfs refresh --prune` to drop them from your local index.")
     if result.seeded:
@@ -1963,13 +2155,13 @@ def refresh(path: tuple[str, ...], prune: bool) -> None:
 _VERIFY_SHOWN = 20  # paths listed per category before summarising the rest
 
 
-def _echo_paths(label: str, paths: list[str]) -> None:
+def _echo_paths(ctx, label: str, paths: list[str]) -> None:
     """Print a category count and up to :data:`_VERIFY_SHOWN` of its paths."""
     if not paths:
         return
     click.echo(f"{label}: {len(paths)}")
     for rel in paths[:_VERIFY_SHOWN]:
-        click.echo(f"  {rel}")
+        click.echo(f"  {ctx.shown(rel)}")
     if len(paths) > _VERIFY_SHOWN:
         click.echo(f"  ... and {len(paths) - _VERIFY_SHOWN} more")
 
@@ -2052,11 +2244,13 @@ def verify(repair: bool, index: bool) -> None:
             "changed since (`protonfs pull --refresh` catches up)"
         )
     click.echo(f"remote: {report.remote_files} file(s) listed")
-    _echo_paths("missing (in the manifest, not on Drive)", report.missing)
-    _echo_paths("differs (size or sha1 disagree with Drive)", report.differs)
-    _echo_paths("untracked (on Drive, not in the manifest)", report.untracked)
-    _echo_paths("revision moved (same content, a newer Drive revision)", report.revision_moved)
-    _echo_paths("not compared (Drive listed no plaintext size)", report.unsized)
+    _echo_paths(ctx, "missing (in the manifest, not on Drive)", report.missing)
+    _echo_paths(ctx, "differs (size or sha1 disagree with Drive)", report.differs)
+    _echo_paths(ctx, "untracked (on Drive, not in the manifest)", report.untracked)
+    _echo_paths(
+        ctx, "revision moved (same content, a newer Drive revision)", report.revision_moved
+    )
+    _echo_paths(ctx, "not compared (Drive listed no plaintext size)", report.unsized)
 
     if repair:
         click.echo(
@@ -2139,15 +2333,13 @@ def upgrade(check: bool, drive_only: bool, repo_only: bool) -> None:
     version; a newer upstream release requires a newer protonfs (reported, never
     installed). Inside a protonfs root, pending repo-state migrations run too.
     """
-    from pathlib import Path
-
     from protonfs.commands.upgrade import run_upgrade
     from protonfs.install import InstallError
 
     if drive_only and repo_only:
         raise click.UsageError("--drive-only and --repo-only are mutually exclusive.")
     try:
-        code = run_upgrade(Path.cwd(), check=check, drive_only=drive_only, repo_only=repo_only)
+        code = run_upgrade(_store_or_cwd(), check=check, drive_only=drive_only, repo_only=repo_only)
     except InstallError as exc:
         raise click.ClickException(str(exc)) from exc
     if code != 0:
@@ -2300,9 +2492,12 @@ def schedule(
     .. versionchanged:: 3.0.0
        Added ``--deletions`` for push and sync jobs and ``--no-restore`` for pull and
        sync jobs (#197).
+
+    .. versionchanged:: 3.4.0
+       Run from a subdirectory of a store it finds the store, PATH is read relative to
+       the current directory, and with no PATH it acts on that subdirectory (#232).
     """
     import json as _json
-    from pathlib import Path
 
     from protonfs.commands import schedule as sched
     from protonfs.context import load_context
@@ -2312,6 +2507,7 @@ def schedule(
 
     ctx = load_context()
     repo = Path(ctx.root)
+    sched_path = _schedule_path(ctx, sched_path)
     try:
         if add:
             job = sched.add_job(
@@ -2415,11 +2611,9 @@ def config() -> None:
 @click.argument("key")
 def config_get_cmd(key: str) -> None:
     """Print the RESOLVED value of KEY (e.g. `remote_root`, `defaults.low_io`)."""
-    from pathlib import Path
-
     from protonfs.commands.config import config_get
 
-    click.echo(config_get(Path.cwd(), key))
+    click.echo(config_get(_store_or_cwd(), key))
 
 
 @config.command("set")
@@ -2429,14 +2623,12 @@ def config_get_cmd(key: str) -> None:
 @click.option("--local", "scope_local", is_flag=True, help="Write to the per-device local config.")
 def config_set_cmd(key: str, value: str, scope_global: bool, scope_local: bool) -> None:
     """Set KEY = VALUE. Default scope is the shared per-repo config (committed)."""
-    from pathlib import Path
-
     from protonfs.commands.config import config_set
 
     if scope_global and scope_local:
         raise click.ClickException("--global and --local are mutually exclusive.")
     scope = "global" if scope_global else "local" if scope_local else "shared"
-    path = config_set(Path.cwd(), key, value, scope=scope)
+    path = config_set(_store_or_cwd(), key, value, scope=scope)
     click.echo(f"Set {key} in {path}.")
 
 
