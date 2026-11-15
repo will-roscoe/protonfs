@@ -56,6 +56,23 @@ def make(engine):
         jobs.close()
 
 
+@pytest.fixture()
+def gate(drive):
+    """Hold every job at its first Drive call while clear, so what a request queued can be
+    checked before the job runs (a fast fake job can otherwise finish first). List it
+    after ``make`` so it is released before the job queue closes."""
+    held = threading.Event()
+    real = drive._enter
+
+    def gated(op, path):
+        held.wait(10)
+        real(op, path)
+
+    drive._enter = gated
+    yield held
+    held.set()
+
+
 def _next(q, name, timeout=5):
     import queue
 
@@ -68,13 +85,14 @@ def _next(q, name, timeout=5):
             return ev
 
 
-def test_tree_makes_no_drive_calls_and_queues_stale(make, drive):
+def test_tree_makes_no_drive_calls_and_queues_stale(make, drive, gate):
     api = make()
     q = api.jobs.subscribe()
     out = api.tree(TARGET, 2)
     assert drive.calls == []
     assert out["rows"][0]["path"] == TARGET
     assert out["pending"] == [TARGET]  # nothing cached: the target is queued
+    gate.set()
     ev = _next(q, "breakdown")
     assert ev["path"] == TARGET and ev["breakdown"].size == 6100
     again = api.tree(TARGET, 2)
@@ -96,18 +114,21 @@ def _settle(api, q, name="breakdown"):
     assert api.jobs.pending() == []
 
 
-def test_revisit_after_threshold_queues_again(make, clock):
+def test_revisit_after_threshold_queues_again(make, clock, gate):
     api = make(refresh="5m")
     q = api.jobs.subscribe()
+    gate.set()
     api.tree(TARGET, 1)
     _settle(api, q)
     assert api.tree(TARGET, 1)["pending"] == []  # fresh: nothing to do
     clock.advance(301)
+    gate.clear()
     assert api.tree(TARGET, 1)["pending"] == [TARGET]  # stale again, queued again
+    gate.set()
     _settle(api, q)
 
 
-def test_queue_none_never_queues(make):
+def test_queue_none_never_queues(make, gate):
     api = make(refresh="0")
     out = api.tree(TARGET, 1, queue="none")
     assert out["pending"] == [] and api.root(queue="none")["pending"] == []
@@ -189,11 +210,13 @@ def test_refetch_does_not_retry_a_failed_job(make, engine, monkeypatch):
     _wait_idle(api)
 
 
-def test_refresh_zero_queues_on_every_navigation(make):
+def test_refresh_zero_queues_on_every_navigation(make, gate):
     api = make(refresh="0")
     q = api.jobs.subscribe()
     for _ in range(3):
+        gate.clear()
         assert api.tree(TARGET, 1)["pending"] == [TARGET]
+        gate.set()
         _settle(api, q)
 
 

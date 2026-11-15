@@ -239,22 +239,37 @@ def test_bad_content_length(srv):
 
 
 def test_tree_request_makes_no_drive_calls_and_queues_stale(srv):
-    events = srv.events()
-    assert next(events) == ("comment", "open")
-    before = list(srv.drive.calls)
-    status, body = srv.json("GET", f"/api/tree?path={TARGET}&depth=2&queue=0")
-    assert status == 200 and list(srv.drive.calls) == before and body["pending"] == []
-    status, body = srv.json("GET", f"/api/tree?path={TARGET}&depth=2")
-    assert status == 200 and list(srv.drive.calls) == before
-    assert body["pending"] == [TARGET] and body["rows"][0]["path"] == TARGET
-    name, data = next(events)
-    assert name == "breakdown" and data["path"] == TARGET
-    assert data["breakdown"]["size"] == 6100
-    status, body = srv.json("GET", f"/api/tree?path={TARGET}&depth=2&queue=0")
-    assert {"A", "B"} <= {r["name"] for r in body["rows"]}
-    # the page's event refetch: the subfolders the job revealed are queued once
-    status, body = srv.json("GET", f"/api/tree?path={TARGET}&depth=2&queue=new")
-    assert status == 200 and sorted(body["pending"]) == [f"{TARGET}/A", f"{TARGET}/B"]
+    # hold every queued job at its first Drive call, so what the requests did (and what
+    # they left pending) can be checked before any job runs
+    gate = threading.Event()
+    real_enter = srv.drive._enter
+
+    def gated(op, path):
+        gate.wait(10)
+        real_enter(op, path)
+
+    srv.drive._enter = gated
+    try:
+        events = srv.events()
+        assert next(events) == ("comment", "open")
+        before = list(srv.drive.calls)
+        status, body = srv.json("GET", f"/api/tree?path={TARGET}&depth=2&queue=0")
+        assert status == 200 and list(srv.drive.calls) == before and body["pending"] == []
+        status, body = srv.json("GET", f"/api/tree?path={TARGET}&depth=2")
+        assert status == 200 and list(srv.drive.calls) == before
+        assert body["pending"] == [TARGET] and body["rows"][0]["path"] == TARGET
+        gate.set()
+        name, data = next(events)
+        assert name == "breakdown" and data["path"] == TARGET
+        assert data["breakdown"]["size"] == 6100
+        status, body = srv.json("GET", f"/api/tree?path={TARGET}&depth=2&queue=0")
+        assert {"A", "B"} <= {r["name"] for r in body["rows"]}
+        # the page's event refetch: the subfolders the job revealed are queued once
+        gate.clear()
+        status, body = srv.json("GET", f"/api/tree?path={TARGET}&depth=2&queue=new")
+        assert status == 200 and sorted(body["pending"]) == [f"{TARGET}/A", f"{TARGET}/B"]
+    finally:
+        gate.set()
 
 
 def test_unknown_queue_mode_is_a_bad_request(srv):
