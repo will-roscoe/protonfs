@@ -29,9 +29,6 @@ from .policy import RefreshPolicy
 if TYPE_CHECKING:
     from .engine import UsageEngine
 
-#: Seconds allowed for the ``filesystem list /trash`` call.
-DEFAULT_TIMEOUT = 300.0
-
 # Threshold 0 without the shortcut: the parent is re-listed and every child folder re-sized
 # in one pass, so the remainder is measured fresh rather than from reused child sizes.
 _FULL = RefreshPolicy(0.0, allow_shortcut=False)
@@ -146,7 +143,7 @@ class TrashFigure:
 
 
 def run_trash_pass(
-    engine: UsageEngine, policy: RefreshPolicy, *, timeout: float = DEFAULT_TIMEOUT
+    engine: UsageEngine, policy: RefreshPolicy, *, timeout: float | None = None
 ) -> TrashSummary:
     """List the trash and attribute its bytes to original parent folders.
 
@@ -160,9 +157,12 @@ def run_trash_pass(
 
     :param engine: the engine to measure with.
     :param policy: ``policy.never`` makes no calls and returns an empty partial summary.
-    :param timeout: seconds allowed for the trash listing.
-    :returns: the summary. A timed-out or failed listing gives ``partial`` set and only
-        what could be measured; it never looks complete.
+    :param timeout: seconds allowed for the trash listing, or ``None`` for the source's
+        default (:data:`~protonfs.drive.TRASH_LIST_TIMEOUT_SECONDS` for the CLI source,
+        set by ``PROTONFS_TRASH_LIST_TIMEOUT``).
+    :returns: the summary. A timed-out or failed listing gives ``partial`` set (the error
+        text, which for a timeout says how to wait longer) and only what could be
+        measured; it never looks complete.
 
     .. versionadded:: 3.4.0
     """
@@ -171,8 +171,8 @@ def run_trash_pass(
         return TrashSummary(now, (), 0, "trash not refreshed (refresh policy is never)")
     try:
         entries = engine.source.list_trash(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        return TrashSummary(now, (), 0, f"trash listing timed out after {timeout:.0f} s")
+    except subprocess.TimeoutExpired as exc:
+        return TrashSummary(now, (), 0, f"trash listing timed out after {exc.timeout:.0f} s")
     except DriveError as exc:
         return TrashSummary(now, (), 0, str(exc) or type(exc).__name__)
 

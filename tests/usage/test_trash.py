@@ -83,6 +83,34 @@ def test_trash_listing_timeout_is_partial(usage_cache, clock):
     assert not summary.complete
 
 
+def test_trash_pass_leaves_the_listing_timeout_to_the_source(usage_cache, clock):
+    d, eng = _trashed(usage_cache, clock)
+    seen = []
+    real = d.list_trash
+
+    def recording(*, timeout=None):
+        seen.append(timeout)
+        return real(timeout=timeout)
+
+    d.list_trash = recording
+    run_trash_pass(eng, REVAL)
+    assert seen == [None]
+
+
+def test_trash_list_timeout_error_is_partial_with_its_advice(usage_cache, clock):
+    from protonfs.drive import DriveTrashListTimeoutError
+
+    d, eng = _trashed(usage_cache, clock)
+    d.fail_next("list_trash", "/trash", DriveTrashListTimeoutError(
+        "listing /trash timed out after 900s; ... Raise PROTONFS_TRASH_LIST_TIMEOUT"))
+
+    summary = run_trash_pass(eng, REVAL)
+
+    assert summary.partial is not None and not summary.complete
+    assert "timed out after 900" in summary.partial
+    assert "PROTONFS_TRASH_LIST_TIMEOUT" in summary.partial
+
+
 def test_trash_listing_error_is_partial(usage_cache, clock):
     d, eng = _trashed(usage_cache, clock)
     d.fail_next("list_trash", "/trash", DriveError("boom"))

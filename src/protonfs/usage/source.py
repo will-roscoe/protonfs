@@ -105,12 +105,14 @@ class DriveSource(Protocol):
         """
         ...
 
-    def list_trash(self, *, timeout: float) -> list[RawEntry]:
+    def list_trash(self, *, timeout: float | None = None) -> list[RawEntry]:
         """Return the top-level trashed nodes (folders carry ``size=None``).
 
-        :param timeout: per-call timeout in seconds.
+        :param timeout: per-call timeout in seconds, or ``None`` for the source's default.
         :returns: the trashed nodes.
-        :raises subprocess.TimeoutExpired: when the listing exceeds ``timeout``.
+        :raises protonfs.drive.DriveTrashListTimeoutError: when the listing exceeds the
+            timeout (a source may raise :exc:`subprocess.TimeoutExpired` instead).
+        :raises DriveError: on any other failure.
         """
         ...
 
@@ -258,13 +260,17 @@ class CliDriveSource:
         scope = self._call(lambda: self._client.info(path)).get("treeEventScopeId")
         return scope if isinstance(scope, str) and scope else None
 
-    def list_trash(self, *, timeout: float) -> list[RawEntry]:
+    def list_trash(self, *, timeout: float | None = None) -> list[RawEntry]:
         """Return the top-level trashed entries from ``filesystem list /trash``.
 
-        :param timeout: per-call timeout in seconds.
+        Uses :meth:`~protonfs.drive.DriveClient.list_trash`, so the default timeout is
+        :data:`~protonfs.drive.TRASH_LIST_TIMEOUT_SECONDS` (``PROTONFS_TRASH_LIST_TIMEOUT``).
+
+        :param timeout: per-call timeout in seconds, or ``None`` for that default.
         :returns: the trashed entries.
-        :raises subprocess.TimeoutExpired: when the listing exceeds ``timeout``.
-        :raises DriveError: on a Drive failure.
+        :raises protonfs.drive.DriveTrashListTimeoutError: when the listing exceeds the
+            timeout.
+        :raises DriveError: on any other Drive failure.
         """
-        raw = self._call(lambda: self._client.list("/trash", timeout=timeout))
+        raw = self._call(lambda: self._client.list_trash(timeout=timeout))
         return [normalise_entry(e) for e in raw]

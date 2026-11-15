@@ -61,6 +61,12 @@ class StubClient:
         self._maybe_fail()
         return []
 
+    def list_trash(self, timeout=None):
+        self.calls.append(("list_trash", "/trash", timeout))
+        self._enter()
+        self._maybe_fail()
+        return []
+
     def size(self, path, **kw):
         self.calls.append(("size", path))
         self.size_kwargs = kw
@@ -132,7 +138,14 @@ def test_list_dir_and_trash_use_client():
     assert e.name == "f" and e.size == 7
     assert c.calls[0] == ("list_with_backoff", "/my-files", list_timeout(100))
     assert src.list_trash(timeout=12.5) == []
-    assert c.calls[1] == ("list", "/trash", 12.5)
+    assert c.calls[1] == ("list_trash", "/trash", 12.5)
+
+
+def test_list_trash_defaults_to_the_clients_configurable_timeout():
+    """No timeout means DriveClient.list_trash's own, PROTONFS_TRASH_LIST_TIMEOUT (#235)."""
+    c = StubClient()
+    assert CliDriveSource(c).list_trash() == []
+    assert c.calls == [("list_trash", "/trash", None)]
 
 
 def test_semaphore_bounds_concurrency():

@@ -72,7 +72,9 @@ folder's total holds beyond them appears as one extra row:
 At ``/``, ``du`` also measures the whole trash. A trashed folder can only be measured
 through the folder it was trashed from, so a figure ``du`` could not complete is shown as
 a lower bound with how much it could not check, e.g. ``≥ 12.4 GiB (190.0 GiB / 13%
-unchecked)``.
+unchecked)``. Listing a very large trash can take minutes; it is given
+:envvar:`PROTONFS_TRASH_LIST_TIMEOUT` seconds (default 900), after which the trash total
+is shown as partial.
 
 Caching and ``--refresh``
 -------------------------
