@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 import subprocess
 import sys
 import zipfile
 from importlib import resources
+from pathlib import Path
 
 import pytest
 
@@ -56,8 +58,13 @@ def test_no_external_urls_outside_vendor():
 
 
 @pytest.mark.slow
+@pytest.mark.skipif(
+    os.environ.get("PROTONFS_TEST_WHEEL") != "1",
+    reason="builds a wheel with pip (needs network for the build backend); "
+    "set PROTONFS_TEST_WHEEL=1 to run",
+)
 def test_wheel_contains_static(tmp_path):
-    repo = resources.files("protonfs").parent.parent
+    repo = Path(__file__).resolve().parents[2]
     proc = subprocess.run(
         [sys.executable, "-m", "pip", "wheel", "--no-deps",
          "-w", str(tmp_path), str(repo)],

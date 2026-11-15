@@ -90,10 +90,21 @@
     }).catch(function (e) { setStatus("Could not load " + S.path + ": " + e.message); });
   }
 
-  var timer = null;
+  // trailing debounce, but never starved: under a steady stream of events the table
+  // is still refetched at least once per MAX_WAIT_MS
+  var timer = null, firstPending = 0, MAX_WAIT_MS = 1000;
   function scheduleRefetch() {
+    var now = Date.now();
+    if (!firstPending) firstPending = now;
     clearTimeout(timer);
-    timer = setTimeout(function () { load(false); }, DEBOUNCE_MS);
+    var wait = Math.max(0, Math.min(DEBOUNCE_MS, firstPending + MAX_WAIT_MS - now));
+    timer = setTimeout(function () { firstPending = 0; load(false); }, wait);
+  }
+  function parseEvent(ev) {
+    try { return JSON.parse(ev.data); } catch (e) {
+      console.warn("ignoring malformed event", e);
+      return null;
+    }
   }
 
   PFS.navigate = function (path) {
@@ -110,7 +121,9 @@
     // restyle in place: rebuilding the rows between the clicks of a double click would
     // lose the dblclick target
     document.querySelectorAll("#rows tr").forEach(function (tr) {
-      tr.classList.toggle("selected", tr.dataset.path === path && tr.dataset.kind !== "gap");
+      var on = tr.dataset.path === path && tr.dataset.kind !== "gap";
+      tr.classList.toggle("selected", on);
+      if (on && tr.scrollIntoView) tr.scrollIntoView({ block: "nearest" });
     });
     if (PFS.charts && typeof PFS.charts.render === "function") PFS.charts.render();
   };
@@ -176,7 +189,7 @@
   function fade(r) {
     var th = S.settings ? parseDuration(S.settings.refresh) : null;
     if (r.age_seconds == null || !th) return 1;
-    return Math.max(0.5, 1 - 0.5 * Math.min(1, r.age_seconds / th));
+    return Math.max(0.6, 1 - 0.4 * Math.min(1, r.age_seconds / th));
   }
 
   function renderTable() {
@@ -200,10 +213,10 @@
       var ind = el("span", { "class": "indent" });
       ind.style.width = (r.depth * 14) + "px";
       name.appendChild(ind);
-      name.appendChild(document.createTextNode((r.kind === "folder" ? "📁 " : "") + r.name));
+      name.appendChild(el("span", { "class": "nm" }, (r.kind === "folder" ? "📁 " : "") + r.name));
       if (r.exclusion === "freeze") name.appendChild(el("span", { "class": "badge-frozen", title: "frozen (-x): cached figures, no Drive calls" }, "❄"));
       if (r.exclusion === "hide") name.appendChild(el("span", { "class": "badge-frozen", title: "hidden (-X)" }, "⊘"));
-      if (r.error) name.title = r.error;
+      name.title = r.error ? r.name + ": " + r.error : r.name;
       tr.appendChild(name);
       tr.appendChild(sizeCell(r));
       tr.appendChild(el("td", { "class": "num" }, r.descendants == null ? "" : String(r.descendants)));
@@ -212,8 +225,10 @@
       var age = el("td", { "class": "num" }, r.age_seconds == null ? "" : formatAge(r.age_seconds));
       if (r.checked_at != null) age.title = new Date(r.checked_at * 1000).toLocaleString();
       tr.appendChild(age);
-      var st = el("td", null, r.exclusion === "none" ? r.state : r.state + " (" + r.exclusion + ")");
-      if (r.error) st.title = r.error;
+      var full = r.exclusion === "none" ? r.state : r.state + " (" + r.exclusion + ")";
+      var st = el("td", { "class": "state" }, r.exclusion === "freeze" ? "frozen"
+        : r.exclusion === "hide" ? "hidden" : r.state);
+      st.title = r.error ? full + ": " + r.error : full;
       tr.appendChild(st);
       frag.appendChild(tr);
     });
@@ -450,12 +465,12 @@
   });
   $("#depth").addEventListener("input", function (ev) { $("#depth-out").textContent = ev.target.value; });
   $("#depth").addEventListener("change", function (ev) {
-    applySettings({ maxdepth: parseInt(ev.target.value, 10) }, $("#refresh-msg"), function () {
+    applySettings({ maxdepth: parseInt(ev.target.value, 10) }, $("#depth-msg"), function () {
       $("#depth").value = S.settings.maxdepth; $("#depth-out").textContent = S.settings.maxdepth;
     });
   });
   $("#dirs-only").addEventListener("change", function (ev) {
-    applySettings({ dirs_only: ev.target.checked }, $("#refresh-msg"), function () {
+    applySettings({ dirs_only: ev.target.checked }, $("#dirs-msg"), function () {
       $("#dirs-only").checked = !!S.settings.dirs_only;
     });
   });
@@ -474,25 +489,29 @@
   function connect() {
     var es = new EventSource("/api/events");
     es.addEventListener("breakdown", function (ev) {
-      var d = JSON.parse(ev.data);
+      var d = parseEvent(ev);
+      if (!d) return;
       if (S.path && within(d.path, S.path) && d.breakdown) S.breakdowns[d.path] = d.breakdown;
       scheduleRefetch();
     });
     es.addEventListener("progress", function (ev) {
-      var d = JSON.parse(ev.data);
+      var d = parseEvent(ev);
+      if (!d) return;
       S.progress = d;
       renderProgress();
       scheduleRefetch();
     });
     es.addEventListener("notice", function (ev) {
-      var d = JSON.parse(ev.data);
+      var d = parseEvent(ev);
+      if (!d) return;
       $("#notice-text").textContent = d.message || "";
       $("#notice").hidden = !d.message;
     });
     es.addEventListener("trash", function () { scheduleRefetch(); });
     es.addEventListener("error", function (ev) {
       if (ev && ev.data) {
-        var d = JSON.parse(ev.data);
+        var d = parseEvent(ev);
+        if (!d) return;
         setStatus((d.path ? d.path + ": " : "") + d.message);
         scheduleRefetch();
       }
