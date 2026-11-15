@@ -210,6 +210,14 @@ contract (see :doc:`../stability`).
 
    .. versionadded:: 1.0.0
 
+.. envvar:: PROTONFS_TRASH_LIST_TIMEOUT
+
+   Timeout in seconds for listing the whole ``/trash`` (default ``900``), used by
+   ``restore``, ``trash list``, ``rm --force`` and ``ls --trash``. On expiry the command
+   fails with an error saying the trash is too large to list; nothing is changed.
+
+   .. versionadded:: 3.4.0
+
 .. envvar:: PROTONFS_LIST_RETRIES
 
    Max retries for a Drive listing call (default ``4``).

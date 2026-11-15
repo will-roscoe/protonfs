@@ -30,7 +30,7 @@ from pathlib import PurePosixPath
 import click
 
 from protonfs.context import RepoContext
-from protonfs.drive import decrypted_name
+from protonfs.drive import DriveTrashListTimeoutError, decrypted_name
 
 
 def rm(
@@ -85,8 +85,20 @@ def rm(
         # exactly one trashed item carries this basename; otherwise leave it trashed
         # (still reversible) and tell the user to resolve it manually.
         name = PurePosixPath(remote_path).name
-        matches = [entry for entry in ctx.drive.list("/trash") if decrypted_name(entry) == name]
-        if len(matches) == 1:
+        try:
+            matches = [entry for entry in ctx.drive.list_trash() if decrypted_name(entry) == name]
+        except DriveTrashListTimeoutError as exc:
+            # #193: the node is already trashed (recoverable); only the permanent delete
+            # could not be checked, so say exactly that and carry on with the bookkeeping.
+            click.echo(
+                f"'{name}' was trashed but NOT permanently deleted, because the trash "
+                f"could not be listed to find it: {exc} It remains trashed and reversible.",
+                err=True,
+            )
+            matches = None
+        if matches is None:
+            pass
+        elif len(matches) == 1:
             reporter.item("delete", rel_path)
             ctx.drive.delete([f"/trash/{name}"])
         elif len(matches) > 1:
