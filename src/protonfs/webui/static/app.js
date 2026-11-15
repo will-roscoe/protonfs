@@ -20,6 +20,8 @@
 
   // ------------------------------------------------------------------ helpers
   function humanSize(n) {
+    // a negative figure (an unreconciled remainder) keeps its unit, as in the CLI
+    if (n < 0) return "-" + humanSize(-n);
     var units = ["B", "KiB", "MiB", "GiB", "TiB"], v = n, i = 0;
     while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
     return i === 0 ? String(Math.round(v)) + " B" : v.toFixed(1) + " " + units[i];

@@ -223,3 +223,13 @@ def test_refresh_that_did_not_start_is_reported(open_page):
     page.click("#refresh-here")
     page.wait_for_function(
         "document.querySelector('#status').textContent.includes('did not start')")
+
+
+def test_negative_sizes_keep_their_unit(open_page):
+    rows = [_row(0, TARGET, "folder", 5000),
+            _row(1, f"{TARGET}/(unreconciled)", "gap", -3 * 1024 * 1024,
+                 gap_kind="unreconciled", state="gap")]
+    page = open_page({"rows": rows})
+    cell = page.locator(f'tr[data-path="{TARGET}/(unreconciled)"] td:nth-child(2)')
+    cell.wait_for()
+    assert cell.inner_text() == "-3.0 MiB"
