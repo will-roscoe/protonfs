@@ -837,7 +837,8 @@ def ls(
               help="Output format: rich table (default), tab-separated lines, or JSON.")
 @click.option("--json", "as_json", is_flag=True, help="Shorthand for --format json.")
 @click.option("-p", "--show-progress", "progress", is_flag=True,
-              help="Report Drive calls on stderr as they happen.")
+              help="Report Drive calls on stderr as they happen (one line rewritten in "
+              "place, or a line each with --progress-lines).")
 @click.option("--gui", is_flag=True,
               help="Serve a local web UI (loopback, token in the printed URL) "
               "instead of printing a report.")

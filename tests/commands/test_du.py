@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 
 import pytest
@@ -509,6 +510,37 @@ def test_du_prints_throttle_notice_once(du, drive):
 
 def _interrupt():
     raise KeyboardInterrupt
+
+
+class _TTY(io.StringIO):
+    def isatty(self):
+        return True
+
+
+@pytest.mark.parametrize("style", ["inline", "lines"])
+def test_du_progress_follows_the_global_progress_style(drive, tmp_path, monkeypatch, style):
+    """M12: -p rewrites one stderr line under --progress-inline, one line each otherwise."""
+    from protonfs.commands.du import build_options, run_du
+    from protonfs.reporting import Reporter
+    from protonfs.usage.paths import Target
+
+    monkeypatch.setenv("PROTONFS_CONFIG", str(tmp_path / "global.json"))
+    monkeypatch.setattr("protonfs.reporting._current",
+                        Reporter(0, progress_style=style, stream=_TTY()))
+    engine = UsageEngine(drive, UsageCache(tmp_path / "du.sqlite"), clock=FakeClock())
+    err = _TTY()
+    code = run_du([Target("/my-files", None)], build_options(progress=True),
+                  engine_factory=lambda: engine, out=_TTY(), err=err)
+    text = err.getvalue()
+    assert code == 0, text
+    assert "du calls=1 last=" in text
+    if style == "inline":
+        assert "\rdu calls=1 last=" in text
+        # the open progress line is ended before the plan hint is written
+        assert "\n% of plan" in text and "\r% of plan" not in text
+    else:
+        assert "\r" not in text and "du calls=1 last=" in text.splitlines()[0]
+    engine.cache.close()
 
 
 def test_du_ctrl_c_keeps_sizes_and_exits_130(du, drive):

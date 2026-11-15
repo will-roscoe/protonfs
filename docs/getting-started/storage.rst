@@ -148,7 +148,9 @@ Depth, output and exit codes
 ``-d N`` limits the breakdown to depth ``N`` (the target is depth 0; the default is 1),
 ``-d MIN-MAX`` shows a range, and ``--mindepth``/``--maxdepth`` are the long forms.
 ``-D``/``--dirs-only`` hides files. ``--format table|plain|json`` (``--json`` for short)
-chooses the output, and ``-p``/``--show-progress`` reports progress on stderr.
+chooses the output, and ``-p``/``--show-progress`` reports progress on stderr: one line
+rewritten in place on a terminal, or a line per update with the global
+``--progress-lines`` flag (``protonfs --progress-lines du -p ...``).
 
 ``du`` exits ``0`` when everything it was asked for was produced, ``1`` when it could not
 produce its output, ``2`` for a usage error, and ``3`` when the output is complete but

@@ -50,6 +50,7 @@ class Reporter:
         # never be able to suppress it.
         self._last_progress: float | None = None
         self._progress_open = False  # an inline progress line awaits a newline
+        self._progress_width = 0  # length of the open inline line, to blank it on rewrite
 
     @property
     def inline(self) -> bool:
@@ -64,6 +65,7 @@ class Reporter:
         if self._progress_open:
             self._stream.write("\n")
             self._progress_open = False
+            self._progress_width = 0
 
     def _emit(self, text: str) -> None:
         """Write a normal (non-progress) line, closing any open progress line first."""
@@ -104,6 +106,41 @@ class Reporter:
         else:
             self._stream.write(line + "\n")
             self._stream.flush()
+
+    def running(self, name: str, **fields) -> None:
+        """Report progress with no known total, e.g. ``du calls=12 last=size /x``.
+
+        Rendered at level >= 1 like :meth:`progress`: in inline style it rewrites the one
+        progress line (padding over a longer previous text), otherwise it writes a new
+        line each time. Not throttled; the caller decides how often to call it.
+
+        :param name: the leading word.
+        :param fields: ``key=value`` fields after it.
+
+        .. versionadded:: 3.4.0
+        """
+        _events_logger.debug("%s %s", name, _fields(fields))
+        if self.level < 1:
+            return
+        line = f"{name} {_fields(fields)}" if fields else name
+        if self._inline:
+            pad = max(0, self._progress_width - len(line)) if self._progress_open else 0
+            self._stream.write("\r" + line + " " * pad)
+            self._progress_open = True
+            self._progress_width = len(line) + pad
+        else:
+            self._stream.write(line + "\n")
+        self._stream.flush()
+
+    def end_progress(self) -> None:
+        """End an open inline progress line, so other output to the stream starts afresh.
+
+        Does nothing when no inline progress line is open.
+
+        .. versionadded:: 3.4.0
+        """
+        self._close_progress()
+        self._stream.flush()
 
     def item(self, action: str, path: str) -> None:
         """Report a single transferred/affected item. Rendered at level >= 2."""

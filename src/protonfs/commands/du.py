@@ -279,8 +279,8 @@ def _trash_incomplete(summary, rules) -> bool:
     )
 
 
-def _attach_throttle_notice(engine, err, policy) -> None:
-    """Print a rate-limit notice when the engine's source reports a slow size.
+def _attach_throttle_notice(engine, say, policy) -> None:
+    """Print a rate-limit notice with ``say`` when the engine's source reports a slow size.
 
     The text depends on the policy and on whether the trash pass is running when it fires
     (see :data:`THROTTLE_NOTICE`); each distinct text is printed once.
@@ -297,8 +297,7 @@ def _attach_throttle_notice(engine, err, policy) -> None:
             if text in shown:
                 return
             shown.add(text)
-            err.write(text + "\n")
-            err.flush()
+        say(text)
 
     source.on_slow_size = on_slow_size
 
@@ -340,16 +339,33 @@ def run_du(
     err = err if err is not None else sys.stderr
     engine = (engine_factory or default_engine)()
     policy = RefreshPolicy.parse(options.refresh)
-    _attach_throttle_notice(engine, err, policy)
     rules = ExcludeRules(options.exclude_updates, options.exclude)
+    # One lock for everything on err: progress ticks come from worker threads and the
+    # rate-limit notice from a timer thread.
+    lock = threading.RLock()
+    reporter = None
     if options.progress:
+        # The global --progress-inline/--progress-lines style, at verbosity 1 at least.
         reporter = Reporter(
             max(get_reporter().level, 1),
             progress_style="inline" if get_reporter().inline else "lines",
             stream=err,
         )
+
+    def end_line() -> None:
+        with lock:
+            if reporter is not None:
+                reporter.end_progress()
+
+    def say(text: str) -> None:
+        with lock:
+            end_line()
+            err.write(text + "\n")
+            err.flush()
+
+    _attach_throttle_notice(engine, say, policy)
+    if reporter is not None:
         state = {"n": 0, "t": 0.0}
-        lock = threading.Lock()
 
         def on_call(op: str, path: str) -> None:
             with lock:
@@ -357,20 +373,21 @@ def run_du(
                 now = time.monotonic()
                 if now - state["t"] >= 0.5:
                     state["t"] = now
-                    reporter.phase("du", calls=state["n"], last=f"{op} {path}")
+                    reporter.running("du", calls=state["n"], last=f"{op} {path}")
 
         engine.on_call = on_call
     try:
-        return _report(engine, targets, options, policy, rules, out=out, err=err)
+        return _report(engine, targets, options, policy, rules, out=out, say=say,
+                       end_line=end_line)
     except KeyboardInterrupt:
         out.flush()
-        err.write("\n" + _interrupt_message(policy, getattr(engine, "in_trash_pass", False))
-                  + "\n")
-        err.flush()
+        say("\n" + _interrupt_message(policy, getattr(engine, "in_trash_pass", False)))
         return 130
+    finally:
+        end_line()
 
 
-def _report(engine, targets, options, policy, rules, *, out, err) -> int:
+def _report(engine, targets, options, policy, rules, *, out, say, end_line) -> int:
     """Measure and print every target for :func:`run_du`; returns its exit code."""
     import json
 
@@ -402,7 +419,8 @@ def _report(engine, targets, options, policy, rules, *, out, err) -> int:
         shown = select_rows(rows, mindepth=options.mindepth, dirs_only=options.dirs_only)
         for r in rows:
             if r.state == "error":
-                err.write(f"! {r.path}: {r.error or 'measurement failed'}\n")
+                say(f"! {r.path}: {r.error or 'measurement failed'}")
+        end_line()  # the result starts on a line of its own
         summary = engine.trash_summary()
         # Only du / runs the trash pass, so only it answers for the account's trash.
         if target.remote == "/":
@@ -427,11 +445,10 @@ def _report(engine, targets, options, policy, rules, *, out, err) -> int:
     if options.fmt == "json":
         out.write(json.dumps(docs[0] if len(docs) == 1 else docs, indent=2) + "\n")
     if hint:
-        err.write(PLAN_HINT + "\n")
+        say(PLAN_HINT)
     if need_used:
-        err.write("(%Used needs `protonfs du /` once)\n")
+        say("(%Used needs `protonfs du /` once)")
     if need_trash:
-        err.write("(In trash needs `protonfs du /` once)\n")
+        say("(In trash needs `protonfs du /` once)")
     out.flush()
-    err.flush()
     return 1 if fatal else 3 if partial else 0
