@@ -279,7 +279,8 @@
       st.appendChild(el("span", { "class": "st" }, r.exclusion === "freeze" ? "frozen"
         : r.exclusion === "hide" ? "hidden" : outdated ? "outdated" : r.state));
       st.title = r.error ? full + ": " + r.error : outdated
-        ? "a child was measured after this listing, so the rows may not add up; re-checking" : full;
+        ? "a child was measured after this listing, so the rows may not add up; Refresh " +
+          "re-checks it" : full;
       tr.appendChild(st);
       frag.appendChild(tr);
     });
@@ -326,7 +327,10 @@
     if (!atTarget()) { box.hidden = true; box.textContent = ""; return; }
     if (!t) {
       box.hidden = !rootView;
-      box.textContent = box.hidden ? "" : "Trash: not measured yet (open the root to measure it)";
+      // at the top of the account the trash is measured with the root's own figures
+      var measuring = (S.pending || []).indexOf("/") >= 0;
+      box.textContent = box.hidden ? "" : measuring ? "Trash: being measured"
+        : "Trash: not measured yet";
       box.className = "";
       return;
     }

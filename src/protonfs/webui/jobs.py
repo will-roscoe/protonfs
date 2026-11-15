@@ -168,12 +168,18 @@ class JobQueue:
                     return False
                 if key in self._running:
                     self._rerun[key] = policy
+                    how = "after the running job"
                 else:
                     self._active[key] = policy
-                how = "after the running job" if key in self._running else "upgrading queued job"
-                self._log(f"job queued {path} refresh={_describe(policy)} (forced, {how})")
-                return True
-            self._active[key] = policy
+                    how = "upgrading queued job"
+                forced = True
+            else:
+                self._active[key] = policy
+                forced = False
+        # logged outside the lock: a log sink must never be able to block the queue
+        if forced:
+            self._log(f"job queued {path} refresh={_describe(policy)} (forced, {how})")
+            return True
         self._log(f"job queued {path} refresh={_describe(policy)}")
         self._jobs.put((kind, path, policy))
         return True

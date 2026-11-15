@@ -359,6 +359,16 @@ def test_serve_refuses_invalid_initial_patterns(tmp_path):
     assert "pattern" in errors[0].message
 
 
+def test_serve_reports_any_pattern_compiler_error_as_a_bad_pattern(tmp_path, monkeypatch):
+    def boom(self):
+        raise RuntimeError("compiler exploded")
+
+    monkeypatch.setattr(GuiSettings, "rules", boom)
+    *_, errors = _start(tmp_path, settings=GuiSettings(TARGET))
+    assert len(errors) == 1 and isinstance(errors[0], click.ClickException)
+    assert "invalid -x/-X pattern" in errors[0].message
+
+
 def test_root_includes_trash(srv):
     status, body = srv.json("GET", "/api/root")
     assert status == 200 and "trash" in body and body["rows"][0]["path"] == TARGET

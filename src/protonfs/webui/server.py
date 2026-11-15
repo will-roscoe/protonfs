@@ -445,7 +445,7 @@ def serve(
     """
     try:
         settings.rules()
-    except ValueError as exc:
+    except Exception as exc:  # noqa: BLE001 - any pattern compiler error is a bad pattern
         raise click.ClickException(f"invalid -x/-X pattern: {exc}") from exc
     try:
         stream = log.open()

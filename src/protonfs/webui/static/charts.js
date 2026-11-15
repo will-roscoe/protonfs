@@ -72,12 +72,13 @@
         var size = n.row.size;
         if (size != null && size > n.value && n.kind === "folder") {
           var short = size - n.value;
+          var label = !dirsOnly ? "(not drawn)" : n.unsized
+            ? "(files hidden by Folders only, and items without a size)"
+            : "(files, hidden by Folders only)";
           n.children.push({
-            path: n.path + "/\u0000filler", name: dirsOnly ? "(files, hidden by Folders only)"
-              : "(not drawn)", kind: "gap", gapKind: "filler", state: "gap", exclusion: "none",
+            path: n.path + "/\u0000filler", name: label, kind: "gap", gapKind: "filler", state: "gap", exclusion: "none",
             children: null, value: short, sized: false, placeholder: false, unsized: 0,
-            row: { path: n.path + "/\u0000filler", name: dirsOnly ?
-              "(files, hidden by Folders only)" : "(not drawn)", kind: "gap", size: short,
+            row: { path: n.path + "/\u0000filler", name: label, kind: "gap", size: short,
               state: "gap", exclusion: "none", gap_kind: "filler", error: null,
               age_seconds: null, descendants: null, pct_plan: null, pct_used: null,
               pct_parent: null, in_trash: null, in_trash_complete: null }

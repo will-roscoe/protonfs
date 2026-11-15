@@ -110,6 +110,20 @@ def test_invalidated_breakdown_is_marked_outdated(open_page):
     assert tr.locator("td.state").inner_text() == "outdated"
     other = page.locator(f'tr[data-path="{TARGET}/A"]')
     assert "outdated" not in other.get_attribute("class")
+    # it says what will re-check it, not that a re-check is under way (none may be)
+    title = tr.locator("td.state").get_attribute("title")
+    assert "Refresh re-checks it" in title and "re-checking" not in title
+
+
+def test_trash_line_at_the_account_root_says_whether_it_is_being_measured(open_page):
+    page = open_page({"rows": [_row(0, TARGET, "folder", 5000)]})
+    page.evaluate("PFS.state.settings.target = '/'; PFS.state.path = '/';"
+                  "PFS.state.trash = null; PFS.state.pending = ['/']; PFS.render()")
+    line = page.locator("#trashline")
+    line.wait_for(state="visible")
+    assert line.inner_text() == "Trash: being measured"
+    page.evaluate("PFS.state.pending = []; PFS.render()")
+    assert line.inner_text() == "Trash: not measured yet"
 
 
 def _shape(page):
@@ -160,6 +174,19 @@ def test_folders_only_draws_the_hidden_file_bytes_as_a_filler(open_page):
     assert len(filler) == 1 and filler[0]["value"] == 900
     assert "Folders only" in filler[0]["name"]
     assert shape["value"] == 1000  # the folder's area is its size, not just its subfolders
+
+
+def test_folders_only_filler_names_items_without_a_size_too(open_page):
+    rows = [
+        _row(0, TARGET, "folder", 1000),
+        _row(1, f"{TARGET}/sub", "folder", 100, state="sized"),
+        _row(1, f"{TARGET}/nosize", "folder", None, state="unmeasured"),
+    ]
+    page = open_page({"rows": rows})
+    page.wait_for_selector('#chart-treemap g.node[data-path="/my-files/sub"]')
+    page.evaluate("PFS.state.settings.dirs_only = true; PFS.charts.render()")
+    filler = [n for n in _shape(page)["nodes"] if n["gap"] == "filler"]
+    assert len(filler) == 1 and "items without a size" in filler[0]["name"]
 
 
 def test_escaped_slash_in_a_name_is_one_path_segment(open_page):

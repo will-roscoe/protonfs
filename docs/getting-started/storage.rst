@@ -180,8 +180,9 @@ Table
    Click a column heading to sort by it. The Size, % plan, % used and % parent buttons
    choose what the size column shows. Older figures fade, a spinner marks a folder being
    fetched, and ❄ marks a frozen (``-x``) folder. A folder whose listing was
-   invalidated by a newer measurement of one of its children is marked *outdated*, and
-   is re-checked when you open it. A line above the table (at the top of the account)
+   invalidated by a newer measurement of one of its children is marked *outdated*;
+   opening it re-checks it (unless the refresh threshold is ``never``), and *Refresh*
+   always does. A line above the table (at the top of the account)
    shows the trash total, whether it is complete or why it is partial, how many trashed
    folders have no known size, and how old the trash pass is; an *In trash* figure that
    cannot rule out unmeasured trashed folders says so instead of reporting 0% unchecked.
