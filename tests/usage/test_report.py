@@ -93,3 +93,27 @@ def test_table_has_columns_and_blank_size(usage_cache, clock):
     for col in ("Name", "Size", "%Parent", "%Used", "%Plan", "Items", "In trash", "Age", "State"):
         assert col in text
     assert "excluded (freeze)" in text
+
+
+def test_row_unchecked_bound_never_exceeds_the_row(usage_cache, clock, monkeypatch):
+    # the folders behind a figure's bound can have been measured after the row's own size
+    # (seen at "/" in a randomised check), so the row caps the bound at its size
+    import dataclasses
+
+    from protonfs.usage import trash
+
+    eng = _engine(usage_cache, clock)
+    eng.check_account(POLICY)  # as du does first: a later scoped listing must not wipe
+    eng.refresh_trash(POLICY, ExcludeRules())
+    real = trash.figures_for
+
+    def inflated(engine, paths):
+        return {p: dataclasses.replace(f, complete=False, unchecked_bytes=10 ** 9)
+                for p, f in real(engine, paths).items()}
+
+    monkeypatch.setattr(trash, "figures_for", inflated)
+    rows = build_rows(eng, "/my-files/A", POLICY, ExcludeRules(), maxdepth=2, now=clock())
+    sized = [r for r in rows if r.unchecked_bytes is not None and r.size is not None]
+    assert sized, "no row carries a bound"
+    assert all(r.unchecked_bytes <= r.size for r in sized), [
+        (r.path, r.unchecked_bytes, r.size) for r in sized]

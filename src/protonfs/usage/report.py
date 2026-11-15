@@ -52,8 +52,8 @@ class DuRow:
         (see :func:`~protonfs.usage.trash.figure_for`).
     :ivar in_trash_complete: whether ``in_trash`` is the whole answer, or ``None``.
     :ivar unchecked_bytes: when incomplete, an upper bound on the trash ``in_trash``
-        leaves out (the bytes of the folders whose trash is unknown), or ``None`` when no
-        bound is known.
+        leaves out (the bytes of the folders whose trash is unknown, at most the row's own
+        ``size``), or ``None`` when no bound is known.
     :ivar checked_at: Unix time the figure was measured, or ``None``.
     :ivar age_seconds: ``now - checked_at``, or ``None``.
     :ivar state: ``listed``, ``sized``, ``excluded``, ``unmeasured``, ``error``,
@@ -157,9 +157,14 @@ class _Collector:
         for i in self.trash_rows:
             path = self.rows[i].path
             fig = figures[path]
+            unchecked, size = fig.unchecked_bytes, self.rows[i].size
+            if unchecked is not None and size is not None:
+                # the folders behind the bound can have been measured after this row's
+                # own size: the trash a row leaves out is never more than the row
+                unchecked = min(unchecked, size)
             self.rows[i] = dataclasses.replace(
                 self.rows[i], in_trash=fig.known, in_trash_complete=fig.complete,
-                unchecked_bytes=fig.unchecked_bytes, trash_at=fig.at,
+                unchecked_bytes=unchecked, trash_at=fig.at,
                 trash_unresolved=summary.unresolved_folders if path == "/" else 0,
             )
 
