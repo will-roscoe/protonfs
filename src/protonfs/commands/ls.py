@@ -237,7 +237,7 @@ def render_ls(
     if trash:
         rows = [
             {"name": name, "type": entry.get("type", "")}
-            for entry in ctx.drive.list("/trash")
+            for entry in ctx.drive.list_trash()
             if (name := decrypted_name(entry)) is not None
         ]
         if fmt == "json":

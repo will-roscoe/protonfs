@@ -265,3 +265,28 @@ def test_rm_recursive_does_not_remove_sibling_directories(
 
     assert ctx.index.get("run1/dump_0001") is None
     assert ctx.index.get("run10/other_0001") is not None
+
+
+def test_rm_force_trash_listing_timeout_leaves_trashed_and_says_so(
+    tmp_path: Path, capsys, make_fake_drive
+) -> None:
+    # #193: rm --force must not hang or crash on an unlistable trash; the node is already
+    # trashed, so report it as trashed (not deleted) and still clean the local index.
+    from protonfs.drive import DriveTrashListTimeoutError
+
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    fake = make_fake_drive()
+
+    def timeout(timeout=None):
+        raise DriveTrashListTimeoutError("listing /trash timed out after 900s; boom.")
+
+    fake.list_trash = timeout
+    ctx.drive = fake
+
+    rm(ctx, "dump_0001", recursive=False, force=True, confirmed=True)
+
+    err = capsys.readouterr().err
+    assert fake.trashed == ["/my-files/test/dump_0001"]
+    assert fake.deleted == []
+    assert "NOT permanently deleted" in err and "remains trashed" in err
