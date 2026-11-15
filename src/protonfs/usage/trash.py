@@ -163,6 +163,8 @@ def run_trash_pass(
     :param timeout: seconds allowed for the trash listing.
     :returns: the summary. A timed-out or failed listing gives ``partial`` set and only
         what could be measured; it never looks complete.
+
+    .. versionadded:: 3.4.0
     """
     now = engine.clock()
     if policy.never:
@@ -219,6 +221,8 @@ def figure_for(engine: UsageEngine, path: str) -> TrashFigure:
     :param engine: the engine holding the cache.
     :param path: escaped Drive path, or ``"/"`` for the whole account.
     :returns: the figure.
+
+    .. versionadded:: 3.4.0
     """
     stored = engine.cache.trash()
     summary: TrashSummary | None = None
