@@ -91,8 +91,17 @@
     d.textContent = text;
     box.appendChild(d);
   }
+  // the row as last fetched: a redraw is skipped when only ages changed (see render), so
+  // the row bound to a drawn node can be older than S.rows
+  function currentRow(r) {
+    var rows = S.rows || [];
+    for (var i = 0; i < rows.length; i++) {
+      if (rows[i].path === r.path && rows[i].kind === r.kind) return rows[i];
+    }
+    return r;
+  }
   function showTip(ev, n) {
-    var r = n.row, box = tooltip();
+    var r = currentRow(n.row), box = tooltip();
     box.replaceChildren();
     line(box, r.name, "tt-name");
     line(box, r.size == null ? "size unknown" : humanSize(r.size) + " (" + r.size + " bytes)");
@@ -137,13 +146,15 @@
       .on("mouseleave", hideTip)
       .on("click", function (ev, d) {
         var n = d.data;
-        if (n.kind === "gap") return;
-        if (n.path === S.path) { PFS.up(); return; }
+        // the second click of a double-click: the first already acted, and going up
+        // has already moved S.path, so acting again would undo or repeat it
+        if (n.kind === "gap" || ev.detail > 1) return;
+        if (d.depth === 0) { PFS.up(); return; }
         PFS.select(n.path);
       })
       .on("dblclick", function (ev, d) {
         var n = d.data;
-        if (n.kind === "folder" && n.path !== S.path) PFS.navigate(n.path);
+        if (n.kind === "folder" && d.depth > 0 && n.path !== S.path) PFS.navigate(n.path);
       });
   }
   function valueLabel(r) {
@@ -315,7 +326,7 @@
         .text(valueLabel(root.row));
       hub.on("mouseenter", function (ev) { showTip(ev, root); }).on("mousemove", moveTip)
         .on("mouseleave", hideTip)
-        .on("click", function () { PFS.up(); });
+        .on("click", function (ev) { if (ev.detail <= 1) PFS.up(); });
     }
     bind(g);
   }
@@ -434,7 +445,11 @@
     renderBar();
     var depth = (S.settings && S.settings.maxdepth) || 3;
     // compare content, not identity: every refetch assigns a fresh S.rows array
-    var sig = [S.tab, S.icicle, S.mode, S.path, depth, sizeKey(), JSON.stringify(S.rows)].join("|");
+    // ages change on every refetch but only the tooltip shows them (read fresh there)
+    var rowsSig = JSON.stringify(S.rows, function (k, v) {
+      return k === "age_seconds" ? undefined : v;
+    });
+    var sig = [S.tab, S.icicle, S.mode, S.path, depth, sizeKey(), rowsSig].join("|");
     var same = sig === lastSig;
     lastSig = sig;
     if (same) { restyleSelection(); return; }

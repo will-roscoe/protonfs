@@ -262,6 +262,42 @@ def test_identical_refetch_does_not_redraw(pinned_page):
     assert page.evaluate("document.querySelector('#chart-treemap svg').__mark") == 1
 
 
+def test_age_only_refetch_keeps_drawing_and_tooltip_shows_new_age(pinned_page):
+    page = pinned_page
+    page.evaluate("document.querySelector('#chart-treemap svg').__mark = 1")
+    page.evaluate("""var rows = JSON.parse(JSON.stringify(PFS.state.rows));
+        rows.forEach(function (r) { r.age_seconds = 7200; });
+        PFS.state.rows = rows; PFS.charts.render()""")
+    assert page.evaluate("document.querySelector('#chart-treemap svg').__mark") == 1
+    _corner(page, '#chart-treemap g.node.folder[data-path="/my-files/sizedonly"]').hover(
+        position={"x": 4, "y": 4})
+    tip = page.locator("#chart-tooltip")
+    tip.wait_for(state="visible")
+    assert "2h ago" in tip.inner_text(), tip.inner_text()
+
+
+def _two_deep(page):
+    page.evaluate("PFS.navigate('/my-files/A/sub')")
+    page.wait_for_function(
+        "PFS.state.path === '/my-files/A/sub' && PFS.state.rows[0].path === '/my-files/A/sub'")
+
+
+@pytest.mark.parametrize("icicle", [False, True], ids=["sunburst-hub", "icicle-root"])
+def test_double_click_on_the_root_goes_up_once(page, icicle):
+    _two_deep(page)
+    page.locator('[data-tab="sunburst"]').click()
+    if icicle:
+        page.locator("#icicle-toggle").check()
+        root = page.locator('#chart-sunburst g.node.root[data-path="/my-files/A/sub"] > rect')
+    else:
+        root = page.locator("#chart-sunburst g.hub > circle")
+    root.first.wait_for()
+    root.first.dblclick()
+    # both clicks and the dblclick have been dispatched: one level up, not two, and not
+    # back into the folder
+    assert page.evaluate("PFS.state.path") == "/my-files/A"
+
+
 def test_unlisted_root_says_so(page):
     page.evaluate("PFS.navigate('/my-files/frozen')")
     page.wait_for_selector("#chart-treemap .chart-empty")
@@ -297,7 +333,7 @@ def test_walk_bar_cancel_and_ended_line_clears(page):
     with page.expect_request(lambda r: r.url.endswith("/api/walk/cancel")) as info:
         page.locator("#chart-walk-cancel").click()
     assert info.value.headers["x-protonfs-token"]
-    page.evaluate("PFS.charts.endLingerMs = 200;"
+    page.evaluate("PFS.charts.endLingerMs = 1000;"
                   "PFS.state.progress = {state: 'cancelled', done: 2, total: 4};"
                   "PFS.charts.render()")
     assert "cancelled" in page.locator("#walkbar").inner_text()
