@@ -363,6 +363,51 @@ def test_du_invalid_exclusion_pattern_is_usage_error(du, gui_calls, flag, patter
     assert gui_calls == []
 
 
+def test_du_remote_glob_expands_against_its_parent_listing(du, drive):
+    """I8/R33: a quoted remote pattern lists its literal parent and measures each match."""
+    res = du("/my-files/*", "--json")
+    assert res.exit_code == 0, res.output + res.stderr
+    assert [d["target"] for d in json.loads(res.stdout)] == ["/my-files/A", "/my-files/B"]
+    assert drive.calls[:2] == [("info", "/my-files"), ("list", "/my-files")]
+
+
+def test_du_glob_matching_nothing_is_skipped_with_a_warning(du):
+    res = du("/my-files/Z*", "/my-files/A", "--json")
+    assert res.exit_code == 0, res.output + res.stderr
+    assert json.loads(res.stdout)["target"] == "/my-files/A"
+    assert "matched nothing" in res.stderr and "'/my-files/Z*'" in res.stderr
+    alone = du("/my-files/Z*")
+    assert alone.exit_code == 0 and alone.stdout == "" and "matched nothing" in alone.stderr
+
+
+def test_du_local_glob_matches_offloaded_folders_through_the_index(du, tmp_path, monkeypatch):
+    """I8/R33: like pull, a local pattern matches the index, so offloaded folders count."""
+    from protonfs.context import load_context
+    from protonfs.index import IndexEntry
+
+    store = tmp_path / "sim"
+    store.mkdir()
+    init_config(store, "/my-files/A")
+    ctx = load_context(store)
+    for rel in ("sub/x", "subway/y", "other/z"):
+        ctx.index.set(rel, IndexEntry(1, 0.0, "", "", f"/my-files/A/{rel}", "d",
+                                      "metadata-only", ""))
+    ctx.index.save()
+    monkeypatch.chdir(tmp_path)
+    res = du("sim/sub*", "--json", "--refresh", "never")
+    assert res.exit_code == 0, res.output + res.stderr
+    assert [d["target"] for d in json.loads(res.stdout)] == [
+        "/my-files/A/sub", "/my-files/A/subway"]
+
+
+def test_du_gui_glob_needs_exactly_one_match(du, gui_calls):
+    assert du("--gui", "/my-files/*").exit_code == 2
+    assert gui_calls == []
+    res = du("--gui", "/my-files/A*")
+    assert res.exit_code == 0, res.output + res.stderr
+    assert gui_calls[0][0] == "/my-files/A"
+
+
 def test_du_listen_without_gui_is_usage_error(du):
     for flag in (["--listen", "0.0.0.0"], ["--port", "1"], ["--log", "x"]):
         assert du("/my-files", *flag).exit_code == 2

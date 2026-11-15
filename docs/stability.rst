@@ -512,7 +512,9 @@ flag/argument name; these names, not just their presence, are frozen.
      - Read-only storage analysis of Proton Drive paths, trash included (added in
        3.4.0). Argument: ``PATH...`` (optional, repeatable; a Drive path under ``/``,
        ``/my-files`` or ``/devices``, or a local path inside a store; none means the
-       current directory). Options: ``-x``/``--exclude-updates``, ``-X``/``--exclude``,
+       current directory; a quoted glob pattern expands, a local one against the store's
+       files and index, a remote one against a listing of its parent, and one matching
+       nothing is reported on stderr and skipped). Options: ``-x``/``--exclude-updates``, ``-X``/``--exclude``,
        ``--mindepth``, ``--maxdepth``, ``-d``/``--depth``, ``-D``/``--dirs-only``,
        ``--refresh``, ``--format table|plain|json``, ``--json``, ``-p``/``--show-progress``,
        ``--gui``, ``--listen``, ``--port``, ``--log``. Only ``filesystem list``,

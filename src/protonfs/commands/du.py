@@ -197,6 +197,38 @@ def default_engine() -> UsageEngine:
     )
 
 
+def remote_matches(pattern: str, engine: UsageEngine, policy) -> list[str]:
+    """Return the Drive paths a remote ``PATH`` pattern matches, for ``du``.
+
+    Expands with :func:`~protonfs.usage.paths.expand_pattern`, taking each folder's
+    entries from its cached listing when that is valid and fresh under ``policy``, else
+    from one ``filesystem list`` call (none under ``--refresh never``, where an uncached
+    folder matches nothing).
+
+    :param pattern: Drive path holding glob characters, e.g. ``/my-files/sim/run*``.
+    :param engine: the engine whose cache and source to use.
+    :param policy: the run's :class:`~protonfs.usage.policy.RefreshPolicy`.
+    :returns: the matching escaped Drive paths, sorted.
+    :raises protonfs.drive.DriveError: if a listing fails.
+
+    .. versionadded:: 3.4.0
+    """
+    from protonfs.usage.paths import expand_pattern
+
+    def children(path: str) -> list:
+        snap = engine.cache.snapshot(path)
+        if snap is not None and not snap.invalid and (
+                policy.never or not policy.is_stale(snap.at, engine.clock())):
+            return list(snap.rows)
+        if policy.never:
+            return []
+        if engine.on_call is not None:
+            engine.on_call("list", path)
+        return engine.source.list_dir(path)
+
+    return expand_pattern(pattern, children)
+
+
 PLAN_HINT = "% of plan needs your plan size: protonfs config set --global du.plan_size 3TB"
 
 _THROTTLED = (

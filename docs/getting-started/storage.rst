@@ -33,6 +33,17 @@ from, and the local folder doesn't have to exist (an offloaded folder works too)
 With no ``PATH``, the current directory is used, which must be inside a store (at its
 root or any subdirectory). A local path that is in no store is an error.
 
+A quoted glob pattern is expanded by ``du`` itself, like ``pull`` and ``status`` do, so it
+works for folders that are not on disk. A local pattern matches the store's files and its
+index, so offloaded folders match; a remote one matches a listing of the folder it
+names. Each match is its own section, and a pattern that matches nothing is reported
+and skipped:
+
+.. code-block:: bash
+
+   protonfs du 'sim/mload005*'              # every mload005 run, offloaded or not
+   protonfs du '/my-files/sph-dev/sim/*'    # each folder under sim
+
 ``/devices`` is the sum of your devices: Proton's CLI cannot size ``/devices`` itself, so
 ``du`` lists the devices and sizes each one.
 
