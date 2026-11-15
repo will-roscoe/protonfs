@@ -69,7 +69,8 @@ class Running:
     def events(self, timeout=5):
         """Open the SSE stream; yield (event, data) pairs, reading with a socket timeout."""
         sock = socket.create_connection((self.host, self.port), timeout=timeout)
-        req = f"GET /api/events HTTP/1.1\r\nHost: x\r\nX-Protonfs-Token: {self.token}\r\n\r\n"
+        req = (f"GET /api/events HTTP/1.1\r\nHost: {self.host}:{self.port}\r\n"
+               f"X-Protonfs-Token: {self.token}\r\n\r\n")
         sock.sendall(req.encode())
         f = sock.makefile("rb")
         while f.readline().strip():  # skip response headers
@@ -219,7 +220,8 @@ def test_token_never_reaches_the_log_and_log_is_private(srv, tmp_path):
     srv.request("GET", f"/?t={srv.token}", auth=False)
     srv.request("GET", f"/api/nope?x=1&t={srv.token}&y=2")
     srv.request("GET", f"/?%74={srv.token}", auth=False)  # percent-encoded key
-    srv.raw(f"GET /?t={srv.token} HTTP/1.1\r\nHost: x\r\nBogus\r\n\r\n".encode())
+    srv.raw(f"GET /?t={srv.token} HTTP/1.1\r\nHost: {srv.host}:{srv.port}\r\nBogus\r\n\r\n"
+            .encode())
     text = (tmp_path / "server.log").read_text()
     assert "GET /" in text and "t=<redacted>" in text
     assert srv.token not in text
@@ -227,7 +229,8 @@ def test_token_never_reaches_the_log_and_log_is_private(srv, tmp_path):
 
 
 def test_bad_content_length(srv):
-    head = f"POST /api/walk/cancel HTTP/1.1\r\nHost: x\r\nX-Protonfs-Token: {srv.token}\r\n"
+    head = (f"POST /api/walk/cancel HTTP/1.1\r\nHost: {srv.host}:{srv.port}\r\n"
+            f"X-Protonfs-Token: {srv.token}\r\n")
     assert srv.raw((head + "Content-Length: -5\r\n\r\n").encode()).startswith(b"HTTP/1.0 400")
     assert srv.raw((head + "Content-Length: abc\r\n\r\n").encode()).startswith(b"HTTP/1.0 400")
     assert srv.raw((head + "\r\n").encode()).startswith(b"HTTP/1.0 411")
@@ -346,7 +349,10 @@ def test_non_loopback_warning(tmp_path):
         assert "file names, sizes and the access token travel unencrypted over plain HTTP" in (
             err.getvalue()
         )
-        assert out.getvalue().strip().splitlines()[-1].startswith("http://0.0.0.0:")
+        # 0.0.0.0 is not an address to browse to: the URL uses loopback, and stderr says
+        # to use this machine's address from elsewhere.
+        assert out.getvalue().strip().splitlines()[-1].startswith("http://127.0.0.1:")
+        assert "this machine's address" in err.getvalue()
     finally:
         stop.set()
         t.join(5)
@@ -497,3 +503,13 @@ def test_run_gui_depth_seed(kwargs, want, monkeypatch, tmp_path):
     assert server_mod.run_gui("/my-files", options, stdout=io.StringIO(),
                               stderr=io.StringIO()) == 0
     assert seen["s"].maxdepth == want
+
+
+def test_unexpected_host_header_is_rejected_on_loopback(srv):
+    """A DNS-rebinding page reaches 127.0.0.1 under its own name: refuse it."""
+    for host, ok in ((f"127.0.0.1:{srv.port}", True), (f"localhost:{srv.port}", True),
+                     (f"evil.example:{srv.port}", False), ("127.0.0.1:1", False)):
+        reply = srv.raw(f"GET / HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n"
+                        .encode())
+        status = int(reply.split(b" ", 2)[1])
+        assert (status == 200) is ok, (host, status)

@@ -143,6 +143,17 @@ class _Handler(BaseHTTPRequestHandler):
                     given = value
         return given is not None and _token_ok(given, self.server.token)
 
+    def _host_ok(self) -> bool:
+        # On a loopback bind, a page that reached us by DNS rebinding arrives under its own
+        # host name; only accept the loopback names. A deliberate non-loopback bind may be
+        # reached under any name, and the token still guards it.
+        listen, port = self.server.server_address[:2]
+        if not _is_loopback(listen):
+            return True
+        own = f"[{listen}]" if ":" in listen else listen
+        allowed = {f"{name}:{port}" for name in ("127.0.0.1", "localhost", "[::1]", own)}
+        return (self.headers.get("Host") or "").strip().lower() in allowed
+
     def _origin_ok(self) -> bool:
         origin = self.headers.get("Origin")
         return origin is None or origin == f"http://{self.headers.get('Host')}"
@@ -178,6 +189,8 @@ class _Handler(BaseHTTPRequestHandler):
         query = {k: v[-1] for k, v in parse_qs(url.query).items()}
         path = url.path
         try:
+            if not self._host_ok():
+                return self._error(HTTPStatus.BAD_REQUEST, "unexpected Host header")
             if method == "GET" and path == "/":
                 return self._index(query)
             if not self._authorised(header_only=method == "POST") or not self._origin_ok():
@@ -338,7 +351,10 @@ def serve(
     The account check (:meth:`~protonfs.usage.engine.UsageEngine.check_account`) runs once
     before listening, so a switched account's cache is cleared before anything is answered.
     Once listening, the last line written to ``stdout`` is ``http://<host>:<port>/?t=<token>``
-    (IPv6 hosts in brackets). Request logging goes to ``log``, never to ``stdout``.
+    (IPv6 hosts in brackets; a wildcard ``listen`` such as ``0.0.0.0`` prints the loopback
+    address instead, with a note on ``stderr``). On a loopback ``listen``, requests whose
+    ``Host`` header is not a loopback name with this port get HTTP 400 (DNS rebinding).
+    Request logging goes to ``log``, never to ``stdout``.
 
     :param engine: the usage engine.
     :param settings: the initial settings.
@@ -387,13 +403,21 @@ def serve(
             raise click.ClickException(f"cannot listen on {listen}:{port or 0}: {exc}") from exc
         bound = httpd.server_address[1]
         host = f"[{listen.replace('%', '%25')}]" if ":" in listen else listen
-        url = f"http://{host}:{bound}/?t={token}"
+        wildcard = listen in ("0.0.0.0", "::", "")
+        # A wildcard address is not one to browse to; loopback reaches it from this machine.
+        browse = ("[::1]" if listen == "::" else "127.0.0.1") if wildcard else host
+        url = f"http://{browse}:{bound}/?t={token}"
         loopback = _is_loopback(listen)
         if not loopback:
             stderr.write(
                 f"warning: serving on {host}:{bound}: file names, sizes and the access token "
                 "travel unencrypted over plain HTTP\n"
             )
+            if wildcard:
+                stderr.write(
+                    f"from another machine, open the address below with {browse} replaced "
+                    "by this machine's address\n"
+                )
             stderr.flush()
         stream.write(f"serving on {host}:{bound}\n")
         stdout.write(url + "\n")

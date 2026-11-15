@@ -152,6 +152,8 @@ programs and users on the machine from using the page.
    The address to serve on (default ``127.0.0.1``, this machine only). Anything else
    prints a warning: the page and its token travel over plain HTTP, so only listen
    beyond loopback on a network you trust, or reach the page through an SSH tunnel.
+   With ``0.0.0.0`` (every interface) the printed address uses ``127.0.0.1``; from
+   another machine, put this machine's address in its place.
 ``--port N|auto``
    The port (default ``auto``: any free one). A port already in use is an error.
 ``--log DIR|FILE|DEVICE``
