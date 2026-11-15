@@ -140,7 +140,8 @@ def test_refetch_queues_folders_a_finished_job_revealed(make):
     out = api.tree(TARGET, 2, queue="new")
     assert sorted(out["pending"]) == [f"{TARGET}/A", f"{TARGET}/B"]
     _settle_all(api, q, 2)
-    assert api.tree(TARGET, 2)["breakdowns"][f"{TARGET}/A"]["state"] == "listed"
+    shown = api.tree(TARGET, 2, queue="none")["breakdowns"]
+    assert shown[f"{TARGET}/A"]["state"] == "listed"
     # under refresh 0 everything shown is stale, but a refetch never queues a folder
     # again once a job for it has finished, so refetches cannot feed themselves
     assert api.tree(TARGET, 2, queue="new")["pending"] == []
