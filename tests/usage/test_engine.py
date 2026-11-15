@@ -722,6 +722,20 @@ def test_tree_and_walk_at_root_skip_unmeasurable_entries(usage_cache, clock):
     assert not _touches(d.calls, "/photos")
 
 
+@pytest.mark.parametrize(("exc", "still_set"), [(RuntimeError("db locked"), False),
+                                                 (KeyboardInterrupt(), True)])
+def test_in_trash_pass_is_cleared_unless_the_pass_was_interrupted(usage_cache, clock, exc,
+                                                                   still_set):
+    """N4: only Ctrl-C leaves the flag set ("the pass starts over"); any other failure
+    ends the pass, so a later hint must not claim it is still running."""
+    d = _root_tree()
+    d.fail_next("list_trash", "/trash", exc)
+    eng = UsageEngine(d, usage_cache, clock=clock)
+    with pytest.raises(type(exc)):
+        eng.refresh_trash(FIVE_DAYS, NO_RULES)
+    assert eng.in_trash_pass is still_set
+
+
 def test_failed_trash_listing_is_retried_at_once(usage_cache, clock):
     """A listing that failed fast (not a timeout) is retried on the next root view."""
     d = _root_tree()

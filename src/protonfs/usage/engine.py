@@ -125,8 +125,8 @@ class UsageEngine:
     replaced after construction.
 
     :ivar in_trash_pass: ``True`` while :meth:`refresh_trash` runs the trash pass, and
-        still ``True`` after the pass was interrupted (an interrupted pass is not kept:
-        the next one starts over).
+        still ``True`` after the pass was interrupted with Ctrl-C (an interrupted pass is
+        not kept: the next one starts over); any other failure clears it.
 
     .. versionadded:: 3.4.0
     """
@@ -473,8 +473,14 @@ class UsageEngine:
             if summary is not None and not self._trash_can_improve(summary, rules):
                 return
         self.in_trash_pass = True
-        summary = run_trash_pass(self, policy, rules=rules)
-        self.cache.put_trash(summary.to_json(), summary.at)
+        try:
+            summary = run_trash_pass(self, policy, rules=rules)
+            self.cache.put_trash(summary.to_json(), summary.at)
+        except KeyboardInterrupt:
+            raise  # stays set: the interrupted pass starts over next time
+        except BaseException:
+            self.in_trash_pass = False
+            raise
         self.in_trash_pass = False
 
     def trash_parent_now_cached(self) -> bool:
