@@ -171,6 +171,29 @@ def test_du_exit_3_on_partial_trash(du, drive, monkeypatch):
     assert json.loads(res.stdout)["trash"]["partial"]
 
 
+def test_du_root_exit_3_and_names_a_trash_group_it_could_not_measure(du, drive):
+    """I1: an incomplete trash total exits 3 even with no unresolved folder."""
+    drive.add_file("/my-files/A/other/o", 5)
+    assert du("/my-files/A").exit_code == 0  # caches A, so the trashed folder resolves
+    drive.trash("/my-files/A/sub")
+    drive.fail_next("size", "/my-files/A/other", DriveError("throttled"))
+    res = du("/")
+    assert res.exit_code == 3, res.output + res.stderr
+    assert "/my-files/A" in res.stdout and "size unknown" in res.stdout
+    doc = json.loads(du("/", "--json", "--refresh", "never").stdout)
+    assert doc["trash"]["complete"] is False
+
+
+def test_du_root_trashed_empty_folder_is_complete(du, drive):
+    drive.add_folder("/my-files/A/empty")
+    assert du("/my-files/A").exit_code == 0
+    drive.trash("/my-files/A/empty")
+    res = du("/", "--json")
+    assert res.exit_code == 0, res.output + res.stderr
+    trash = json.loads(res.stdout)["trash"]
+    assert trash["complete"] is True and trash["known"] == 0
+
+
 def test_du_exit_1_when_target_size_fails(du, drive):
     drive.fail_next("size", "/my-files/A", DriveError("boom"), times=5)
     res = du("/my-files/A")

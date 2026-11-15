@@ -61,6 +61,20 @@ def test_trash_pass_groups_several_folders_of_one_parent(usage_cache, clock):
     assert summary.groups == (TrashGroup(P, 0, 2, 2097364 + 1000),)
 
 
+def test_trashed_empty_folder_is_zero_bytes_not_unknown(usage_cache, clock):
+    """I1: a zero remainder from one consistent pass means the trashed folders hold 0 B."""
+    d = _probe()
+    d.add_folder(P + "/empty")
+    eng = UsageEngine(d, usage_cache, clock=clock)
+    eng.breakdown(P, REVAL, NO_RULES, target=P)
+    d.trash(P + "/empty")
+
+    summary = run_trash_pass(eng, REVAL)
+
+    assert summary.groups == (TrashGroup(P, 0, 1, 0),)
+    assert summary.complete and summary.total_known == 0
+
+
 def test_trash_pass_unresolved_parent_counts_folder(usage_cache, clock):
     d = _probe()
     d.trash(P + "/sub")
@@ -132,14 +146,23 @@ def test_gap_not_in_trash_leaves_folder_group_unmeasured(usage_cache, clock):
 
     summary = run_trash_pass(eng, REVAL)
 
-    assert TrashGroup(P, 0, 1, None) in summary.groups
+    (group,) = [g for g in summary.groups if g.folders]
+    assert group.bytes is None and "no size" in (group.reason or "")
     assert not summary.complete
     assert summary.total_known == 1048723
 
 
 def test_summary_json_round_trip():
-    s = TrashSummary(5.0, (TrashGroup(P, 1, 0, 7), TrashGroup(None, 0, 2, None)), 3, "x")
+    s = TrashSummary(5.0, (TrashGroup(P, 1, 0, 7), TrashGroup(None, 0, 2, None, "why")), 3,
+                     "x")
     assert TrashSummary.from_json(s.to_json()) == s
+
+
+def test_summary_json_without_reasons_still_loads():
+    old = ('{"at": 5.0, "groups": [["/my-files/p", 0, 1, null]], '
+           '"unresolved_folders": 0, "partial": null}')
+    (group,) = TrashSummary.from_json(old).groups
+    assert group == TrashGroup(P, 0, 1, None) and group.reason is None
 
 
 def test_trash_for_subtree_lower_bound_with_unchecked(usage_cache, clock):
@@ -272,5 +295,6 @@ def test_negative_remainder_makes_folder_group_unmeasured(usage_cache, clock):
 
     summary = run_trash_pass(eng, REVAL)
 
-    assert TrashGroup(P, 0, 1, None) in summary.groups
+    (group,) = [g for g in summary.groups if g.folders]
+    assert group.bytes is None and "smaller than" in (group.reason or "")
     assert not summary.complete

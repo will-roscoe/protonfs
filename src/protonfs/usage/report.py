@@ -286,7 +286,8 @@ def to_json(
     :param now: Unix time of generation.
     :returns: a dict with keys ``target``, ``generated_at``, ``used_total``, ``plan_size``,
         ``trash`` and ``rows``; ``trash`` is ``None`` or ``{at, known, complete, partial,
-        unresolved_folders}``.
+        unresolved_folders, unattributed}``, where ``unattributed`` lists the groups of
+        trashed folders whose bytes are unknown as ``{parent, folders, reason}``.
 
     .. versionadded:: 3.4.0
     """
@@ -295,6 +296,10 @@ def to_json(
         trash_doc = {
             "at": trash.at, "known": trash.total_known, "complete": trash.complete,
             "partial": trash.partial, "unresolved_folders": trash.unresolved_folders,
+            "unattributed": [
+                {"parent": g.parent_path, "folders": g.folders, "reason": g.reason}
+                for g in trash.groups if g.folders and g.bytes is None
+            ],
         }
     return {
         "target": target, "generated_at": now, "used_total": used_total,

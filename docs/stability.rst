@@ -178,7 +178,9 @@ when several PATHs are given) with the keys ``target``, ``generated_at`` (Unix t
 ``used_total`` (bytes or ``null``), ``plan_size`` (bytes or ``null``), ``trash`` and
 ``rows``. ``trash`` is ``null`` when no trash pass has run, else an object with ``at``,
 ``known`` (bytes measured, a lower bound unless ``complete``), ``complete``, ``partial``
-(reason text or ``null``) and ``unresolved_folders``. Each row has the keys ``depth``,
+(reason text or ``null``), ``unresolved_folders`` and ``unattributed`` (the groups of
+trashed folders whose size could not be measured, each ``{parent, folders, reason}``).
+Each row has the keys ``depth``,
 ``path``, ``name``, ``kind`` (``file``, ``folder``, ``section`` or ``gap``), ``size``,
 ``descendants``, ``pct_parent``, ``pct_used``, ``pct_plan`` (percent 0 to 100, or
 ``null``), ``in_trash``, ``in_trash_complete``, ``unchecked_bytes``, ``checked_at``

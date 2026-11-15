@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING
 
 from ..drive import DriveError
 from .excludes import ExcludeRules
-from .model import GapKind
+from .model import Breakdown, GapKind, NodeState
 from .paths import child_path, is_within
 from .policy import RefreshPolicy
 
@@ -43,7 +43,9 @@ class TrashGroup:
     :ivar files: number of trashed files in the group (``0`` for a folder group).
     :ivar folders: number of trashed folders in the group (``0`` for a file group).
     :ivar bytes: bytes in trash, or ``None`` for a folder group whose size could not be
-        attributed (the parent's remainder was not labelled ``in_trash``).
+        attributed (see ``reason``).
+    :ivar reason: why ``bytes`` is ``None`` (e.g. a subfolder of the parent has no size),
+        else ``None``.
 
     .. versionadded:: 3.4.0
     """
@@ -52,6 +54,7 @@ class TrashGroup:
     files: int
     folders: int
     bytes: int | None
+    reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -94,7 +97,8 @@ class TrashSummary:
         """Return the summary as JSON text, for :meth:`from_json`."""
         return json.dumps({
             "at": self.at,
-            "groups": [[g.parent_path, g.files, g.folders, g.bytes] for g in self.groups],
+            "groups": [[g.parent_path, g.files, g.folders, g.bytes, g.reason]
+                       for g in self.groups],
             "unresolved_folders": self.unresolved_folders,
             "partial": self.partial,
         })
@@ -111,12 +115,19 @@ class TrashSummary:
             d = json.loads(text)
             return cls(
                 float(d["at"]),
-                tuple(TrashGroup(p, int(f), int(o), b) for p, f, o, b in d["groups"]),
+                tuple(_group(g) for g in d["groups"]),
                 int(d["unresolved_folders"]),
                 d["partial"],
             )
-        except (KeyError, TypeError) as exc:
+        except (KeyError, TypeError, ValueError) as exc:
             raise ValueError(f"not a trash summary: {exc}") from exc
+
+
+def _group(item: list) -> TrashGroup:
+    """Rebuild one stored group; summaries stored before ``reason`` have four items."""
+    parent, files, folders, size = item[:4]
+    reason = item[4] if len(item) > 4 else None
+    return TrashGroup(parent, int(files), int(folders), size, reason)
 
 
 @dataclass(frozen=True)
@@ -148,9 +159,11 @@ def run_trash_pass(
     """List the trash and attribute its bytes to original parent folders.
 
     Files take their listed size. For each parent holding trashed folders, one
-    :meth:`~protonfs.usage.engine.UsageEngine.breakdown` with a revalidating policy gives
-    the parent's remainder; when it is labelled ``in_trash`` the folders' bytes are that
-    remainder minus the trashed files of the same parent. Parents are resolved with
+    :meth:`~protonfs.usage.engine.UsageEngine.breakdown` that re-sizes everything gives
+    the parent's remainder; when it is labelled ``in_trash``, or is exactly ``0`` with
+    every input from that one pass, the folders' bytes are that remainder minus the
+    trashed files of the same parent. Otherwise the group's ``bytes`` is ``None`` with a
+    ``reason``. Parents are resolved with
     :meth:`~protonfs.usage.cache.UsageCache.path_for_uid`, so they must have been listed.
 
     Issues ``filesystem list /trash`` plus the breakdown calls; stores nothing itself.
@@ -200,13 +213,44 @@ def run_trash_pass(
             continue
         file_bytes = files[uid][1] if uid in files else 0
         bd = engine.breakdown(parent, _FULL, ExcludeRules(), target=parent)
-        usable = bd.gap_kind is GapKind.TRASH and bd.gap is not None
-        folder_bytes = bd.gap - file_bytes if usable and bd.gap is not None else None
-        if folder_bytes is not None and folder_bytes < 0:
-            folder_bytes = None
-        groups.append(TrashGroup(parent, 0, count, folder_bytes))
+        folder_bytes, reason = _folder_bytes(engine, bd, file_bytes)
+        groups.append(TrashGroup(parent, 0, count, folder_bytes, reason))
     groups.sort(key=lambda g: (g.parent_path or "", g.folders))
     return TrashSummary(now, tuple(groups), unresolved, None)
+
+
+def _folder_bytes(
+    engine: UsageEngine, bd: Breakdown, file_bytes: int
+) -> tuple[int | None, str | None]:
+    """Return ``(bytes, reason)`` for the trashed folders whose original parent is ``bd``.
+
+    ``bytes`` is ``bd``'s remainder minus the parent's trashed ``file_bytes`` when the
+    remainder is trash; else ``None`` and ``reason`` says why.
+    """
+    if bd.state is NodeState.ERROR:
+        return None, f"measuring the folder failed: {bd.error or 'unknown error'}"
+    if bd.gap is None:
+        return None, "the folder could not be listed"
+    if bd.gap_kind is GapKind.UNATTRIBUTED:
+        return None, "a subfolder has no size, so the remainder includes its bytes"
+    if bd.gap < 0:
+        return None, "the folder changed while it was measured"
+    if bd.gap_kind is not GapKind.TRASH and not (bd.gap == 0 and _one_pass(engine, bd.path)):
+        return None, "its figures come from different passes"
+    if bd.gap < file_bytes:
+        return None, "the remainder is smaller than the trashed files in the folder"
+    return bd.gap - file_bytes, None
+
+
+def _one_pass(engine: UsageEngine, path: str) -> bool:
+    """Whether the cached breakdown of ``path`` has every figure from its own pass."""
+    snap = engine.cache.snapshot(path)
+    if snap is None:
+        return False
+    fig = engine.cache.figure(path)
+    if fig is not None and (fig.size, fig.descendants) != tuple(snap.fingerprint):
+        return False
+    return all(r.pass_id == snap.pass_id for r in snap.rows if r.size is not None)
 
 
 def figure_for(engine: UsageEngine, path: str) -> TrashFigure:

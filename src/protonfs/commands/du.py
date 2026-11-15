@@ -219,7 +219,16 @@ def _trash_lines(summary) -> list:
         )
     if summary.unresolved_folders:
         lines.append(f"{summary.unresolved_folders} trashed folders, size unknown")
+    for g in summary.groups:
+        if g.folders and g.bytes is None:
+            lines.append(f"trash from {g.parent_path}: {g.folders} trashed folder"
+                         f"{'' if g.folders == 1 else 's'}, size unknown ({g.reason})")
     return lines
+
+
+def _trash_incomplete(summary) -> bool:
+    """Whether a stored trash summary leaves part of the trash unmeasured."""
+    return summary is not None and not summary.complete
 
 
 def _attach_throttle_notice(engine, err) -> None:
@@ -330,9 +339,7 @@ def run_du(
             if r.state == "error":
                 err.write(f"! {r.path}: {r.error or 'measurement failed'}\n")
         summary = engine.trash_summary() if target.remote == "/" else None
-        partial = partial or bool(
-            summary is not None and (summary.partial or summary.unresolved_folders > 0)
-        )
+        partial = partial or _trash_incomplete(summary)
         if options.fmt == "json":
             docs.append(to_json(shown, target=target.remote, trash=summary,
                                 used_total=engine.used_total(), plan_size=options.plan_size,
