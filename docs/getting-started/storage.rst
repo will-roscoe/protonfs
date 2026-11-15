@@ -157,8 +157,11 @@ programs and users on the machine from using the page.
 ``--port N|auto``
    The port (default ``auto``: any free one). A port already in use is an error.
 ``--log DIR|FILE|DEVICE``
-   Where request logs go (default ``~/.local/state/protonfs/logs/``, one file per run;
-   ``$XDG_STATE_HOME`` is respected). A directory gets a new file named after the start
+   Where the log goes (default ``~/.local/state/protonfs/logs/``, one file per run;
+   ``$XDG_STATE_HOME`` is respected). It records every request, every refresh job
+   (queued, started, finished or failed, with its path and duration), every walk, every
+   Drive call the page's figures cause (``list``, ``size``, account checks, with path and
+   duration), notices and errors. A directory gets a new file named after the start
    time, a file is appended to, and a device such as ``/dev/null`` is written to as is.
    Log files are readable only by you, and the token is never written to them.
 
@@ -176,15 +179,24 @@ Table
    Backspace or the breadcrumb go back up, as far as the folder the page was opened on.
    Click a column heading to sort by it. The Size, % plan, % used and % parent buttons
    choose what the size column shows. Older figures fade, a spinner marks a folder being
-   fetched, and ❄ marks a frozen (``-x``) folder.
+   fetched, and ❄ marks a frozen (``-x``) folder. A folder whose listing was
+   invalidated by a newer measurement of one of its children is marked *outdated*, and
+   is re-checked when you open it. A line above the table (at the top of the account)
+   shows the trash total, whether it is complete or why it is partial, how many trashed
+   folders have no known size, and how old the trash pass is; an *In trash* figure that
+   cannot rule out unmeasured trashed folders says so instead of reporting 0% unchecked.
 Chart
    A treemap or a sunburst of the same figures; the sunburst can switch to an icicle
    layout. Hovering or clicking a block selects its row; double-clicking a folder opens
    it. Hatched blocks are folders that have been sized but not yet listed, and
-   remainders that cannot be attributed; trash remainders have their own colour.
+   remainders that cannot be attributed; trash remainders have their own colour. A
+   negative remainder (children measured larger than their folder) is not drawn, and
+   the chart says so. A folder's area is always its own size: bytes of files hidden by
+   *Folders only*, or of items without a size, appear as a labelled filler block.
 Actions
    *Refresh* (or *Refresh now* under the chart) re-checks the open folder straight away,
-   whatever its age. *Walk* (or *Walk selected*) measures everything below it in the
+   whatever its age; if a fetch of that folder is already queued it is upgraded, and if
+   one is running a second, fresh run follows it. *Walk* (or *Walk selected*) measures everything below it in the
    background, with progress; *Cancel* stops a walk. A walk reports any folder it could
    not measure.
 Settings
