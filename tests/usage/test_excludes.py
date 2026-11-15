@@ -62,3 +62,11 @@ def test_dict_round_trip():
     assert r2.to_dict() == d
     assert r2.match("b", False) is Exclusion.HIDE
     assert ExcludeRules.from_dict({}).to_dict() == {"freeze": [], "hide": []}
+
+
+@pytest.mark.parametrize(("kind", "pattern"), [("freeze", "!"), ("hide", "\\")])
+def test_invalid_pattern_raises_value_error_naming_it(kind, pattern):
+    with pytest.raises(ValueError) as err:
+        ExcludeRules(**{kind: ["ok", pattern]})
+    assert repr(pattern) in str(err.value)
+    assert "exclusion pattern" in str(err.value)

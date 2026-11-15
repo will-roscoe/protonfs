@@ -217,6 +217,15 @@ def test_du_local_path_in_other_store(du, tmp_path, monkeypatch):
     assert json.loads(res.stdout)["target"] == "/my-files/A/sub"
 
 
+@pytest.mark.parametrize(("flag", "pattern"), [("-x", "!"), ("-X", "\\"), ("-x", "\\")])
+@pytest.mark.parametrize("gui", [False, True])
+def test_du_invalid_exclusion_pattern_is_usage_error(du, gui_calls, flag, pattern, gui):
+    res = du("/my-files", flag, pattern, *(["--gui"] if gui else []))
+    assert res.exit_code == 2, res.output + res.stderr
+    assert repr(pattern) in res.stderr and "Traceback" not in res.output + res.stderr
+    assert gui_calls == []
+
+
 def test_du_listen_without_gui_is_usage_error(du):
     for flag in (["--listen", "0.0.0.0"], ["--port", "1"], ["--log", "x"]):
         assert du("/my-files", *flag).exit_code == 2

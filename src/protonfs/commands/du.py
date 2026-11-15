@@ -131,13 +131,15 @@ def build_options(
     Resolves ``refresh`` and the plan size from ``du.refresh``/``du.plan_size`` (env var,
     then global config) when not given.
 
-    :raises click.UsageError: for any invalid combination of flags.
+    :raises click.UsageError: for any invalid combination of flags, or a ``-x``/``-X``
+        pattern that is not valid gitignore syntax.
     :raises click.ClickException: when the stored plan size is not a valid size.
 
     .. versionadded:: 3.4.0
     """
     from protonfs.commands.config import resolve_du_setting
     from protonfs.retention import RetentionError
+    from protonfs.usage.excludes import ExcludeRules
     from protonfs.usage.policy import RefreshPolicy, parse_size
 
     if as_json:
@@ -145,6 +147,12 @@ def build_options(
             raise click.UsageError("--json cannot be combined with --format " + fmt + ".")
         fmt = "json"
     low, high = _depth_range(depth, mindepth, maxdepth)
+    for flag, patterns, kind in (("-x/--exclude-updates", exclude_updates, "freeze"),
+                                 ("-X/--exclude", exclude, "hide")):
+        try:
+            ExcludeRules(**{kind: patterns})
+        except ValueError as exc:
+            raise click.UsageError(f"{flag}: {exc}") from exc
     if not gui and (listen is not None or port is not None or log is not None):
         raise click.UsageError("--listen, --port and --log are only valid with --gui.")
     if gui:
