@@ -176,19 +176,24 @@ may appear.
 **``du --format json``** (added in 3.4.0) prints one object per target (a list of objects
 when several PATHs are given) with the keys ``target``, ``generated_at`` (Unix time),
 ``used_total`` (bytes or ``null``), ``plan_size`` (bytes or ``null``), ``trash`` and
-``rows``. ``trash`` is ``null`` when no trash pass has run, else an object with ``at``,
+``rows``. ``trash`` is ``null`` when no trash pass has run, else (whatever the target)
+the stored pass, an object with ``at``,
 ``known`` (bytes measured, a lower bound unless ``complete``), ``complete``, ``partial``
 (reason text or ``null``), ``unresolved_folders`` and ``unattributed`` (the groups of
 trashed folders whose size could not be measured, each ``{parent, folders, reason}``).
 Each row has the keys ``depth``,
 ``path``, ``name``, ``kind`` (``file``, ``folder``, ``section`` or ``gap``), ``size``,
 ``descendants``, ``pct_parent``, ``pct_used``, ``pct_plan`` (percent 0 to 100, or
-``null``), ``in_trash``, ``in_trash_complete``, ``unchecked_bytes``, ``checked_at``
+``null``), ``in_trash`` (the trash pass, replaced folder by folder by any listing made
+since), ``in_trash_complete``, ``unchecked_bytes``, ``checked_at``
 (Unix time), ``age_seconds``, ``state`` (``listed``, ``sized``, ``excluded``,
 ``unmeasured``, ``error``, ``partial`` (``/`` or ``/devices`` total leaves out a
 section or device) or ``gap``), ``exclusion`` (``none``, ``freeze``, ``hide``),
-``gap_kind`` (``none``, ``in_trash``, ``unattributed``, ``unreconciled``) and ``error``
-(failure text when ``state`` is ``error``, else ``null``). ``--format
+``gap_kind`` (``none``, ``in_trash``, ``unattributed``, ``unreconciled``), ``error``
+(failure text when ``state`` is ``error``, else ``null``), ``trash_at`` (Unix time of the
+oldest measurement behind ``in_trash``, which can be older than ``checked_at``, or
+``null``) and ``trash_unresolved`` (on the ``/`` row, the trashed folders whose size is
+unknown; ``0`` elsewhere). ``--format
 plain`` prints the row values tab-separated in that order, ``null`` as an empty string.
 A figure is never shown without ``checked_at``/``age_seconds`` unless it is unknown.
 

@@ -356,8 +356,10 @@ def run_du(
         for r in rows:
             if r.state == "error":
                 err.write(f"! {r.path}: {r.error or 'measurement failed'}\n")
-        summary = engine.trash_summary() if target.remote == "/" else None
-        partial = partial or _trash_incomplete(summary, rules)
+        summary = engine.trash_summary()
+        # Only du / runs the trash pass, so only it answers for the account's trash.
+        if target.remote == "/":
+            partial = partial or _trash_incomplete(summary, rules)
         if options.fmt == "json":
             docs.append(to_json(shown, target=target.remote, trash=summary,
                                 used_total=engine.used_total(), plan_size=options.plan_size,
@@ -366,14 +368,15 @@ def run_du(
             for line in render_plain(shown):
                 out.write(line + "\n")
         else:
-            render_table(shown, console, title=target.remote if len(targets) > 1 else None)
+            render_table(shown, console, title=target.remote if len(targets) > 1 else None,
+                         now=now)
             if target.remote == "/":
                 for line in _trash_lines(summary):
                     out.write(line + "\n")
             hint = hint or options.plan_size is None
             need_used = need_used or (engine.used_total() is None and options.fmt == "table")
             need_trash = need_trash or (target.remote != "/" and options.fmt == "table"
-                                        and engine.trash_summary() is None)
+                                        and summary is None)
     if options.fmt == "json":
         out.write(json.dumps(docs[0] if len(docs) == 1 else docs, indent=2) + "\n")
     if hint:

@@ -8,7 +8,9 @@ one parent cannot be told apart and are reported as one group.
 
 :func:`run_trash_pass` produces a :class:`TrashSummary`;
 :class:`~protonfs.usage.engine.UsageEngine` stores it and answers per-subtree questions with
-:class:`TrashFigure` (:meth:`~protonfs.usage.engine.UsageEngine.trash_for`).
+:class:`TrashFigure` (:meth:`~protonfs.usage.engine.UsageEngine.trash_for`, or
+:func:`figures_for` for many folders at once), combining the pass with any folder listed
+since.
 
 .. versionadded:: 3.4.0
 """
@@ -17,13 +19,14 @@ from __future__ import annotations
 
 import json
 import subprocess
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from ..drive import DriveError
 from .excludes import ExcludeRules, Exclusion
 from .model import Breakdown, GapKind, NodeState
-from .paths import child_path, is_within, relative
+from .paths import child_path, join, relative, split
 from .policy import RefreshPolicy
 
 if TYPE_CHECKING:
@@ -148,11 +151,14 @@ class TrashFigure:
     :ivar known: measured bytes in trash whose original parent is within the subtree; a
         lower bound unless ``complete``.
     :ivar complete: whether ``known`` is the whole answer.
-    :ivar unchecked_bytes: when not ``complete``, the bytes of folders under the subtree
-        that were never broken down (sized only) and so may hold more trash; ``None``
-        when complete or the subtree size is unknown.
+    :ivar unchecked_bytes: when not ``complete``, an upper bound on the trash ``known``
+        leaves out: the bytes of the folders whose trash is unknown; ``None`` when
+        complete, or when no bound exists (a partial trash listing, or trashed items whose
+        original folder is not in the cache, which could be anywhere).
     :ivar unchecked_share: ``unchecked_bytes`` as a fraction of the subtree's size.
-    :ivar at: Unix time of the trash pass behind ``known``, or ``None`` without one.
+    :ivar at: Unix time of the oldest measurement behind ``known``: the trash pass, or,
+        when every folder in the subtree was listed after it, the oldest of those
+        listings; ``None`` without a stored pass.
 
     .. versionadded:: 3.4.0
     """
@@ -293,11 +299,20 @@ def _one_pass(engine: UsageEngine, path: str) -> bool:
 def figure_for(engine: UsageEngine, path: str) -> TrashFigure:
     """Return the trash bytes whose original parent is within ``path``.
 
-    Reads the stored summary and cache only; makes no Drive calls. Without a stored
-    summary, ``known`` is the sum of the ``in_trash`` remainders of the cached listings
-    under ``path`` and ``complete`` is ``False``. When incomplete, ``unchecked_bytes`` is
-    the size of the folders under ``path`` that have no listing of their own, which is where
-    unseen trash could be.
+    Reads the stored summary and cache only; makes no Drive calls. With a stored trash
+    pass, the figure sums, for each folder ``D`` under ``path``, the trash whose original
+    parent is ``D``: from ``D``'s cached listing when that listing is newer than the pass
+    (its remainder: ``in_trash`` counts, a zero remainder is 0, any other label leaves it
+    unknown), else from the pass's groups for ``D``. A folder whose newer-listed parent no
+    longer lists it is not counted again, since that parent's remainder holds it. When
+    incomplete, ``unchecked_bytes`` bounds what is missing (see :class:`TrashFigure`).
+
+    Without a stored pass, ``known`` is the sum of the ``in_trash`` remainders of the
+    cached listings under ``path``, ``complete`` is ``False``, ``unchecked_bytes`` is the
+    size of the folders under ``path`` with no listing of their own, and ``at`` is
+    ``None``.
+
+    .. seealso:: :func:`figures_for` for many paths at once.
 
     :param engine: the engine holding the cache.
     :param path: escaped Drive path, or ``"/"`` for the whole account.
@@ -305,34 +320,197 @@ def figure_for(engine: UsageEngine, path: str) -> TrashFigure:
 
     .. versionadded:: 3.4.0
     """
-    stored = engine.cache.trash()
-    summary: TrashSummary | None = None
-    if stored is not None:
-        try:
-            summary = TrashSummary.from_json(stored[0])
-        except ValueError:
-            summary = None
+    return figures_for(engine, [path])[path]
+
+
+def figures_for(engine: UsageEngine, paths: Sequence[str]) -> dict[str, TrashFigure]:
+    """Return :func:`figure_for` of each path, reading the cache once for all of them.
+
+    The listings made since the trash pass are read in bulk under the paths' common
+    ancestor, so a report of many rows costs one read, not one walk per row.
+
+    :param engine: the engine holding the cache.
+    :param paths: escaped Drive paths (``"/"`` for the whole account).
+    :returns: ``{path: figure}`` for every path given.
+
+    .. versionadded:: 3.4.0
+    """
+    summary = engine.trash_summary()
+    if summary is None:
+        return {p: _figure_without_pass(engine, p) for p in paths}
+    return _PassFigures(engine, summary, _common_base(paths)).figures(paths)
+
+
+_NEVER = RefreshPolicy(None)
+
+
+def _under(path: str, base: str) -> bool:
+    """Whether the canonical escaped ``path`` is ``base`` or below it."""
+    return base == "/" or path == base or path.startswith(base + "/")
+
+
+def _chain(path: str) -> list[str]:
+    """The paths from the top segment down to ``path`` itself; ``chain[i]`` has depth i+1."""
+    out = []
+    cur = "/"
+    for seg in split(path):
+        cur = join(cur, seg)
+        out.append(cur)
+    return out
+
+
+def _common_base(paths: Sequence[str]) -> str:
+    common: list[str] | None = None
+    for p in paths:
+        segs = split(p)
+        if common is None:
+            common = segs
+        else:
+            n = 0
+            while n < min(len(common), len(segs)) and common[n] == segs[n]:
+                n += 1
+            common = common[:n]
+    base = "/"
+    for seg in common or []:
+        base = join(base, seg)
+    return base
+
+
+class _PassFigures:
+    """Trash figures under ``base`` from one stored pass plus the listings made since."""
+
+    def __init__(self, engine: UsageEngine, summary: TrashSummary, base: str) -> None:
+        self.engine = engine
+        self.summary = summary
+        self.newer = engine.cache.snapshots_newer_than(summary.at, under=base)
+        self.children = {
+            p: [child_path(p, r.name, r.uid, r.decrypted) for r in snap.rows
+                if r.kind == "folder"]
+            for p, snap in self.newer.items()
+        }
+        listed = {p: set(c) for p, c in self.children.items()}
+        from_pass: dict[str, int | None] = {}
+        self.loose = 0  # trashed files whose original folder is unknown: could be anywhere
+        self.has_loose = False
+        for g in summary.groups:
+            if g.parent_path is None:
+                self.loose += g.bytes or 0
+                self.has_loose = True
+            elif _under(g.parent_path, base):
+                prev = from_pass.get(g.parent_path, 0)
+                from_pass[g.parent_path] = (None if prev is None or g.bytes is None
+                                            else prev + g.bytes)
+        # (folder, its chain, trash directly under it or None, depth of the deepest
+        # ancestor listed since the pass that no longer lists the way down, or -1)
+        self.direct: list[tuple[str, list[str], int | None, int]] = []
+        for folder in {*from_pass, *self.newer}:
+            chain = _chain(folder)
+            cover = -1
+            for depth, (a, b) in enumerate(zip(chain, chain[1:]), start=1):
+                if a in listed and b not in listed[a]:
+                    cover = depth
+            value = self._listed(folder) if folder in self.newer else from_pass[folder]
+            self.direct.append((folder, chain, value, cover))
+        self._since: dict[str, float | None] = {}
+
+    def _listed(self, folder: str) -> int | None:
+        """Trash directly under ``folder`` from its newer listing's remainder, or ``None``."""
+        snap = self.newer[folder]
+        if snap.invalid:  # a later figure may contradict it: let the breakdown decide
+            bd = self.engine.breakdown(folder, _NEVER, ExcludeRules(), target=folder)
+            gap, kind = bd.gap, bd.gap_kind
+        else:  # valid: its own figure equals the fingerprint, as the breakdown assumes
+            from .engine import _label  # the breakdown's own labelling rule
+
+            size = snap.fingerprint[0]
+            known = sum(r.size for r in snap.rows if r.size is not None)
+            holes = any(r.size is None for r in snap.rows)
+            mixed = any(r.pass_id != snap.pass_id for r in snap.rows)
+            gap = size - known
+            kind = _label(gap, holes, mixed)
+        if gap is not None and kind is GapKind.TRASH:
+            return gap
+        if gap is not None and kind is GapKind.NONE:
+            return 0
+        return None
+
+    def _listed_since_at(self, root: str) -> float | None:
+        """The oldest listing under ``root`` if every folder there was listed since the
+        pass, else ``None``."""
+        memo = self._since
+        stack = [(root, False)]
+        while stack:
+            p, ready = stack.pop()
+            if p in memo:
+                continue
+            kids = self.children[p]
+            if not ready:
+                stack.append((p, True))
+                stack.extend((c, False) for c in kids if c in self.newer and c not in memo)
+                continue
+            oldest: float | None = self.newer[p].at
+            for c in kids:
+                sub = memo.get(c) if c in self.newer else None
+                if sub is None or oldest is None:
+                    oldest = None
+                    break
+                oldest = min(oldest, sub)
+            memo[p] = oldest
+        return memo[root]
+
+    def figures(self, paths: Sequence[str]) -> dict[str, TrashFigure]:
+        known = dict.fromkeys(paths, 0)
+        unknown: dict[str, list[str]] = {p: [] for p in paths}
+        for folder, chain, value, cover in self.direct:
+            # the folder counts for a row above its covering ancestor, not at or below it
+            hits = [p for depth, p in enumerate(chain, start=1) if depth > cover and p in known]
+            if cover < 0 and "/" in known:
+                hits.append("/")
+            for p in hits:
+                if value is None:
+                    unknown[p].append(folder)
+                else:
+                    known[p] += value
+        s = self.summary
+        out = {}
+        for p in paths:
+            whole = p == "/"
+            total = known[p] + (self.loose if whole else 0)
+            since = None if whole or p not in self.newer else self._listed_since_at(p)
+            at = s.at if since is None else since
+            unbounded = (s.partial is not None or s.unresolved_folders > 0
+                         or (self.has_loose and not whole))
+            if not unknown[p] and not unbounded:
+                out[p] = TrashFigure(total, True, None, None, at)
+                continue
+            unchecked = None if unbounded else _unknown_bytes(self.engine, unknown[p])
+            size = self.engine.used_total() if whole else _size(self.engine, p)
+            share = unchecked / size if unchecked is not None and size else None
+            out[p] = TrashFigure(total, False, unchecked, share, at)
+        return out
+
+
+def _unknown_bytes(engine: UsageEngine, folders: list[str]) -> int | None:
+    """Sum the sizes of ``folders``, counting a folder inside another only once."""
+    total = 0
+    kept: list[str] = []
+    for folder in sorted(folders, key=lambda f: len(split(f))):
+        if any(_under(folder, k) for k in kept):
+            continue
+        kept.append(folder)
+        size = _size(engine, folder)
+        if size is None:
+            return None
+        total += size
+    return total
+
+
+def _figure_without_pass(engine: UsageEngine, path: str) -> TrashFigure:
+    known = _cached_gaps(engine, path)
     unchecked, size = _unchecked(engine, path)
-    if summary is not None:
-        known = sum(
-            g.bytes or 0
-            for g in summary.groups
-            if (g.parent_path is None and path == "/")
-            or (g.parent_path is not None and is_within(g.parent_path, path))
-        )
-        # A group with an unknown parent might belong anywhere below a narrower path.
-        complete = summary.complete and (path == "/" or all(
-            g.parent_path is not None for g in summary.groups))
-        at: float | None = stored[1] if stored is not None else None
-    else:
-        known = _cached_gaps(engine, path)
-        complete = False
-        at = None
-    if complete:
-        return TrashFigure(known, True, None, None, at)
     if unchecked is None or size is None:
-        return TrashFigure(known, False, None, None, at)
-    return TrashFigure(known, False, unchecked, unchecked / size if size else None, at)
+        return TrashFigure(known, False, None, None, None)
+    return TrashFigure(known, False, unchecked, unchecked / size if size else None, None)
 
 
 def _roots(engine: UsageEngine, path: str) -> list[str]:

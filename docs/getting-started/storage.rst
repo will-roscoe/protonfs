@@ -52,6 +52,10 @@ In trash
    Bytes inside this folder that are in the trash. Trashed items keep counting against
    your plan, and keep counting in their original folders' totals, until the trash is
    emptied. The column is blank until ``protonfs du /`` has measured the trash once.
+   After that, each folder's figure comes from that trash pass, except where ``du`` has
+   listed a folder since: then the listing's ``(in trash)`` remainder counts instead, so
+   what you trash and re-check shows up at once. When the figure is older than the
+   row's Age, it says how old, e.g. ``0 B (2d old)``.
 Age
    How old the figure is. Figures come from a local cache (see below), so ``du`` always
    shows how old each one is.
@@ -106,7 +110,9 @@ after the threshold has passed is re-checked then:
    Re-check anything older than five days. Durations combine units: ``2h45m``, ``1w``,
    ``1mo`` (30 days), ``1y`` (365 days); ``m`` is minutes.
 ``--refresh 0``
-   Fresh values only: everything shown is fetched now.
+   Fresh values only: everything shown is fetched now, except that below ``/`` the
+   In trash column still rests on the last trash pass for folders not listed since,
+   and shows its age. Only ``du /`` runs the trash pass.
 ``--refresh never``
    Answer from the cache alone, with no Drive calls at all.
 

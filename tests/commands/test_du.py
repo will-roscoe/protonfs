@@ -102,6 +102,10 @@ def test_du_json_keys_frozen(du):
     doc = json.loads(du("/my-files", "--json").stdout)
     assert set(doc) == {"target", "generated_at", "used_total", "plan_size", "trash", "rows"}
     assert all(set(r) == set(JSON_ROW_KEYS) for r in doc["rows"])
+    assert {"trash_at", "trash_unresolved"} <= set(JSON_ROW_KEYS)
+    root = json.loads(du("/", "--json").stdout)["trash"]
+    assert set(root) == {"at", "known", "complete", "partial", "unresolved_folders",
+                         "unattributed"}
 
 
 def test_du_plain_tab_separated(du):
@@ -245,6 +249,52 @@ def test_du_root_reruns_an_incomplete_summary_stored_before_unresolved_parents(d
     res = du("/", "--json")
     assert res.exit_code == 0, res.output + res.stderr
     assert json.loads(res.stdout)["trash"]["complete"]
+
+
+def _clock():
+    from protonfs.commands import du as du_command
+
+    return du_command.default_engine().clock  # the fixture's FakeClock
+
+
+def test_du_in_trash_shows_trash_found_by_a_newer_listing(du, drive):
+    """C1: prune, then re-check: the In trash cell agrees with the fresh remainder row."""
+    assert du("/my-files/A").exit_code == 0
+    assert du("/").exit_code == 0  # an empty, complete trash pass
+    _clock().advance(60)
+    drive.trash("/my-files/A/sub")
+    res = du("/my-files/A", "--refresh", "0", "--json")
+    assert res.exit_code == 0, res.output + res.stderr
+    doc = json.loads(res.stdout)
+    top = doc["rows"][0]
+    assert top["in_trash"] == 1300 and top["in_trash_complete"] is True
+    assert top["trash_at"] == top["checked_at"] and top["trash_unresolved"] == 0
+    gap = next(r for r in doc["rows"] if r["kind"] == "gap")
+    assert gap["name"] == "(in trash)" and gap["size"] == 1300
+    assert doc["trash"] is not None and doc["trash"]["known"] == 0  # the stored pass
+    table = du("/my-files/A", "--refresh", "never")
+    assert "1.3 KiB" in table.stdout.splitlines()[1]
+
+
+def test_du_in_trash_shows_its_own_age_when_it_rests_on_an_older_pass(du):
+    assert du("/").exit_code == 0
+    _clock().advance(2 * 86400)
+    res = du("/my-files", "--refresh", "0", "--json")
+    top = _rows(res)[0]
+    assert top["trash_at"] == top["checked_at"] - 2 * 86400
+    table = du("/my-files", "--refresh", "never")
+    assert "0 B (2d old)" in table.stdout.splitlines()[1]
+
+
+def test_du_root_row_counts_unresolved_trashed_folders(du, drive):
+    drive.trash("/my-files/A/sub")
+    res = du("/", "--json")
+    assert res.exit_code == 3
+    rows = _rows(res)
+    assert rows[0]["path"] == "/" and rows[0]["trash_unresolved"] == 1
+    assert rows[0]["in_trash_complete"] is False and rows[0]["unchecked_bytes"] is None
+    assert all(r["trash_unresolved"] == 0 for r in rows[1:])
+    assert "unchecked: unknown" in du("/", "--refresh", "never").stdout
 
 
 def test_du_root_trashed_empty_folder_is_complete(du, drive):

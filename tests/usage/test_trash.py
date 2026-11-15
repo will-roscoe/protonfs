@@ -11,7 +11,13 @@ from protonfs.drive import DriveError
 from protonfs.usage.engine import UsageEngine
 from protonfs.usage.excludes import ExcludeRules
 from protonfs.usage.policy import RefreshPolicy
-from protonfs.usage.trash import EXCLUDED_REASON, TrashGroup, TrashSummary, run_trash_pass
+from protonfs.usage.trash import (
+    EXCLUDED_REASON,
+    TrashGroup,
+    TrashSummary,
+    figures_for,
+    run_trash_pass,
+)
 
 P = "/my-files/p"
 REVAL = RefreshPolicy.revalidate()
@@ -212,7 +218,8 @@ def test_summary_json_without_reasons_still_loads():
     assert group == TrashGroup(P, 0, 1, None) and group.reason is None
 
 
-def test_trash_for_subtree_lower_bound_with_unchecked(usage_cache, clock):
+def test_trash_for_with_unresolved_folders_has_unknown_unchecked(usage_cache, clock):
+    """An unresolved trashed folder could be anywhere, so no unchecked bound is claimed."""
     d = TreeDrive()
     d.add_file("/my-files/a/f", 100)
     d.add_file("/my-files/a/g", 200)
@@ -235,12 +242,99 @@ def test_trash_for_subtree_lower_bound_with_unchecked(usage_cache, clock):
 
     assert fig.known == 200
     assert not fig.complete
-    assert fig.unchecked_bytes == 190_000
-    total = usage_cache.figure("/my-files").size
-    assert fig.unchecked_share == 190_000 / total
+    assert fig.unchecked_bytes is None and fig.unchecked_share is None
     assert fig.at == clock.now
     assert eng.trash_for("/my-files/a").known == 200
     assert eng.trash_for("/my-files/b").known == 0
+
+
+ZERO = RefreshPolicy.parse("0")
+
+
+def _passed(usage_cache, clock):
+    """P listed and an empty trash pass stored at the current time; returns (drive, engine)."""
+    d = _probe()
+    eng = UsageEngine(d, usage_cache, clock=clock)
+    eng.breakdown(P, REVAL, NO_RULES, target=P)
+    eng.refresh_trash(REVAL, NO_RULES)
+    assert eng.trash_summary().complete and eng.trash_summary().total_known == 0
+    return d, eng
+
+
+def test_listing_newer_than_the_pass_replaces_its_figure_for_that_folder(usage_cache, clock):
+    """C1/R29: trash found by a later listing shows; the pass's figure for that folder is
+    replaced, never added to."""
+    d = _probe()
+    eng = UsageEngine(d, usage_cache, clock=clock)
+    eng.breakdown(P, REVAL, NO_RULES, target=P)
+    d.trash(P + "/a")
+    eng.refresh_trash(REVAL, NO_RULES)
+    pass_at = clock.now
+    assert eng.trash_for(P).known == 1048723
+    clock.advance(60)
+    d.trash(P + "/sub")
+    eng.breakdown(P, ZERO, NO_RULES, target=P)  # a newer listing: remainder a + sub
+
+    fig = eng.trash_for(P)
+
+    assert fig.known == 1048723 + 2097364 and fig.complete
+    assert fig.at == clock.now  # every folder under P was listed after the pass
+    top = eng.trash_for("/my-files")
+    assert top.known == 1048723 + 2097364 and top.complete
+    assert top.at == pass_at  # /my-files itself still rests on the pass
+    assert eng.trash_for("/").known == 1048723 + 2097364
+
+
+def test_unattributable_newer_listing_makes_the_figure_incomplete(usage_cache, clock):
+    d, eng = _passed(usage_cache, clock)
+    d.add_file(P + "/d/x", 10)
+    clock.advance(60)
+    d.trash(P + "/a")
+    d.fail_next("size", P + "/d", DriveError("throttled"))
+    eng.breakdown(P, ZERO, NO_RULES, target=P)
+
+    fig = eng.trash_for(P)
+
+    assert not fig.complete and fig.known == 0
+    # the bound is the size of the folder whose trash is unknown
+    assert fig.unchecked_bytes == usage_cache.figure(P).size
+    assert fig.unchecked_share == 1.0
+
+
+def test_a_relisted_parent_covers_the_trash_of_a_child_trashed_since(usage_cache, clock):
+    """No double count: once P is re-listed without sub, sub's own listing is not added."""
+    d, eng = _passed(usage_cache, clock)
+    clock.advance(60)
+    d.trash(P + "/sub/b")
+    eng.breakdown(P + "/sub", ZERO, NO_RULES, target=P + "/sub")
+    assert eng.trash_for(P).known == 2097364
+    clock.advance(60)
+    d.trash(P + "/sub")
+    eng.breakdown(P, ZERO, NO_RULES, target=P)  # sub's whole size is now P's remainder
+
+    fig = eng.trash_for(P)
+
+    assert fig.known == 2097364 and fig.complete
+    paths = ["/", "/my-files", P, P + "/sub"]
+    assert figures_for(eng, paths) == {p: eng.trash_for(p) for p in paths}
+
+
+def test_complete_figure_reads_no_snapshots(usage_cache, clock):
+    """M7: a complete figure needs no walk of the cached subtree."""
+    d = TreeDrive()
+    for i in range(30):
+        d.add_file(f"/my-files/f{i}/x", 10)
+    eng = UsageEngine(d, usage_cache, clock=clock)
+    eng.walk("/my-files", REVAL, NO_RULES)
+    eng.refresh_trash(REVAL, NO_RULES)
+    reads = []
+    real = usage_cache.snapshot
+    usage_cache.snapshot = lambda p: reads.append(p) or real(p)
+
+    fig = eng.trash_for("/my-files")
+
+    assert fig.complete and fig.known == 0
+    assert reads == []
 
 
 def test_trash_for_without_summary_uses_cached_gaps(usage_cache, clock):

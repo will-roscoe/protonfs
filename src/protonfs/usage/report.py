@@ -47,9 +47,13 @@ class DuRow:
     :ivar pct_used: percent of the account's used total, or ``None`` when that is unknown.
     :ivar pct_plan: percent of the configured plan size, or ``None`` when unset.
     :ivar in_trash: measured trash bytes whose original parent is within this folder (a
-        lower bound unless ``in_trash_complete``), or ``None`` when not applicable.
+        lower bound unless ``in_trash_complete``), or ``None`` when not applicable or no
+        trash pass is stored. It combines the last trash pass with any listing made since
+        (see :func:`~protonfs.usage.trash.figure_for`).
     :ivar in_trash_complete: whether ``in_trash`` is the whole answer, or ``None``.
-    :ivar unchecked_bytes: when incomplete, bytes that were not checked for trash.
+    :ivar unchecked_bytes: when incomplete, an upper bound on the trash ``in_trash``
+        leaves out (the bytes of the folders whose trash is unknown), or ``None`` when no
+        bound is known.
     :ivar checked_at: Unix time the figure was measured, or ``None``.
     :ivar age_seconds: ``now - checked_at``, or ``None``.
     :ivar state: ``listed``, ``sized``, ``excluded``, ``unmeasured``, ``error``,
@@ -58,6 +62,13 @@ class DuRow:
     :ivar exclusion: ``none``, ``freeze`` or ``hide``.
     :ivar gap_kind: ``none``, ``in_trash``, ``unattributed`` or ``unreconciled``.
     :ivar error: the failure text when ``state`` is ``error``, else ``None``.
+    :ivar trash_at: Unix time of the oldest measurement behind ``in_trash`` (the trash
+        pass, or listings made after it), or ``None`` when ``in_trash`` is ``None``. It can
+        be older than ``checked_at``: ``--refresh`` below ``/`` does not rerun the trash
+        pass.
+    :ivar trash_unresolved: on the ``/`` row, the trashed folders whose size is unknown
+        because the folder they came from is not cached (``in_trash`` is then a lower
+        bound); ``0`` on every other row and when no trash pass is stored.
 
     .. versionadded:: 3.4.0
     """
@@ -80,6 +91,8 @@ class DuRow:
     exclusion: str
     gap_kind: str
     error: str | None = None
+    trash_at: float | None = None
+    trash_unresolved: int = 0
 
 
 #: Row field names in order: the plain-format columns and the JSON row keys.
@@ -135,13 +148,19 @@ class _Collector:
 
         Without a stored pass every folder's figure would be a vacuous "≥ 0 B".
         """
-        if self.engine.trash_summary() is None:
+        from .trash import figures_for
+
+        summary = self.engine.trash_summary()
+        if summary is None or not self.trash_rows:
             return
+        figures = figures_for(self.engine, [self.rows[i].path for i in self.trash_rows])
         for i in self.trash_rows:
-            fig = self.engine.trash_for(self.rows[i].path)
+            path = self.rows[i].path
+            fig = figures[path]
             self.rows[i] = dataclasses.replace(
                 self.rows[i], in_trash=fig.known, in_trash_complete=fig.complete,
-                unchecked_bytes=fig.unchecked_bytes,
+                unchecked_bytes=fig.unchecked_bytes, trash_at=fig.at,
+                trash_unresolved=summary.unresolved_folders if path == "/" else 0,
             )
 
     def gap(self, depth, bd: Breakdown):
@@ -301,7 +320,8 @@ def to_json(
 
     :param rows: the rows to include.
     :param target: the target's Drive path.
-    :param trash: the stored trash summary, or ``None`` when no pass has run.
+    :param trash: the stored trash summary (whatever the target), or ``None`` when no
+        pass has run.
     :param used_total: account used bytes, or ``None``.
     :param plan_size: plan size in bytes, or ``None``.
     :param now: Unix time of generation.
@@ -346,29 +366,51 @@ def render_plain(rows: list[DuRow]) -> list[str]:
     return ["\t".join(cell(getattr(r, k)) for k in JSON_ROW_KEYS) for r in rows]
 
 
-def trash_cell(row: DuRow) -> str:
+def trash_cell(row: DuRow, *, now: float | None = None) -> str:
     """Return the ``In trash`` cell text for ``row``.
 
     Complete: the size. Incomplete: ``≥ X (Y / Z% unchecked)``, or ``≥ X (unchecked:
-    unknown)`` when the unchecked bytes are unknown.
+    unknown)`` when the unchecked bytes are unknown. With ``now``, the figure's own age is
+    added (``0 B (2d old)``, ``≥ X (Y / Z% unchecked, 2d old)``) whenever it reads
+    differently from the row's Age column.
+
+    :param row: the row.
+    :param now: Unix time the ages are measured at, or ``None`` to leave the age out.
+    :returns: the cell text; empty when the row has no trash figure, ``—`` for a file.
 
     .. versionadded:: 3.4.0
     """
     from protonfs.commands.ls import human_size
+    from protonfs.retention import format_age
 
     if row.in_trash is None:
         return "—" if row.kind == "file" else ""
+    age = None
+    if now is not None and row.trash_at is not None:
+        age = format_age(max(0.0, now - row.trash_at))
+        if row.age_seconds is not None and age == format_age(row.age_seconds):
+            age = None
+    old = [] if age is None else [f"{age} old"]
     if row.in_trash_complete:
-        return human_size(row.in_trash)
+        return human_size(row.in_trash) + (f" ({old[0]})" if old else "")
     head = f"≥ {human_size(row.in_trash)}"
     if row.unchecked_bytes is None or not row.size:
-        return f"{head} (unchecked: unknown)"
+        return f"{head} ({', '.join(['unchecked: unknown', *old])})"
     share = round(row.unchecked_bytes / row.size * 100)
-    return f"{head} ({human_size(row.unchecked_bytes)} / {share}% unchecked)"
+    note = f"{human_size(row.unchecked_bytes)} / {share}% unchecked"
+    return f"{head} ({', '.join([note, *old])})"
 
 
-def render_table(rows: list[DuRow], console: Console, *, title: str | None = None) -> None:
+def render_table(
+    rows: list[DuRow], console: Console, *, title: str | None = None, now: float | None = None
+) -> None:
     """Print ``rows`` as a rich table (names indented two spaces per depth).
+
+    :param rows: the rows to print.
+    :param console: where to print them.
+    :param title: printed above the table, if given.
+    :param now: Unix time the rows' ages were taken at; with it, an In-trash figure older
+        than its row says its own age (see :func:`trash_cell`).
 
     .. versionadded:: 3.4.0
     """
@@ -396,7 +438,7 @@ def render_table(rows: list[DuRow], console: Console, *, title: str | None = Non
             name,
             "" if r.size is None else human_size(r.size),
             pct(r.pct_parent, r), pct(r.pct_used, r), pct(r.pct_plan, r),
-            items, trash_cell(r),
+            items, trash_cell(r, now=now),
             "" if r.age_seconds is None else format_age(r.age_seconds),
             r.state if r.exclusion == "none" else f"{r.state} ({r.exclusion})",
         )

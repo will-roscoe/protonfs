@@ -831,7 +831,8 @@ def ls(
 @click.option("-D", "--dirs-only", "dirs_only", is_flag=True, help="Hide file rows.")
 @click.option("--refresh", default=None, metavar="DURATION|0|never",
               help="Re-measure figures older than this (default: config du.refresh, else "
-              "5d). 0 fetches everything fresh; never uses the cache only.")
+              "5d). 0 fetches everything fresh (but only du / reruns the trash pass); "
+              "never uses the cache only.")
 @click.option("--format", "fmt", type=click.Choice(["table", "plain", "json"]), default=None,
               help="Output format: rich table (default), tab-separated lines, or JSON.")
 @click.option("--json", "as_json", is_flag=True, help="Shorthand for --format json.")
