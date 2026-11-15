@@ -169,7 +169,8 @@ class UsageEngine:
         cached figure, if any, is shown. ``"/"`` returns :meth:`root`; ``"/devices"`` is
         never sized: its entries are the devices from the device list, each measured like
         :meth:`figure`, its ``size`` their sum and ``gap`` ``None`` (``PARTIAL`` when a
-        device is hidden or has no figure, ``ERROR`` when the device list failed); a path
+        device is hidden or has no figure, ``ERROR`` when the device list failed); a device
+        path shared by several devices is ``ERROR`` with no calls; a path
         outside ``/my-files`` and ``/devices`` is ``UNMEASURED`` with no calls; a path that
         ``rules`` exclude is answered from the cache with state ``EXCLUDED``.
 
@@ -220,6 +221,10 @@ class UsageEngine:
             view = self._devices_view(policy, ExcludeRules(), DEVICES_PATH)
             return Entry("devices", DEVICES_PATH, "folder", None, view.size, view.descendants,
                          view.at, view.state, Exclusion.NONE, None, True, view.error)
+        ambiguous = self._ambiguous_device(path)
+        if ambiguous is not None:
+            return replace(self._figure_entry(path, None), state=NodeState.ERROR,
+                           error=ambiguous)
         now = self.clock()
         fig = self.cache.figure(path)
         if policy.never or (
@@ -348,11 +353,12 @@ class UsageEngine:
             cached and no listing made, e.g. under ``never`` or ``-x devices``) a
             ``/devices`` entry stands in, ``UNMEASURED`` (``EXCLUDED`` when frozen); a
             failed device listing adds a ``/devices`` entry with state ``ERROR`` and keeps
-            any cached device list. ``size`` is the sum of the measured entries (``None``
-            if none is), ``at`` and ``oldest_at`` the oldest of their times, and ``gap`` is
-            ``None`` with ``gap_kind`` ``NONE``. ``state`` is ``PARTIAL`` when a section
-            other than ``/photos`` is hidden or has no figure, so ``size`` understates
-            "used"; otherwise ``LISTED``.
+            any cached device list. Devices that share a name get one ``ERROR`` entry and
+            no calls: proton-drive cannot size them apart. ``size`` is the sum of the
+            measured entries (``None`` if none is), ``at`` and ``oldest_at`` the oldest of
+            their times, and ``gap`` is ``None`` with ``gap_kind`` ``NONE``. ``state`` is
+            ``PARTIAL`` when a section other than ``/photos`` is hidden or has no figure,
+            so ``size`` understates "used"; otherwise ``LISTED``.
 
         Side effect (unless ``trash`` is false): :meth:`refresh_trash`.
 
@@ -384,8 +390,12 @@ class UsageEngine:
                      else NodeState.UNMEASURED)
             entries.append(Entry("devices", "/devices", "section", None, None, None, None,
                                  state, x_devices, None, True, None))
+        seen: set[str] = set()
         for name, uid, decrypted in devices or []:
             dpath = child_path("/devices", name, uid, decrypted)
+            if dpath in seen:  # same-named devices: one ERROR row for the name
+                continue
+            seen.add(dpath)
             x = rules.match(relative(dpath, "/"), True)
             if x is Exclusion.HIDE:
                 partial = True
@@ -541,13 +551,16 @@ class UsageEngine:
         """Return the cached ``/my-files`` figure plus every cached device figure.
 
         :returns: bytes, or ``None`` if the ``/my-files`` figure, the device list (cached
-            by :meth:`root`) or any device's figure is missing. No Drive calls are made.
+            by :meth:`root`) or any device's figure is missing, or two devices share a
+            name (neither can be sized). No Drive calls are made.
 
         .. versionadded:: 3.4.0
         """
         fig = self.cache.figure("/my-files")
         devices = self.device_paths()
         if fig is None or fig.size is None or devices is None:
+            return None
+        if len(set(devices)) < len(devices):
             return None
         total = fig.size
         for dpath in devices:
@@ -604,6 +617,10 @@ class UsageEngine:
             return replace(cached, state=NodeState.EXCLUDED)
         if path == DEVICES_PATH:
             return self._devices_view(policy, rules, target)
+        ambiguous = self._ambiguous_device(path)
+        if ambiguous is not None:
+            return Breakdown(path, None, None, None, NodeState.ERROR, (), None, GapKind.NONE,
+                             None, None, ambiguous)
         now = self.clock()
         snap = self.cache.snapshot(path)
         if policy.never or self._is_fresh(snap, path, policy, rules, target, now):
@@ -917,8 +934,12 @@ class UsageEngine:
                              None, None, error)
         entries: list[Entry] = []
         hidden = False
+        seen: set[str] = set()
         for name, uid, decrypted in devices:
             dpath = child_path(DEVICES_PATH, name, uid, decrypted)
+            if dpath in seen:  # same-named devices: one ERROR row for the name
+                continue
+            seen.add(dpath)
             x = rules.match(relative(dpath, target), True)
             if x is Exclusion.HIDE:
                 hidden = True
@@ -944,6 +965,18 @@ class UsageEngine:
             oldest, state, tuple(entries), None, GapKind.NONE, oldest,
             max(times) if times else None, error,
         )
+
+    def _ambiguous_device(self, path: str) -> str | None:
+        """Why ``path`` cannot be sized when several cached devices share its name, else
+        ``None``."""
+        if parent_of(path) != DEVICES_PATH:
+            return None
+        count = sum(1 for p in self.device_paths() or () if p == path)
+        if count < 2:
+            return None
+        name = split(path)[-1]
+        return (f"{count} devices are named {name!r}; proton-drive cannot size them apart "
+                "(sizing by uid fails, by name is ambiguous)")
 
     def _section_entry(self, path: str, policy: RefreshPolicy, excl: Exclusion) -> Entry:
         if excl is Exclusion.FREEZE:

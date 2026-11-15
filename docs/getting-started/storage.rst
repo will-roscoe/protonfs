@@ -47,7 +47,9 @@ listings, and ``du`` says where it could not check it:
    protonfs du '/my-files/sph-dev/sim/*'    # each folder under sim
 
 ``/devices`` is the sum of your devices: Proton's CLI cannot size ``/devices`` itself, so
-``du`` lists the devices and sizes each one.
+``du`` lists the devices and sizes each one. Two devices with the same name cannot be
+sized apart (by uid fails, by name is ambiguous), so ``du`` shows that name as an error
+and the total as partial rather than counting one device twice.
 
 What the columns mean
 ---------------------

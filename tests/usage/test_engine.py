@@ -1010,3 +1010,40 @@ def test_devices_view_honours_exclusions_and_never(usage_cache, clock):
     bd = eng.breakdown("/devices", FIVE_DAYS, ExcludeRules(hide=["desk"]), "/devices")
     assert [e.path for e in bd.entries] == ["/devices/laptop"]
     assert not _touches(d.calls, "/devices/desk")
+
+
+def _twin_devices(d):
+    """Make ``list /devices`` return two devices both named "twin" (TreeDrive keys by path)."""
+    real = d.list_dir
+
+    def listing(path, *, expected_entries=None):
+        out = real(path, expected_entries=expected_entries)
+        if path == "/devices":
+            (twin,) = [e for e in out if e.name == "laptop"]
+            out = [e for e in out if e.name != "laptop"]
+            out += [replace(twin, name="twin", uid=f"dev-{i}") for i in (1, 2)]
+        return out
+
+    d.list_dir = listing
+
+
+def test_devices_sharing_a_name_are_an_error_not_counted_twice(usage_cache, clock):
+    """R40: proton-drive cannot size two same-named devices apart (by uid fails, by name is
+    ambiguous), so neither is sized and / is partial."""
+    d = _root_tree()
+    _twin_devices(d)
+    eng = UsageEngine(d, usage_cache, clock=clock)
+
+    bd = eng.root(FIVE_DAYS, NO_RULES)
+
+    twins = [e for e in bd.entries if e.path == "/devices/twin"]
+    assert len(twins) == 1 and twins[0].state is NodeState.ERROR
+    assert "2 devices are named 'twin'" in twins[0].error
+    assert not _touches(d.calls, "/devices/twin")
+    assert bd.state is NodeState.PARTIAL and eng.used_total() is None
+    view = eng.breakdown("/devices", FIVE_DAYS, NO_RULES, target="/devices")
+    assert [e.state for e in view.entries if e.path == "/devices/twin"] == [NodeState.ERROR]
+    assert view.state is NodeState.PARTIAL
+    direct = eng.breakdown("/devices/twin", FIVE_DAYS, NO_RULES, target="/devices/twin")
+    assert direct.state is NodeState.ERROR and "ambiguous" in direct.error
+    assert not _touches(d.calls, "/devices/twin")
