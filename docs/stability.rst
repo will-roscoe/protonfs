@@ -516,7 +516,8 @@ flag/argument name; these names, not just their presence, are frozen.
        written to stdout, ``http://HOST:PORT/?t=TOKEN`` (an IPv6 host in brackets). The
        HTTP API under ``/api/`` serves the bundled page and is not covered.
      - With ``--gui``: ``0`` when stopped with Ctrl-C; ``1`` when the port is in use, the
-       address cannot be bound or the log cannot be opened. Otherwise: ``0`` complete; ``1`` the target's own figure could not be measured, or a config
+       address cannot be bound or the log cannot be opened; ``2`` usage error, including no
+       ``PATH`` outside a store. Otherwise: ``0`` complete; ``1`` the target's own figure could not be measured, or a config
        or Drive error; ``2`` usage error (also ``--listen``/``--port``/``--log`` without
        ``--gui``, and ``-d`` with ``--mindepth``/``--maxdepth``); ``3`` partial results:
        a row is in state ``error``, the ``/`` total leaves out an unmeasurable section, or

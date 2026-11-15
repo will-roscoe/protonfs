@@ -265,6 +265,12 @@ def test_du_gui_forbidden_flags(du, extra):
     assert res.exit_code == 2
 
 
+def test_du_gui_outside_a_store_is_usage_error(du, gui_calls, tmp_path):
+    res = du("--gui")
+    assert res.exit_code == 2, res.output + res.stderr
+    assert str(tmp_path) in res.stderr and gui_calls == []
+
+
 def test_du_gui_exit_code_is_run_guis(du, monkeypatch):
     monkeypatch.setattr("protonfs.webui.server.run_gui", lambda *a, **k: 4)
     assert du("--gui", "/my-files").exit_code == 4

@@ -870,6 +870,9 @@ def du(path, exclude_updates, exclude, mindepth, maxdepth, depth, dirs_only, ref
     try:
         targets = [resolve_target(a, Path.cwd()) for a in (path or (None,))]
     except TargetError as exc:
+        # --gui needs exactly one PATH or the current store mapping, else a usage error.
+        if gui:
+            raise click.UsageError(str(exc)) from exc
         raise click.ClickException(str(exc)) from exc
     if gui:
         from protonfs.webui.server import run_gui
