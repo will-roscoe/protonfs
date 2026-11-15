@@ -115,6 +115,25 @@ clone. Run ``protonfs setup`` once per machine and then carry on with ``refresh`
 
 .. seealso:: :doc:`syncing` for the push/pull/status model in depth.
 
+Working from a subdirectory
+---------------------------
+Like git, protonfs finds its store from anywhere inside it: the nearest parent directory
+(or the current one) that holds ``.protonfs/``. ``PATH`` arguments are relative to where
+you are, and messages name paths the same way.
+
+.. code-block:: bash
+
+   cd ~/my-project/sim
+   protonfs push mload005        # the same as `protonfs push sim/mload005` at the root
+   protonfs pull 'mload00*'      # a quoted pattern expands from here too
+   protonfs push ../other/run1   # a sibling directory
+   protonfs push /elsewhere/x    # outside the store: an error, exit 2
+
+``setup`` is the exception: it creates a store in the directory you run it from, and
+``deinit`` must be run from the store root.
+
+.. versionadded:: 3.4.0
+
 Walkthrough: a headless server (SSH, no desktop)
 ------------------------------------------------
 proton-drive stores its session in the OS keyring, which over SSH usually has no
