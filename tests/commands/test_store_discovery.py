@@ -233,21 +233,27 @@ def test_rm_path_is_relative_to_the_current_directory(store, monkeypatch) -> Non
     assert ctx.index.get("sim/mload006/d1") is not None
 
 
-def test_implicit_scope_is_the_whole_store_for_now(store, monkeypatch) -> None:
-    """The single place that decides what a command with no PATH covers from a
-    subdirectory (#232); ``None`` is the whole store."""
+def test_implicit_scope_is_the_current_subdirectory(store) -> None:
+    """The single place that decides what a command with no PATH covers (#232): the
+    current subdirectory, or ``None`` (the whole store) at the store root."""
     root, _ = store
     ctx = load_context(root)
-    assert _implicit_scope(ctx, root / "sim") is None
+    assert _implicit_scope(ctx, root / "sim") == "sim"
+    assert _implicit_scope(ctx, root / "sim" / "mload005") == "sim/mload005"
     assert _implicit_scope(ctx, root) is None
 
 
-def test_status_without_a_path_from_a_subdirectory(store, monkeypatch) -> None:
+def test_status_without_a_path_from_a_subdirectory_counts_only_that_subtree(
+    store, monkeypatch
+) -> None:
     root, _ = store
     monkeypatch.chdir(root / "sim")
     result = _run("status")
     assert result.exit_code == 1, result.output  # local-only files present: drift
-    assert "local-only: 3" in result.output  # whole store, not just sim/
+    assert "local-only: 2" in result.output  # sim/ only, not the 3 files in the store
+    assert "current directory" in result.output  # says what it covered
+    monkeypatch.chdir(root)
+    assert "local-only: 3" in _run("status").output
 
 
 def test_symlinked_cwd_resolves_to_the_store(store, monkeypatch, tmp_path) -> None:
@@ -516,7 +522,7 @@ def test_ls_dirs_table_rows_are_as_typed_but_machine_rows_are_not(store, monkeyp
     monkeypatch.chdir(root / "sim")
     table = _run("ls", "--dirs", "mload005")
     assert "sim/mload005" not in table.output
-    assert "../other" in _run("ls", "--dirs").output  # no PATH: the whole store, as typed
+    assert "../other" in _run("ls", "--dirs", "/").output  # "/" is the whole store, shown as typed
     rows = json.loads(_run("ls", "--dirs", "--format", "json", "mload005").output)
     assert rows[0]["path"] == "."  # unchanged machine contract: relative to the listed PATH
 
@@ -528,3 +534,100 @@ def test_invocation_dir_is_resolved_once(store, monkeypatch) -> None:
     assert ctx.invocation_dir() == (root / "sim").resolve()
     monkeypatch.chdir(root)
     assert ctx.invocation_dir() == (root / "sim").resolve()
+
+
+# --- no PATH from a subdirectory acts on that subdirectory (#232) --------------------
+
+
+def test_push_without_a_path_pushes_only_the_current_subdirectory(store, monkeypatch) -> None:
+    root, _ = store
+    monkeypatch.chdir(root / "sim")
+    result = _run("push")
+    assert result.exit_code == 0, result.output
+    ctx = load_context(root)
+    assert ctx.index.get("sim/mload005/d1") is not None
+    assert ctx.index.get("sim/mload006/d1") is not None
+    assert ctx.index.get("other/x") is None
+
+
+def test_push_without_a_path_at_the_root_pushes_the_whole_store(store) -> None:
+    root, _ = store
+    assert _run("push").exit_code == 0
+    assert load_context(root).index.get("other/x") is not None
+
+
+def test_push_slash_overrides_the_subdirectory_scope(store, monkeypatch) -> None:
+    root, _ = store
+    monkeypatch.chdir(root / "sim")
+    assert _run("push", "/").exit_code == 0
+    assert load_context(root).index.get("other/x") is not None
+
+
+def test_nothing_to_push_names_the_subdirectory(store, monkeypatch) -> None:
+    root, _ = store
+    (root / "empty").mkdir()
+    monkeypatch.chdir(root / "empty")
+    result = _run("push")
+    assert "nothing to push under 'empty'" in result.output
+
+
+def test_pull_without_a_path_restores_only_the_current_subdirectory(
+    store, monkeypatch
+) -> None:
+    root, _ = store
+    assert _run("push").exit_code == 0
+    assert _run("offload", "--yes", "--min-age=0").exit_code == 0
+    monkeypatch.chdir(root / "sim")
+    result = _run("pull")
+    assert result.exit_code == 0, result.output
+    assert (root / "sim" / "mload005" / "d1").exists()
+    assert not (root / "other" / "x").exists()
+
+
+def test_offload_without_a_path_offloads_only_the_current_subdirectory(
+    store, monkeypatch
+) -> None:
+    root, _ = store
+    assert _run("push").exit_code == 0
+    monkeypatch.chdir(root / "sim")
+    assert _run("offload", "--yes", "--min-age=0").exit_code == 0
+    assert not (root / "sim" / "mload005" / "d1").exists()
+    assert (root / "other" / "x").exists()
+
+
+def test_ls_without_a_path_lists_only_the_current_subdirectory(store, monkeypatch) -> None:
+    root, _ = store
+    assert _run("push").exit_code == 0
+    monkeypatch.chdir(root / "sim")
+    result = _run("ls", "--format", "plain")
+    rows = [line.split("\t")[0] for line in result.output.splitlines() if "\t" in line]
+    assert rows == ["sim/mload005/d1", "sim/mload006/d1"]
+
+
+def test_schedule_without_a_path_is_scoped_to_the_subdirectory(store, monkeypatch) -> None:
+    root, _ = store
+    seen: dict = {}
+
+    class Job:
+        id, cron, command, wrapper_path, log_path = "j", "* * * * *", "push", "w", "l"
+        drive_cache_home = None
+
+    monkeypatch.setattr(
+        "protonfs.commands.schedule.add_job", lambda repo, **kw: seen.update(kw) or Job()
+    )
+    monkeypatch.chdir(root / "sim")
+    assert _run("schedule", "--add", "--every", "daily").exit_code == 0
+    assert seen["path"] == "sim"
+    monkeypatch.chdir(root)
+    seen.clear()
+    assert _run("schedule", "--add", "--every", "daily").exit_code == 0
+    assert seen["path"] is None
+
+
+def test_scoped_directory_named_like_a_glob_stays_literal(globby, monkeypatch) -> None:
+    root, _ = globby
+    monkeypatch.chdir(root / GLOBBY)
+    assert _run("push").exit_code == 0
+    ctx = load_context(root)
+    assert ctx.index.get("run[1]/x") is not None
+    assert ctx.index.get("run1/x") is None

@@ -260,6 +260,15 @@ every command behaves as it did before 3.4.0; run from a subdirectory, which fai
   store-relative paths, as git pathspecs are: ``protonfs push mload005`` in ``sim/`` means
   what ``protonfs push sim/mload005`` means at the root. ``.`` is the current directory and
   ``..`` works. An absolute local path is accepted.
+* **No PATH from a subdirectory** acts on that subdirectory only, as ``du`` does:
+  ``protonfs push`` in ``sim/`` is ``protonfs push sim``, and likewise for ``pull``,
+  ``status``, ``ls``, ``refresh``, ``offload``, ``prune``, ``import``, ``export`` and
+  ``schedule --add`` (whose job is stored with that path). Pass ``/`` (or ``..`` up to
+  the root) to cover the whole store. From the store root, no PATH means the whole store,
+  exactly as before. A note on stderr names the directory, and ``nothing to push``,
+  ``nothing to import`` and ``nothing to export`` say ``under '<dir>'``, so a summary is
+  never read as covering the whole store. Commands without a PATH (``verify``, ``trash``,
+  ``doctor``, ``config``, ``upgrade``) are unaffected.
 * A bare ``/`` still means the whole store, from the store root and from any
   subdirectory (it is not a path outside the store). ``rm`` and ``restore`` refuse the
   store root itself (``.``, ``..`` up to it, its absolute path or ``/``) with a usage

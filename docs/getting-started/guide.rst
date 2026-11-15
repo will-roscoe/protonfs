@@ -129,6 +129,10 @@ you are, and messages name paths the same way.
    protonfs push ../other/run1   # a sibling directory
    protonfs push /elsewhere/x    # outside the store: an error, exit 2
 
+With no PATH, a command acts on the directory you are in, not the whole store:
+``protonfs push`` in ``sim/`` pushes ``sim/`` only (``protonfs push /`` pushes everything).
+From the store root, no PATH still means the whole store.
+
 ``setup`` is the exception: it creates a store in the directory you run it from, and
 ``deinit`` must be run from the store root.
 

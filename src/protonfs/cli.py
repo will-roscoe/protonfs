@@ -185,20 +185,22 @@ def _implicit_scope(ctx, cwd: Path) -> str | None:
     """The store-relative subtree a command acts on when given no PATH, run from ``cwd``.
 
     The one place that decides what "no PATH" means from a subdirectory of a store
-    (#232). ``None`` means the whole store, as ``git status`` covers the whole work tree.
+    (#232): that subdirectory, as for ``du``. From the store root it is the whole store.
 
     :param ctx: the loaded :class:`~protonfs.context.RepoContext`.
     :param cwd: the directory the command was run from, inside ``ctx.root``.
     :returns: a store-relative path, or ``None`` for the whole store.
     """
-    return None
+    rel = Path(cwd).relative_to(ctx.root).as_posix()
+    return None if rel == "." else rel
 
 
 def _store_paths(ctx, path: tuple[str, ...], *, glob: bool = True) -> tuple[str, ...]:
     """Map PATH arguments typed relative to the current directory to store-relative ones.
 
     With no PATH the result is :func:`_implicit_scope`'s subtree (empty when that is the
-    whole store, which every command already reads as "no PATH given").
+    whole store, which every command already reads as "no PATH given"); a note on stderr
+    says so, so a summary is not read as covering the whole store.
 
     :raises click.UsageError: naming every argument that resolves outside the store.
 
@@ -206,7 +208,14 @@ def _store_paths(ctx, path: tuple[str, ...], *, glob: bool = True) -> tuple[str,
     """
     if not path:
         scope = _implicit_scope(ctx, ctx.invocation_dir())
-        return (scope,) if scope else ()
+        if not scope:
+            return ()
+        click.echo(
+            f"note: no PATH given; acting on the current directory ({scope}), not the "
+            "whole store. Pass / for the whole store.",
+            err=True,
+        )
+        return (_Literal(scope),)
     mapped: list[str] = []
     outside: list[str] = []
     for arg in path:
@@ -226,6 +235,13 @@ def _store_paths(ctx, path: tuple[str, ...], *, glob: bool = True) -> tuple[str,
             f"path(s) outside the protonfs store at {ctx.root}: {listed}"
         )
     return tuple(mapped)
+
+
+def _under(ctx, path: tuple[str, ...]) -> str:
+    """`` under '<dir>'`` when a no-PATH command was scoped to the current subdirectory,
+    for summaries that would otherwise read as covering the whole store."""
+    scope = None if path else _implicit_scope(ctx, ctx.invocation_dir())
+    return f" under {scope!r}" if scope else ""
 
 
 def _schedule_path(ctx, path: str | None) -> str | None:
@@ -772,8 +788,8 @@ def status(path: tuple[str, ...], fmt: str, remote: bool) -> None:
     changed on both sides). Conflict outranks drift when both are present.
 
     .. versionchanged:: 3.4.0
-       Run from a subdirectory of a store it finds the store, and PATH is read relative to
-       the current directory (#232).
+       Run from a subdirectory of a store it finds the store, PATH is read relative to
+       the current directory, and with no PATH it acts on that subdirectory (#232).
     """
     from collections import Counter
 
@@ -907,8 +923,8 @@ def ls(
     --visual treemap|waffle draws a storage-usage chart of those directories.
 
     .. versionchanged:: 3.4.0
-       Run from a subdirectory of a store it finds the store, and PATH is read relative to
-       the current directory (#232).
+       Run from a subdirectory of a store it finds the store, PATH is read relative to
+       the current directory, and with no PATH it acts on that subdirectory (#232).
     """
     from rich.console import Console
 
@@ -1196,8 +1212,8 @@ def push(
        locally that stay on Drive are counted as ``local-deleted=`` (#197).
 
     .. versionchanged:: 3.4.0
-       Run from a subdirectory of a store it finds the store, and PATH is read relative to
-       the current directory (#232).
+       Run from a subdirectory of a store it finds the store, PATH is read relative to
+       the current directory, and with no PATH it acts on that subdirectory (#232).
     """
     from protonfs.commands.push import push as push_files
     from protonfs.context import load_context
@@ -1261,7 +1277,7 @@ def push(
         # it is excluded by the ignore rules) would otherwise print only the bare zero
         # summary. Say so in plain language -- and at DEFAULT verbosity, which the Reporter
         # cannot do (reporter.done() renders only at -v and above).
-        click.echo("nothing to push")
+        click.echo(f"nothing to push{_under(ctx, path)}")
     click.echo(_transfer_summary(result))
     if dry_run:
         for rel in result.trashed:
@@ -1360,8 +1376,8 @@ def import_cmd(path: tuple[str, ...], dry_run: bool, strict: bool) -> None:
     .. versionadded:: 3.1.0
 
     .. versionchanged:: 3.4.0
-       Run from a subdirectory of a store it finds the store, and PATH is read relative to
-       the current directory (#232).
+       Run from a subdirectory of a store it finds the store, PATH is read relative to
+       the current directory, and with no PATH it acts on that subdirectory (#232).
     """
     from protonfs import gitops
     from protonfs.context import load_context
@@ -1393,7 +1409,7 @@ def _import(ctx, path: tuple[str, ...], dry_run: bool, strict: bool) -> None:
     _report_unmatched(unmatched, strict, "import", ctx)
     files = _tracked_under(subpaths, tracked)
     if not files:
-        click.echo("nothing to import")
+        click.echo(f"nothing to import{_under(ctx, path)}")
         return
     with repo_lock(ctx.root), _resumable_on_interrupt(ctx, "import"):
         result = import_from_git(ctx, files, dry_run=dry_run)
@@ -1511,8 +1527,8 @@ def export_cmd(path: tuple[str, ...], dry_run: bool, strict: bool, trash_remote:
     .. versionadded:: 3.1.0
 
     .. versionchanged:: 3.4.0
-       Run from a subdirectory of a store it finds the store, and PATH is read relative to
-       the current directory (#232).
+       Run from a subdirectory of a store it finds the store, PATH is read relative to
+       the current directory, and with no PATH it acts on that subdirectory (#232).
     """
     from protonfs import gitops
     from protonfs.context import load_context
@@ -1558,7 +1574,7 @@ def _export(ctx, path: tuple[str, ...], dry_run: bool, strict: bool, trash_remot
     _report_unmatched(unmatched, strict, "export", ctx)
     files = _held_under(subpaths, ctx.index, gitops.tracked_files(ctx.root))
     if not files:
-        click.echo("nothing to export")
+        click.echo(f"nothing to export{_under(ctx, path)}")
         return
     with repo_lock(ctx.root), _resumable_on_interrupt(ctx, "export"):
         result = export_to_git(ctx, files, dry_run=dry_run, trash_remote=trash_remote)
@@ -1715,8 +1731,8 @@ def pull(
        them alone). Without it, ``--refresh`` reports how many such files it left alone.
 
     .. versionchanged:: 3.4.0
-       Run from a subdirectory of a store it finds the store, and PATH is read relative to
-       the current directory (#232).
+       Run from a subdirectory of a store it finds the store, PATH is read relative to
+       the current directory, and with no PATH it acts on that subdirectory (#232).
     """
     from protonfs import manifest
     from protonfs.commands.pull import pull as pull_files
@@ -1899,8 +1915,8 @@ def offload(
        (#171).
 
     .. versionchanged:: 3.4.0
-       Run from a subdirectory of a store it finds the store, and PATH is read relative to
-       the current directory (#232).
+       Run from a subdirectory of a store it finds the store, PATH is read relative to
+       the current directory, and with no PATH it acts on that subdirectory (#232).
     """
     from protonfs.commands.offload import OffloadResult
     from protonfs.commands.offload import offload as offload_files
@@ -1978,8 +1994,8 @@ def prune(
     push that ran first failed for some file, or a Drive/lock error; 2 usage error.
 
     .. versionchanged:: 3.4.0
-       Run from a subdirectory of a store it finds the store, and PATH is read relative to
-       the current directory (#232).
+       Run from a subdirectory of a store it finds the store, PATH is read relative to
+       the current directory, and with no PATH it acts on that subdirectory (#232).
     """
     from protonfs.commands.offload import OffloadResult
     from protonfs.commands.prune import prune as prune_files
@@ -2039,8 +2055,8 @@ def rm(path: tuple[str, ...], recursive: bool, force: bool, yes: bool) -> None:
     """Remove files/directories from Drive (trash by default, -f for permanent).
 
     .. versionchanged:: 3.4.0
-       Run from a subdirectory of a store it finds the store, and PATH is read relative to
-       the current directory (#232).
+       Run from a subdirectory of a store it finds the store, PATH is read relative to
+       the current directory, and with no PATH it acts on that subdirectory (#232).
     """
     from protonfs.commands.rm import rm as rm_path
     from protonfs.context import load_context
@@ -2071,8 +2087,8 @@ def restore(path: tuple[str, ...]) -> None:
     """Restore trashed files/directories on Drive.
 
     .. versionchanged:: 3.4.0
-       Run from a subdirectory of a store it finds the store, and PATH is read relative to
-       the current directory (#232).
+       Run from a subdirectory of a store it finds the store, PATH is read relative to
+       the current directory, and with no PATH it acts on that subdirectory (#232).
     """
     from protonfs.commands.restore import restore as restore_path
     from protonfs.context import load_context
@@ -2094,8 +2110,8 @@ def refresh(path: tuple[str, ...], prune: bool) -> None:
     """Discover remote files and seed the local index (any number of PATHs).
 
     .. versionchanged:: 3.4.0
-       Run from a subdirectory of a store it finds the store, and PATH is read relative to
-       the current directory (#232).
+       Run from a subdirectory of a store it finds the store, PATH is read relative to
+       the current directory, and with no PATH it acts on that subdirectory (#232).
     """
     from protonfs.commands.refresh import RefreshResult
     from protonfs.commands.refresh import refresh as refresh_index
@@ -2476,8 +2492,8 @@ def schedule(
        sync jobs (#197).
 
     .. versionchanged:: 3.4.0
-       Run from a subdirectory of a store it finds the store, and PATH is read relative to
-       the current directory (#232).
+       Run from a subdirectory of a store it finds the store, PATH is read relative to
+       the current directory, and with no PATH it acts on that subdirectory (#232).
     """
     import json as _json
 
