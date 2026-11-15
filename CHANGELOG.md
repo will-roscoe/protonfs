@@ -8,6 +8,12 @@ from its Conventional Commit messages and, if warranted, tagged automatically.
 
 ## [Unreleased]
 
+## [3.4.0] - 2026-11-15
+
+### Features
+
+- storage analysis (du), store discovery from subdirectories, trash and migrate-lfs fixes (#238)
+
 ## [3.3.3] - 2026-11-12
 
 ### Bug fixes
@@ -844,7 +850,8 @@ the preceding development history and its first tagged release:
   line-matching, git-mutation error wrapping, `pathspec` deprecation, subpath
   prune data-loss fix.
 
-[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v3.3.3...HEAD
+[Unreleased]: https://github.com/will-roscoe/protonfs/compare/v3.4.0...HEAD
+[3.4.0]: https://github.com/will-roscoe/protonfs/compare/v3.3.3...v3.4.0
 [3.3.3]: https://github.com/will-roscoe/protonfs/compare/v3.3.2...v3.3.3
 [3.3.2]: https://github.com/will-roscoe/protonfs/compare/v3.3.1...v3.3.2
 [3.3.1]: https://github.com/will-roscoe/protonfs/compare/v3.3.0...v3.3.1
