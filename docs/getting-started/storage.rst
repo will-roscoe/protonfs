@@ -167,6 +167,30 @@ programs and users on the machine from using the page.
 page. ``--format``/``--json``, ``-p`` and ``--mindepth`` make no sense for a page and
 are rejected, as is more than one ``PATH``.
 
+The page has a folder table on the left and a chart on the right, with a divider you
+can drag (the split is remembered):
+
+Table
+   The same rows as ``du`` prints, biggest first, nested to the page's depth. Click a
+   row to select it; double-click a folder, or press Enter, to open it. The ↑ button,
+   Backspace or the breadcrumb go back up, as far as the folder the page was opened on.
+   Click a column heading to sort by it. The Size, % plan, % used and % parent buttons
+   choose what the size column shows. Older figures fade, a spinner marks a folder being
+   fetched, and ❄ marks a frozen (``-x``) folder.
+Chart
+   A treemap or a sunburst of the same figures; the sunburst can switch to an icicle
+   layout. Hovering or clicking a block selects its row; double-clicking a folder opens
+   it. Hatched blocks are folders that have been sized but not yet listed, and
+   remainders that cannot be attributed; trash remainders have their own colour.
+Actions
+   *Refresh* (or *Refresh now* under the chart) re-checks the open folder straight away,
+   whatever its age. *Walk* (or *Walk selected*) measures everything below it in the
+   background, with progress; *Cancel* stops a walk. A walk reports any folder it could
+   not measure.
+Settings
+   The refresh threshold, the depth slider (1–6), folders only, and the exclusion editor
+   (one pattern per row, frozen or hidden) apply as soon as you change them.
+
 The page never waits on Drive: it shows what is cached straight away and fills in
 fresh figures as they arrive. When Proton is rate-limiting folder sizes it says so.
 
