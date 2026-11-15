@@ -66,7 +66,10 @@ In trash
    After that, each folder's figure comes from that trash pass, except where ``du`` has
    listed a folder since: then the listing's ``(in trash)`` remainder counts instead, so
    what you trash and re-check shows up at once. When the figure is older than the
-   row's Age, it says how old, e.g. ``0 B (2d old)``.
+   row's Age, it says how old, e.g. ``0 B (2d old)``. A trashed file whose folder was
+   not cached yet counts only at ``/`` until that folder is listed; if it may already be
+   inside a folder listed since, ``/`` shows the larger of the two figures as a lower
+   bound rather than adding them.
 Age
    How old the figure is. Figures come from a local cache (see below), so ``du`` always
    shows how old each one is.

@@ -47,6 +47,24 @@ def du(drive, tmp_path, monkeypatch):
     cache.close()
 
 
+@pytest.fixture()
+def du_live(drive, tmp_path, monkeypatch):
+    """Like ``du``, but the clock moves on every read, as real time does between calls."""
+    from tests.usage.conftest import TickingClock
+
+    for var in ("PROTONFS_DU_REFRESH", "PROTONFS_PLAN_SIZE"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("PROTONFS_CONFIG", str(tmp_path / "global.json"))
+    cache = UsageCache(tmp_path / "du.sqlite")
+    engine = UsageEngine(drive, cache, clock=TickingClock())
+    monkeypatch.setattr("protonfs.commands.du.default_engine", lambda: engine)
+    monkeypatch.chdir(tmp_path)
+    run = lambda *args: _runner().invoke(main, ["du", *args])  # noqa: E731
+    run.clock = engine.clock
+    yield run
+    cache.close()
+
+
 def _runner() -> CliRunner:
     """A runner whose result keeps stderr apart from stdout on every supported Click.
 
@@ -296,6 +314,21 @@ def test_du_root_row_counts_unresolved_trashed_folders(du, drive):
     assert rows[0]["in_trash_complete"] is False and rows[0]["unchecked_bytes"] is None
     assert all(r["trash_unresolved"] == 0 for r in rows[1:])
     assert "unchecked: unknown" in du("/", "--refresh", "never").stdout
+
+
+def test_du_root_counts_a_trashed_file_once_after_its_folder_is_listed(du_live, drive):
+    """N1/R36, the reviewer's repro: a file trashed before anything was cached."""
+    drive.add_file("/my-files/P/keep", 1000)
+    drive.add_file("/my-files/P/old", 5000)
+    drive.trash("/my-files/P/old")
+    assert du_live("/").exit_code == 0
+    du_live.clock.advance(60)
+    assert du_live("/my-files/P").exit_code == 0
+    du_live.clock.advance(60)
+    res = du_live("/", "--json")
+    assert res.exit_code == 0, res.output + res.stderr
+    top = _rows(res)[0]
+    assert top["in_trash"] == 5000 and top["in_trash_complete"] is True
 
 
 def test_du_root_trashed_empty_folder_is_complete(du, drive):

@@ -192,9 +192,10 @@ def test_gap_not_in_trash_leaves_folder_group_unmeasured(usage_cache, clock):
 
 
 def test_summary_json_round_trip():
-    s = TrashSummary(5.0, (TrashGroup(P, 1, 0, 7), TrashGroup(None, 0, 2, None, "why")), 3,
-                     "x", ("uid-9",))
-    assert TrashSummary.from_json(s.to_json()) == s
+    s = TrashSummary(5.0, (TrashGroup(P, 1, 0, 7), TrashGroup(None, 0, 2, None, "why", "u3")),
+                     3, "x", ("uid-9",), 6.0)
+    back = TrashSummary.from_json(s.to_json())
+    assert back == s and [g.parent_uid for g in back.groups] == [None, "u3"]
 
 
 def test_trash_pass_records_the_unresolved_parent_uids(usage_cache, clock):
@@ -341,6 +342,70 @@ def test_the_pass_own_listings_never_override_its_verdict(usage_cache, ticking_c
     assert group.bytes is None
     assert rows[0].path == "/" and rows[0].in_trash_complete is False
     assert eng.trash_summary().ended_at > eng.trash_summary().at
+
+
+def _loose(usage_cache, clock):
+    """P/old (5000 B) trashed while nothing is cached, then a cold ``du /``."""
+    from protonfs.usage.report import collect_rows
+
+    d = TreeDrive()
+    d.add_file(P + "/keep", 1000)
+    d.add_file(P + "/old", 5000)
+    d.trash(P + "/old")
+    eng = UsageEngine(d, usage_cache, clock=clock)
+    five = RefreshPolicy.parse("5d")
+    eng.check_account(five)
+    collect_rows(eng, "/", five, NO_RULES, now=clock.now)
+    (group,) = eng.trash_summary().groups
+    assert group.parent_path is None and group.parent_uid is not None
+    assert eng.trash_for("/").known == 5000 and eng.trash_for("/").complete
+    return d, eng, five
+
+
+def test_a_loose_trashed_file_is_not_counted_twice_once_its_folder_is_listed(
+        usage_cache, ticking_clock):
+    """N1/R36: listing P after the pass puts the loose file in P's remainder; the pass's
+    group then belongs to P, so R29 replaces it instead of adding it to /."""
+    d, eng, five = _loose(usage_cache, ticking_clock)
+    ticking_clock.advance(60)
+    eng.breakdown(P, five, NO_RULES, target=P)
+
+    fig = eng.trash_for("/")
+
+    assert fig.known == 5000 and fig.complete
+    assert eng.trash_for(P).known == 5000
+    assert eng.trash_parent_now_cached()  # the GUI re-runs the pass, as du / does
+    calls = d.calls.count(("list_trash", "/trash"))
+    eng.refresh_trash(five, NO_RULES)
+    assert d.calls.count(("list_trash", "/trash")) == calls + 1
+    (group,) = eng.trash_summary().groups
+    assert group.parent_path == P
+    assert not eng.trash_parent_now_cached()
+
+
+def test_an_unresolvable_loose_file_that_may_overlap_a_newer_remainder_is_a_lower_bound(
+        usage_cache, ticking_clock):
+    """N1/R36: the loose file's folder is trashed later and an ancestor re-listed; the
+    ancestor's remainder may hold it, so / shows max(direct, loose), incomplete."""
+    from protonfs.usage.report import collect_rows
+
+    d = TreeDrive()
+    d.add_file("/my-files/A/keep", 10)
+    d.add_file("/my-files/A/G/F/old", 5000)
+    d.trash("/my-files/A/G/F/old")
+    eng = UsageEngine(d, usage_cache, clock=ticking_clock)
+    five = RefreshPolicy.parse("5d")
+    eng.check_account(five)
+    collect_rows(eng, "/", five, NO_RULES, now=ticking_clock.now)
+    ticking_clock.advance(60)
+    d.trash("/my-files/A/G")
+    eng.breakdown("/my-files/A", five, NO_RULES, target="/my-files/A")  # gap holds G
+
+    fig = eng.trash_for("/")
+
+    assert fig.known == 5000 and not fig.complete
+    assert fig.unchecked_bytes is None
+    assert any(path is None for path, _ in fig.unknown)
 
 
 def test_complete_figure_reads_no_snapshots(usage_cache, clock):

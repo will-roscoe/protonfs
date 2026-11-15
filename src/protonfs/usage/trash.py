@@ -20,7 +20,7 @@ from __future__ import annotations
 import json
 import subprocess
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from ..drive import DriveError
@@ -53,6 +53,9 @@ class TrashGroup:
         attributed (see ``reason``).
     :ivar reason: why ``bytes`` is ``None`` (e.g. a subfolder of the parent has no size),
         else ``None``.
+    :ivar parent_uid: uid of the original parent, so a group whose parent was not cached
+        (``parent_path`` ``None``) can be placed once it is; ``None`` when unknown. Not
+        part of equality: two groups with the same parent, counts and bytes are equal.
 
     .. versionadded:: 3.4.0
     """
@@ -62,6 +65,7 @@ class TrashGroup:
     folders: int
     bytes: int | None
     reason: str | None = None
+    parent_uid: str | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True)
@@ -117,7 +121,7 @@ class TrashSummary:
         """Return the summary as JSON text, for :meth:`from_json`."""
         return json.dumps({
             "at": self.at,
-            "groups": [[g.parent_path, g.files, g.folders, g.bytes, g.reason]
+            "groups": [[g.parent_path, g.files, g.folders, g.bytes, g.reason, g.parent_uid]
                        for g in self.groups],
             "unresolved_folders": self.unresolved_folders,
             "partial": self.partial,
@@ -150,10 +154,11 @@ class TrashSummary:
 
 
 def _group(item: list) -> TrashGroup:
-    """Rebuild one stored group; summaries stored before ``reason`` have four items."""
+    """Rebuild one stored group; older summaries have no ``reason`` or ``parent_uid``."""
     parent, files, folders, size = item[:4]
     reason = item[4] if len(item) > 4 else None
-    return TrashGroup(parent, int(files), int(folders), size, reason)
+    uid = item[5] if len(item) > 5 else None
+    return TrashGroup(parent, int(files), int(folders), size, reason, uid)
 
 
 @dataclass(frozen=True)
@@ -171,6 +176,11 @@ class TrashFigure:
     :ivar at: Unix time of the oldest measurement behind ``known``: the trash pass, or,
         when every folder in the subtree was listed after it, the oldest of those
         listings; ``None`` without a stored pass.
+    :ivar unknown: ``(folder, reason)`` for each folder under the subtree whose trash is
+        unknown, and ``(None, reason)`` when trashed files of an unknown folder may already
+        be counted (``known`` then counts only the larger of the two figures). Empty when
+        ``complete``; the summary's own partial listing or unresolved folders are not
+        repeated here.
 
     .. versionadded:: 3.4.0
     """
@@ -180,6 +190,7 @@ class TrashFigure:
     unchecked_bytes: int | None
     unchecked_share: float | None
     at: float | None
+    unknown: tuple[tuple[str | None, str], ...] = ()
 
 
 def run_trash_pass(
@@ -245,7 +256,7 @@ def run_trash_pass(
     for uid in {*files, *folders}:
         paths_by_uid[uid] = engine.cache.path_for_uid(uid) if uid is not None else None
     for uid, (count, size) in files.items():
-        groups.append(TrashGroup(paths_by_uid[uid], count, 0, size))
+        groups.append(TrashGroup(paths_by_uid[uid], count, 0, size, None, uid))
     for uid, count in folders.items():
         parent = paths_by_uid[uid]
         if parent is None:
@@ -254,12 +265,12 @@ def run_trash_pass(
                 unresolved_uids.append(uid)
             continue
         if excluded(rules, parent):
-            groups.append(TrashGroup(parent, 0, count, None, EXCLUDED_REASON))
+            groups.append(TrashGroup(parent, 0, count, None, EXCLUDED_REASON, uid))
             continue
         file_bytes = files[uid][1] if uid in files else 0
         bd = engine.breakdown(parent, _FULL, rules, target="/")
         folder_bytes, reason = _folder_bytes(engine, bd, file_bytes)
-        groups.append(TrashGroup(parent, 0, count, folder_bytes, reason))
+        groups.append(TrashGroup(parent, 0, count, folder_bytes, reason, uid))
     groups.sort(key=lambda g: (g.parent_path or "", g.folders))
     return TrashSummary(now, tuple(groups), unresolved, None, tuple(sorted(unresolved_uids)),
                         engine.clock())
@@ -392,6 +403,34 @@ def _common_base(paths: Sequence[str]) -> str:
     return base
 
 
+_LISTED_UNATTRIBUTED = "listed since the last trash pass with a subfolder that has no size"
+_LISTED_UNRECONCILED = ("listed since the last trash pass, but its remainder is unreconciled "
+                        "(figures from different passes, or it changed while measured)")
+
+
+def loose_file_groups(engine: UsageEngine, summary: TrashSummary) -> list[TrashGroup]:
+    """Return the file groups of ``summary`` whose original folder is still not cached.
+
+    A file group stored without a path is placed through
+    :meth:`~protonfs.usage.cache.UsageCache.path_for_uid` once its folder is cached; the
+    ones returned could not be.
+
+    :param engine: the engine holding the cache.
+    :param summary: the stored summary.
+    :returns: the groups with neither a stored nor a cached path.
+
+    .. versionadded:: 3.4.0
+    """
+    return [g for g in summary.groups
+            if g.parent_path is None and _placed(engine, g) is None]
+
+
+def _placed(engine: UsageEngine, group: TrashGroup) -> str | None:
+    if group.parent_path is not None:
+        return group.parent_path
+    return engine.cache.path_for_uid(group.parent_uid) if group.parent_uid else None
+
+
 class _PassFigures:
     """Trash figures under ``base`` from one stored pass plus the listings made since."""
 
@@ -406,32 +445,36 @@ class _PassFigures:
             for p, snap in self.newer.items()
         }
         listed = {p: set(c) for p, c in self.children.items()}
-        from_pass: dict[str, int | None] = {}
-        self.loose = 0  # trashed files whose original folder is unknown: could be anywhere
-        self.has_loose = False
+        # folder -> (trash directly under it by the pass, or None; why unknown)
+        from_pass: dict[str, tuple[int | None, str | None]] = {}
+        self.loose = 0  # trashed files whose folder is still unknown: could be anywhere
+        self.loose_files = 0
         for g in summary.groups:
-            if g.parent_path is None:
+            parent = _placed(engine, g)  # a file group placed once its folder is cached
+            if parent is None:
                 self.loose += g.bytes or 0
-                self.has_loose = True
-            elif _under(g.parent_path, base):
-                prev = from_pass.get(g.parent_path, 0)
-                from_pass[g.parent_path] = (None if prev is None or g.bytes is None
-                                            else prev + g.bytes)
-        # (folder, its chain, trash directly under it or None, depth of the deepest
-        # ancestor listed since the pass that no longer lists the way down, or -1)
-        self.direct: list[tuple[str, list[str], int | None, int]] = []
+                self.loose_files += g.files
+            elif _under(parent, base):
+                prev, why = from_pass.get(parent, (0, None))
+                from_pass[parent] = (None if prev is None or g.bytes is None
+                                     else prev + g.bytes, why or g.reason)
+        # (folder, its chain, trash directly under it or None, why unknown, whether it
+        # comes from a listing since the pass, depth of the deepest ancestor listed since
+        # the pass that no longer lists the way down, or -1)
+        self.direct: list[tuple[str, list[str], int | None, str | None, bool, int]] = []
         for folder in {*from_pass, *self.newer}:
             chain = _chain(folder)
             cover = -1
             for depth, (a, b) in enumerate(zip(chain, chain[1:]), start=1):
                 if a in listed and b not in listed[a]:
                     cover = depth
-            value = self._listed(folder) if folder in self.newer else from_pass[folder]
-            self.direct.append((folder, chain, value, cover))
+            listed_since = folder in self.newer
+            value, why = self._listed(folder) if listed_since else from_pass[folder]
+            self.direct.append((folder, chain, value, why, listed_since, cover))
         self._since: dict[str, float | None] = {}
 
-    def _listed(self, folder: str) -> int | None:
-        """Trash directly under ``folder`` from its newer listing's remainder, or ``None``."""
+    def _listed(self, folder: str) -> tuple[int | None, str | None]:
+        """Trash directly under ``folder`` from its newer listing's remainder, or why not."""
         snap = self.newer[folder]
         if snap.invalid:  # a later figure may contradict it: let the breakdown decide
             bd = self.engine.breakdown(folder, _NEVER, ExcludeRules(), target=folder)
@@ -446,10 +489,12 @@ class _PassFigures:
             gap = size - known
             kind = _label(gap, holes, mixed)
         if gap is not None and kind is GapKind.TRASH:
-            return gap
+            return gap, None
         if gap is not None and kind is GapKind.NONE:
-            return 0
-        return None
+            return 0, None
+        if kind is GapKind.UNATTRIBUTED:
+            return None, _LISTED_UNATTRIBUTED
+        return None, _LISTED_UNRECONCILED
 
     def _listed_since_at(self, root: str) -> float | None:
         """The oldest listing under ``root`` if every folder there was listed since the
@@ -477,33 +522,49 @@ class _PassFigures:
 
     def figures(self, paths: Sequence[str]) -> dict[str, TrashFigure]:
         known = dict.fromkeys(paths, 0)
-        unknown: dict[str, list[str]] = {p: [] for p in paths}
-        for folder, chain, value, cover in self.direct:
+        unknown: dict[str, list[tuple[str | None, str]]] = {p: [] for p in paths}
+        # whether / counts a listing since the pass with trash in it, which could already
+        # hold a loose file (its folder trashed and an ancestor re-listed since)
+        overlap = False
+        for folder, chain, value, why, listed_since, cover in self.direct:
             # the folder counts for a row above its covering ancestor, not at or below it
             hits = [p for depth, p in enumerate(chain, start=1) if depth > cover and p in known]
             if cover < 0 and "/" in known:
                 hits.append("/")
+                overlap = overlap or (listed_since and bool(value))
             for p in hits:
                 if value is None:
-                    unknown[p].append(folder)
+                    unknown[p].append((folder, why or "its trash could not be measured"))
                 else:
                     known[p] += value
         s = self.summary
         out = {}
         for p in paths:
             whole = p == "/"
-            total = known[p] + (self.loose if whole else 0)
+            total = known[p]
+            if whole and self.loose:
+                if overlap:
+                    # either may hold the other: only the larger is a lower bound
+                    total = max(total, self.loose)
+                    files = "file" if self.loose_files == 1 else "files"
+                    unknown[p].append((None, (
+                        f"{self.loose_files} trashed {files} whose folder is not cached may "
+                        "already be counted in a folder listed since the last trash pass")))
+                else:
+                    total += self.loose
             since = None if whole or p not in self.newer else self._listed_since_at(p)
             at = s.at if since is None else since
             unbounded = (s.partial is not None or s.unresolved_folders > 0
-                         or (self.has_loose and not whole))
+                         or (self.loose_files > 0 and not whole))
             if not unknown[p] and not unbounded:
                 out[p] = TrashFigure(total, True, None, None, at)
                 continue
-            unchecked = None if unbounded else _unknown_bytes(self.engine, unknown[p])
+            folders = [f for f, _ in unknown[p] if f is not None]
+            unchecked = None if unbounded or len(folders) < len(unknown[p]) \
+                else _unknown_bytes(self.engine, folders)
             size = self.engine.used_total() if whole else _size(self.engine, p)
             share = unchecked / size if unchecked is not None and size else None
-            out[p] = TrashFigure(total, False, unchecked, share, at)
+            out[p] = TrashFigure(total, False, unchecked, share, at, tuple(unknown[p]))
         return out
 
 

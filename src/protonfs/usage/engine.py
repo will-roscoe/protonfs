@@ -451,10 +451,11 @@ class UsageEngine:
         The pass (:func:`~protonfs.usage.trash.run_trash_pass`: ``filesystem list /trash``
         plus breakdowns, none under a folder ``rules`` exclude) runs when no summary is
         stored or it is stale under ``policy``, and also, however recent, when its listing
-        was partial (timed out or failed), when an original parent it could not resolve
-        is now in the cache, when it skipped a parent ``rules`` no longer exclude, or when
-        it is incomplete and was stored before unresolved parents were recorded. Read the
-        result with :meth:`trash_summary`. Nothing runs under ``policy.never``.
+        was partial (timed out or failed), when an original folder it could not resolve
+        (of a trashed folder or file) is now in the cache, when it skipped a parent
+        ``rules`` no longer exclude, or when it is incomplete and was stored before
+        unresolved parents were recorded. Read the result with :meth:`trash_summary`.
+        Nothing runs under ``policy.never``.
 
         :param policy: the run's refresh policy.
         :param rules: freeze/hide rules relative to ``/``.
@@ -474,18 +475,25 @@ class UsageEngine:
         self.in_trash_pass = False
 
     def trash_parent_now_cached(self) -> bool:
-        """Return whether the stored trash summary left a trashed folder's original parent
-        unresolved that the cache now holds, so a new pass would measure it.
+        """Return whether the stored trash summary left a trashed item's original folder
+        unresolved that the cache now holds, so a new pass would place it.
 
-        No Drive calls. ``False`` without a stored summary, or for one stored before
-        unresolved parents were recorded.
+        Covers trashed folders
+        (:attr:`~protonfs.usage.trash.TrashSummary.unresolved_parents`) and trashed files
+        whose folder was not cached (:attr:`~protonfs.usage.trash.TrashGroup.parent_uid`).
+        No Drive calls. ``False`` without a stored summary, or for one stored before those
+        uids were recorded.
 
         .. versionadded:: 3.4.0
         """
         summary = self.trash_summary()
-        if summary is None or not summary.unresolved_parents:
-            return False
-        return any(self.cache.path_for_uid(u) is not None for u in summary.unresolved_parents)
+        return summary is not None and self._unresolved_now_cached(summary)
+
+    def _unresolved_now_cached(self, summary: TrashSummary) -> bool:
+        uids = [*(summary.unresolved_parents or ()),
+                *(g.parent_uid for g in summary.groups
+                  if g.parent_path is None and g.parent_uid is not None)]
+        return any(self.cache.path_for_uid(u) is not None for u in uids)
 
     def _trash_can_improve(self, summary: TrashSummary, rules: ExcludeRules) -> bool:
         """Whether running the pass again now could measure more than ``summary`` did."""
@@ -493,7 +501,7 @@ class UsageEngine:
             return True
         if summary.unresolved_parents is None:
             return not summary.complete
-        if any(self.cache.path_for_uid(u) is not None for u in summary.unresolved_parents):
+        if self._unresolved_now_cached(summary):
             return True
         return any(
             g.reason == EXCLUDED_REASON and g.parent_path is not None
