@@ -1827,3 +1827,26 @@ def test_find_folder_paths_marks_failed_listing_incomplete(
     found, complete = client.find_folder_paths("/r", {"zz"})
 
     assert found == {} and complete is False
+
+
+def test_find_folder_paths_caps_each_listing_at_the_remaining_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _client(monkeypatch)
+    now = {"t": 0.0}
+    seen: list[float] = []
+
+    def fake_list(path, timeout=None):
+        seen.append(timeout)
+        now["t"] += 8  # each listing eats 8 s of the 10 s budget
+        return [_dir("a", "ua")] if path == "/r" else [_dir("b", "ub")]
+
+    monkeypatch.setattr(client, "list", fake_list)
+
+    found, complete = client.find_folder_paths(
+        "/r", {"zz"}, time_budget=10, timeout=45, clock=lambda: now["t"]
+    )
+
+    # First listing gets min(45, 10); the second only the 2 s left; a third is not started.
+    assert seen == [10, 2]
+    assert found == {} and complete is False

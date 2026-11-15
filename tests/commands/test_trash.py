@@ -121,14 +121,34 @@ def test_list_trash_names_a_trashed_parent_folder(tmp_path: Path, make_fake_driv
     assert "(trashed folder oldrun)" in _render(ctx)
 
 
-def test_list_trash_marks_parent_outside_remote_root_when_search_complete(
+def test_list_trash_marks_parent_not_under_remote_root_when_search_complete(
     tmp_path: Path, make_fake_drive
 ) -> None:
     init_config(tmp_path, "/my-files/test")
     ctx = load_context(tmp_path)
     ctx.drive = make_fake_drive(trash_listing=[_entry("a.bin", "uid~other")])
 
-    assert "(outside /my-files/test)" in _render(ctx)
+    assert "(not under /my-files/test)" in _render(ctx)
+
+
+def test_list_trash_announces_search_on_stderr_only_when_it_runs(
+    tmp_path: Path, make_fake_drive, capsys
+) -> None:
+    init_config(tmp_path, "/my-files/test")
+    ctx = load_context(tmp_path)
+    ctx.drive = make_fake_drive(
+        trash_listing=[_entry("a.bin", "uid~p1"), _entry("b.bin", "uid~p2")]
+    )
+
+    _render(ctx)
+    err = capsys.readouterr().err
+    assert "Looking up 2 original folder(s) under /my-files/test (up to 2 min)" in err
+
+    ctx.drive = make_fake_drive(
+        trash_listing=[_entry("a.bin", "uid~root")], node_uids={"/my-files": "uid~root"}
+    )
+    _render(ctx)
+    assert capsys.readouterr().err == ""
 
 
 def test_list_trash_marks_incomplete_search_honestly(tmp_path: Path, make_fake_drive) -> None:
@@ -141,7 +161,7 @@ def test_list_trash_marks_incomplete_search_honestly(tmp_path: Path, make_fake_d
     out = _render(ctx)
 
     assert "not found within search limit" in out
-    assert "outside" not in out
+    assert "not under" not in out
 
 
 def test_list_trash_entry_without_parent_uid_is_unknown(tmp_path: Path, make_fake_drive) -> None:

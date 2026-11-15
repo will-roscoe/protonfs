@@ -25,7 +25,7 @@ from rich.console import Console
 from rich.table import Table
 
 from protonfs.context import RepoContext
-from protonfs.drive import DriveError, decrypted_name
+from protonfs.drive import FOLDER_SEARCH_TIME_BUDGET_SECONDS, DriveError, decrypted_name
 
 _CONFIRMATION_PHRASE = "empty trash"
 
@@ -40,7 +40,7 @@ def resolve_parents(ctx: RepoContext, entries: list[dict]) -> dict[str, str]:
     account root and the repo's ``remote_root`` (one ``filesystem info`` each), parents
     that are themselves trashed (named from the same listing), and a bounded search of
     the ``remote_root`` subtree (:meth:`DriveClient.find_folder_paths`). Whatever stays
-    unresolved gets an honest marker rather than a bare ``?``: ``(outside <remote_root>)``
+    unresolved gets an honest marker rather than a bare ``?``: ``(not under <remote_root>)``
     when the whole subtree was searched, ``(not found within search limit)`` when the
     search was cut short, ``(unknown)`` for an entry with no ``parentUid``.
 
@@ -65,10 +65,15 @@ def resolve_parents(ctx: RepoContext, entries: list[dict]) -> dict[str, str]:
     todo = wanted - set(resolved)
     complete = True
     if todo:
+        click.echo(
+            f"Looking up {len(todo)} original folder(s) under {root} (up to "
+            f"{FOLDER_SEARCH_TIME_BUDGET_SECONDS / 60:g} min)...",
+            err=True,
+        )
         found, complete = ctx.drive.find_folder_paths(root, todo)
         resolved.update(found)
     for uid in wanted - set(resolved):
-        resolved[uid] = f"(outside {root})" if complete else "(not found within search limit)"
+        resolved[uid] = f"(not under {root})" if complete else "(not found within search limit)"
     return resolved
 
 

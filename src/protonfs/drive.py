@@ -65,6 +65,9 @@ LIST_TIMEOUT_SECONDS = float(os.environ.get("PROTONFS_LIST_TIMEOUT", "45"))
 # #193: `/trash` is one flat account-wide listing with no paging or filter, so a large trash
 # takes minutes (27 MB of JSON had streamed after 5 min on a measured account). It gets its
 # own, much longer bound; overridable for bigger trashes.
+# #231: bounds for the UID-to-path folder search behind `trash list`.
+FOLDER_SEARCH_MAX_LISTS = 200
+FOLDER_SEARCH_TIME_BUDGET_SECONDS = 120.0
 TRASH_LIST_TIMEOUT_SECONDS = float(os.environ.get("PROTONFS_TRASH_LIST_TIMEOUT", "900"))
 LIST_MAX_RETRIES = int(os.environ.get("PROTONFS_LIST_RETRIES", "4"))
 LIST_BACKOFF_BASE_SECONDS = float(os.environ.get("PROTONFS_LIST_BACKOFF", "2"))
@@ -1691,8 +1694,8 @@ class DriveClient:
         root: str,
         wanted: set[str],
         *,
-        max_lists: int = 200,
-        time_budget: float = 120.0,
+        max_lists: int = FOLDER_SEARCH_MAX_LISTS,
+        time_budget: float = FOLDER_SEARCH_TIME_BUDGET_SECONDS,
         timeout: float = LIST_TIMEOUT_SECONDS,
         clock: Callable[[], float] = time.monotonic,
     ) -> tuple[dict[str, str], bool]:
@@ -1708,13 +1711,14 @@ class DriveClient:
         :param root: absolute Drive folder to search under; ``root`` itself is not matched.
         :param wanted: the folder UIDs to find.
         :param max_lists: most ``filesystem list`` calls to make.
-        :param time_budget: most seconds to spend before giving up.
+        :param time_budget: most seconds to spend before giving up; each listing's timeout
+            is also capped at the budget remaining.
         :param timeout: per-listing timeout in seconds.
         :param clock: monotonic clock (overridable for tests).
         :returns: ``(paths, complete)``: ``paths`` maps each found UID to its path;
-            ``complete`` is true only when the whole subtree was searched, so a UID missing
-            from ``paths`` is then known to lie outside ``root``, and when false it may
-            just not have been reached.
+            ``complete`` is true when every wanted UID was found, or the whole subtree was
+            searched (so a UID missing from ``paths`` is then known not to be under
+            ``root``); when false it may just not have been reached.
 
         .. versionadded:: 3.4.0
         """
@@ -1727,12 +1731,13 @@ class DriveClient:
         lists = 0
         complete = True
         while queue and len(found) < len(wanted):
-            if lists >= max_lists or clock() >= deadline:
+            remaining = deadline - clock()
+            if lists >= max_lists or remaining <= 0:
                 return found, False
             walk_path, shown = queue.popleft()
             lists += 1
             try:
-                children = self.list(walk_path, timeout=timeout)
+                children = self.list(walk_path, timeout=min(timeout, remaining))
             except (DriveError, subprocess.TimeoutExpired):
                 complete = False
                 continue

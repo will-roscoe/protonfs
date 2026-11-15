@@ -2214,7 +2214,7 @@ def trash_list_cmd() -> None:
     """List /trash: name, original parent path, same-name duplicate count.
 
     The parent is found by searching the repo's remote root (bounded); it shows
-    ``(outside <root>)`` or ``(not found within search limit)`` when it can't be resolved.
+    ``(not under <root>)`` or ``(not found within search limit)`` when it can't be resolved.
 
     A nonzero duplicate count is the ambiguity `restore` refuses to resolve on its
     own (#56): proton-drive resolves /trash paths by name, first match wins.
