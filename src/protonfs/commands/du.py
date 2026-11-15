@@ -263,8 +263,9 @@ def run_du(
         ``sys.stderr``).
     :returns: ``0`` complete; ``1`` a target's own figure could not be measured; ``3``
         partial results (a row in state ``error``, including a target whose size was
-        measured but whose listing failed, a ``/`` total that leaves out a section, an
-        unmeasurable ``/devices`` row, or an incomplete trash pass). A user's ``-x``/``-X``
+        measured but whose listing failed, a ``/`` or ``/devices`` total that leaves out
+        a section or device, an unmeasurable ``/devices`` row, or an incomplete trash
+        pass). A user's ``-x``/``-X``
         alone is not partial.
 
     .. versionadded:: 3.4.0

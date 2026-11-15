@@ -53,7 +53,8 @@ class DuRow:
     :ivar checked_at: Unix time the figure was measured, or ``None``.
     :ivar age_seconds: ``now - checked_at``, or ``None``.
     :ivar state: ``listed``, ``sized``, ``excluded``, ``unmeasured``, ``error``,
-        ``partial`` (the ``/`` view leaving out a section) or ``gap``.
+        ``partial`` (the ``/`` or ``/devices`` view leaving out a section or device) or
+        ``gap``.
     :ivar exclusion: ``none``, ``freeze`` or ``hide``.
     :ivar gap_kind: ``none``, ``in_trash``, ``unattributed`` or ``unreconciled``.
     :ivar error: the failure text when ``state`` is ``error``, else ``None``.

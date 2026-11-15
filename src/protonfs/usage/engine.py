@@ -62,6 +62,10 @@ _CACHE_ONLY = RefreshPolicy(None)
 #: Drive path of the photo library, which ``filesystem size`` cannot measure.
 PHOTOS_PATH = "/photos"
 
+#: Drive path holding the device roots. ``filesystem size /devices`` fails on the live CLI
+#: ("Device not found", measured 2026-11-15), so its total is the sum of its devices.
+DEVICES_PATH = "/devices"
+
 
 def _error_text(exc: BaseException) -> str:
     text = str(exc)
@@ -149,8 +153,11 @@ class UsageEngine:
         fingerprint of ``path`` is unchanged, and the fresh listing has the same
         child-folder uids and the same summed file bytes; a stale unchanged folder then
         costs one ``size`` and one ``list``. Excluded folders get no Drive calls; their
-        cached figure, if any, is shown. ``"/"`` returns :meth:`root`; a path outside
-        ``/my-files`` and ``/devices`` is ``UNMEASURED`` with no calls; a path that
+        cached figure, if any, is shown. ``"/"`` returns :meth:`root`; ``"/devices"`` is
+        never sized: its entries are the devices from the device list, each measured like
+        :meth:`figure`, its ``size`` their sum and ``gap`` ``None`` (``PARTIAL`` when a
+        device is hidden or has no figure, ``ERROR`` when the device list failed); a path
+        outside ``/my-files`` and ``/devices`` is ``UNMEASURED`` with no calls; a path that
         ``rules`` exclude is answered from the cache with state ``EXCLUDED``.
 
         Side effects: writes the snapshot of ``path`` (atomically) and the figures of
@@ -189,12 +196,17 @@ class UsageEngine:
         :returns: an entry of kind ``"folder"`` with state ``LISTED`` (a snapshot is
             cached) or ``SIZED``; ``UNMEASURED`` when nothing is known or ``path`` cannot
             be sized (``/``, ``/photos``, ...); ``ERROR`` with the text when ``size``
-            failed.
+            failed. ``/devices`` is the sum of its devices' figures, with the state of
+            its :meth:`breakdown`; it is never sized itself.
 
         .. versionadded:: 3.4.0
         """
         if not _measurable(path):
             return self._figure_entry(path, None)
+        if path == DEVICES_PATH:
+            view = self._devices_view(policy, ExcludeRules(), DEVICES_PATH)
+            return Entry("devices", DEVICES_PATH, "folder", None, view.size, view.descendants,
+                         view.at, view.state, Exclusion.NONE, None, True, view.error)
         now = self.clock()
         fig = self.cache.figure(path)
         if policy.never or (
@@ -513,6 +525,8 @@ class UsageEngine:
         if rules.match(relative(path, target), True) is not Exclusion.NONE:
             cached = self._assemble(path, self.cache.snapshot(path), rules, target)
             return replace(cached, state=NodeState.EXCLUDED)
+        if path == DEVICES_PATH:
+            return self._devices_view(policy, rules, target)
         now = self.clock()
         snap = self.cache.snapshot(path)
         if policy.never or self._is_fresh(snap, path, policy, rules, target, now):
@@ -809,6 +823,49 @@ class UsageEngine:
             row.mtime if row is not None else None,
             row.decrypted if row is not None else True,
             None,
+        )
+
+    def _devices_view(
+        self, policy: RefreshPolicy, rules: ExcludeRules, target: str
+    ) -> Breakdown:
+        """Break down ``/devices`` from the device list and each device's own figure.
+
+        No ``size /devices`` call: the live CLI rejects it, so the total is the sum of
+        the device figures and there is no remainder.
+        """
+        devices, error = self._device_list(policy, frozen=False)
+        if devices is None:
+            state = NodeState.ERROR if error is not None else NodeState.UNMEASURED
+            return Breakdown(DEVICES_PATH, None, None, None, state, (), None, GapKind.NONE,
+                             None, None, error)
+        entries: list[Entry] = []
+        hidden = False
+        for name, uid, decrypted in devices:
+            dpath = child_path(DEVICES_PATH, name, uid, decrypted)
+            x = rules.match(relative(dpath, target), True)
+            if x is Exclusion.HIDE:
+                hidden = True
+                continue
+            entry = self._section_entry(dpath, policy, x)
+            entries.append(replace(entry, kind="folder", name=name, uid=uid,
+                                   decrypted=decrypted))
+        measured = [e for e in entries if e.size is not None]
+        times = [e.at for e in measured if e.at is not None]
+        listed_at = self.cache.get_meta(_DEVICES_AT_KEY)
+        if listed_at:
+            times.append(float(listed_at))
+        partial = hidden or len(measured) < len(entries)
+        if error is not None:
+            state = NodeState.ERROR
+        else:
+            state = NodeState.PARTIAL if partial else NodeState.LISTED
+        size = sum(e.size or 0 for e in measured) if measured or not devices else None
+        oldest = min(times) if times else None
+        return Breakdown(
+            DEVICES_PATH, size,
+            sum((e.descendants or 0) + 1 for e in measured) if size is not None else None,
+            oldest, state, tuple(entries), None, GapKind.NONE, oldest,
+            max(times) if times else None, error,
         )
 
     def _section_entry(self, path: str, policy: RefreshPolicy, excl: Exclusion) -> Entry:

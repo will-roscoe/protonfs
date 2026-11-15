@@ -116,3 +116,22 @@ def test_threadsafe_with_mutating_hook():
     assert errors == []
     assert d.size("/my-files/p") == SizeResult(240, 240)
     assert len(d.list_dir("/my-files/p")) == 240
+
+
+def test_devices_root_cannot_be_sized_like_the_live_cli():
+    """Live 2026-11-15: ``size /devices`` fails "Device not found"; ``size /devices/<name>``
+    works, ``size /devices/<uid>`` fails, and ``list /devices`` works without sizes."""
+    import pytest
+
+    from protonfs.drive import DriveError
+
+    d = TreeDrive()
+    uid = d.add_device("Polaris")
+    d.add_file("/devices/Polaris/a", 3)
+    with pytest.raises(DriveError, match="Device not found"):
+        d.size("/devices")
+    assert d.size("/devices/Polaris").size == 3
+    with pytest.raises(DriveError):
+        d.size(f"/devices/{uid}")
+    (dev,) = d.list_dir("/devices")
+    assert dev.kind == "folder" and dev.size is None

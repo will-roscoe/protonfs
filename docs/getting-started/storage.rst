@@ -33,6 +33,9 @@ from, and the local folder doesn't have to exist (an offloaded folder works too)
 With no ``PATH``, the current directory is used, which must be inside a store (at its
 root or any subdirectory). A local path that is in no store is an error.
 
+``/devices`` is the sum of your devices: Proton's CLI cannot size ``/devices`` itself, so
+``du`` lists the devices and sizes each one.
+
 What the columns mean
 ---------------------
 

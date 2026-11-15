@@ -923,3 +923,48 @@ def test_root_hiding_devices_on_an_empty_cache_makes_no_device_calls(usage_cache
     bd = eng.root(FIVE_DAYS, ExcludeRules(hide=["devices"]))
     assert not any(p == "/devices" or p.startswith("/devices/") for _, p in d.calls)
     assert all(not e.path.startswith("/devices") for e in bd.entries)
+
+
+def test_devices_view_sums_the_devices_without_sizing_devices(usage_cache, clock):
+    """R35: ``size /devices`` fails on the live CLI, so /devices is the sum of its devices."""
+    d = _root_tree()
+    eng = UsageEngine(d, usage_cache, clock=clock)
+
+    bd = eng.breakdown("/devices", FIVE_DAYS, NO_RULES, target="/devices")
+
+    assert ("size", "/devices") not in d.calls
+    assert d.calls.count(("list", "/devices")) == 1
+    assert {e.path: (e.kind, e.size) for e in bd.entries} == {
+        "/devices/laptop": ("folder", 7), "/devices/desk": ("folder", 0)}
+    assert bd.state is NodeState.LISTED and bd.size == 7 and bd.error is None
+    assert bd.gap is None and bd.gap_kind is GapKind.NONE
+    assert bd.at == clock.now
+
+    d.calls.clear()
+    fig = eng.figure("/devices", FIVE_DAYS)
+    assert (fig.size, fig.kind) == (7, "folder") and d.calls == []
+    assert eng.walk("/devices", FIVE_DAYS, NO_RULES) == 3  # /devices and both devices
+    assert ("size", "/devices") not in d.calls
+
+
+def test_devices_view_with_a_failed_device_is_partial(usage_cache, clock):
+    d = _root_tree()
+    d.fail_next("size", "/devices/desk", DriveError("boom"))
+    eng = UsageEngine(d, usage_cache, clock=clock)
+
+    bd = eng.breakdown("/devices", FIVE_DAYS, NO_RULES, target="/devices")
+
+    by = {e.path: e for e in bd.entries}
+    assert by["/devices/desk"].state is NodeState.ERROR and by["/devices/desk"].error == "boom"
+    assert bd.state is NodeState.PARTIAL and bd.size == 7
+
+
+def test_devices_view_honours_exclusions_and_never(usage_cache, clock):
+    d = _root_tree()
+    eng = UsageEngine(d, usage_cache, clock=clock)
+    assert eng.breakdown("/devices", NEVER, NO_RULES, "/devices").state is NodeState.UNMEASURED
+    assert d.calls == []
+
+    bd = eng.breakdown("/devices", FIVE_DAYS, ExcludeRules(hide=["desk"]), "/devices")
+    assert [e.path for e in bd.entries] == ["/devices/laptop"]
+    assert not _touches(d.calls, "/devices/desk")

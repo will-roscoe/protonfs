@@ -1,7 +1,9 @@
 """In-memory :class:`~protonfs.usage.source.DriveSource` fake with measured Drive semantics.
 
 Trashed nodes stay counted by ``size()`` of every ancestor until purged, vanish from
-``list_dir``, and show in ``list_trash`` only at their top level.
+``list_dir``, and show in ``list_trash`` only at their top level. ``size("/devices")``
+fails with "Device not found", as the live CLI does (measured 2026-11-15); each
+``/devices/<name>`` can be sized.
 """
 
 from __future__ import annotations
@@ -158,9 +160,11 @@ class TreeDrive:
     def size(self, path: str) -> SizeResult:
         self._enter("size", path)
         self._check_live(path)
+        if path == "/devices":
+            raise DriveError("Device not found")
         node = self._nodes.get(path)
         if node is None:
-            if path in ("/", "/my-files", "/devices"):
+            if path in ("/", "/my-files"):
                 below = [n for p, n in list(self._nodes.items()) if paths.is_within(p, path)]
                 return SizeResult(sum(n.size or 0 for n in below), len(below))
             raise DriveError(f"Node not found: {path}")

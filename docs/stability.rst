@@ -183,8 +183,8 @@ when several PATHs are given) with the keys ``target``, ``generated_at`` (Unix t
 ``descendants``, ``pct_parent``, ``pct_used``, ``pct_plan`` (percent 0 to 100, or
 ``null``), ``in_trash``, ``in_trash_complete``, ``unchecked_bytes``, ``checked_at``
 (Unix time), ``age_seconds``, ``state`` (``listed``, ``sized``, ``excluded``,
-``unmeasured``, ``error``, ``partial`` (``/`` total leaves out a section) or
-``gap``), ``exclusion`` (``none``, ``freeze``, ``hide``),
+``unmeasured``, ``error``, ``partial`` (``/`` or ``/devices`` total leaves out a
+section or device) or ``gap``), ``exclusion`` (``none``, ``freeze``, ``hide``),
 ``gap_kind`` (``none``, ``in_trash``, ``unattributed``, ``unreconciled``) and ``error``
 (failure text when ``state`` is ``error``, else ``null``). ``--format
 plain`` prints the row values tab-separated in that order, ``null`` as an empty string.
@@ -520,7 +520,8 @@ flag/argument name; these names, not just their presence, are frozen.
        ``PATH`` outside a store. Otherwise: ``0`` complete; ``1`` the target's own figure could not be measured, or a config
        or Drive error; ``2`` usage error (also ``--listen``/``--port``/``--log`` without
        ``--gui``, and ``-d`` with ``--mindepth``/``--maxdepth``); ``3`` partial results:
-       a row is in state ``error``, the ``/`` total leaves out an unmeasurable section, or
+       a row is in state ``error``, the ``/`` or ``/devices`` total leaves out an
+       unmeasurable section or device, or
        the trash pass was incomplete (a ``-x``/``-X`` you gave is not partial). The output is
        printed in full in every case.
 

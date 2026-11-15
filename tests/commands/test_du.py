@@ -424,6 +424,23 @@ def test_du_retries_a_child_whose_size_failed_once(du, drive):
     assert row["size"] is not None and row["error"] is None
 
 
+@pytest.mark.parametrize("depth", ["0", "1"])
+def test_du_devices_is_the_sum_of_its_devices(du, drive, depth):
+    """R35: the live CLI cannot size /devices, so du never asks it to."""
+    drive.add_device("laptop")
+    drive.add_file("/devices/laptop/a", 7)
+    drive.add_device("desk")
+    drive.add_file("/devices/desk/b", 5)
+    res = du("/devices", "--json", "-d", depth)
+    assert res.exit_code == 0, res.output + res.stderr
+    rows = _rows(res)
+    assert rows[0]["path"] == "/devices" and rows[0]["size"] == 12
+    if depth == "1":
+        assert {r["path"]: r["size"] for r in rows[1:]} == {
+            "/devices/laptop": 7, "/devices/desk": 5}
+    assert ("size", "/devices") not in drive.calls
+
+
 def test_du_root_depth_two_never_sizes_the_devices_placeholder(du, drive):
     drive.fail_next("list", "/devices", DriveError("nope"), times=9)
     du("/", "-d", "2", "--json")
