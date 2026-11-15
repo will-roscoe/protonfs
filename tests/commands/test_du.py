@@ -492,6 +492,30 @@ def test_du_local_glob_matches_offloaded_folders_through_the_index(du, tmp_path,
         "/my-files/A/sub", "/my-files/A/subway"]
 
 
+def test_du_remote_glob_under_refresh_never_says_it_was_not_checked(du, drive):
+    """N5: with nothing cached and no Drive calls allowed, nothing was matched against."""
+    res = du("/my-files/*", "--refresh", "never")
+    assert res.exit_code == 0, res.output + res.stderr
+    assert "not checked" in res.stderr and "--refresh never" in res.stderr
+    assert "matched nothing" not in res.stderr and drive.calls == []
+
+
+def test_du_glob_in_the_section_says_the_section_must_be_literal(du, tmp_path):
+    """N5: /my-* is not a local path in a store; the Drive section must be written out."""
+    res = du("/my-*")
+    assert res.exit_code == 1
+    assert "section" in res.stderr and "/my-files" in res.stderr
+    assert "not inside a protonfs store" not in res.stderr
+
+
+def test_du_ctrl_c_while_listing_a_pattern_parent_exits_130(du, drive):
+    """N6: the listing for a remote pattern runs before run_du; Ctrl-C there is still 130."""
+    drive.before("list", "/my-files", _interrupt)
+    res = du("/my-files/*")
+    assert res.exit_code == 130
+    assert "interrupted" in res.stderr
+
+
 def test_du_gui_glob_needs_exactly_one_match(du, gui_calls):
     assert du("--gui", "/my-files/*").exit_code == 2
     assert gui_calls == []

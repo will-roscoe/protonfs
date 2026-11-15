@@ -197,23 +197,29 @@ def default_engine() -> UsageEngine:
     )
 
 
-def remote_matches(pattern: str, engine: UsageEngine, policy) -> list[str]:
+def remote_matches(
+    pattern: str, engine: UsageEngine, policy
+) -> tuple[list[str], list[str]]:
     """Return the Drive paths a remote ``PATH`` pattern matches, for ``du``.
 
     Expands with :func:`~protonfs.usage.paths.expand_pattern`, taking each folder's
     entries from its cached listing when that is valid and fresh under ``policy``, else
-    from one ``filesystem list`` call (none under ``--refresh never``, where an uncached
-    folder matches nothing).
+    from one ``filesystem list`` call. Under ``--refresh never`` no call is made: a folder
+    with no cached listing is not checked at all.
 
     :param pattern: Drive path holding glob characters, e.g. ``/my-files/sim/run*``.
     :param engine: the engine whose cache and source to use.
     :param policy: the run's :class:`~protonfs.usage.policy.RefreshPolicy`.
-    :returns: the matching escaped Drive paths, sorted.
+    :returns: ``(matches, unchecked)``: the matching escaped Drive paths, sorted, and the
+        folders that could not be listed (only under ``--refresh never``), so the pattern
+        was not matched against them.
     :raises protonfs.drive.DriveError: if a listing fails.
 
     .. versionadded:: 3.4.0
     """
     from protonfs.usage.paths import expand_pattern
+
+    unchecked: list[str] = []
 
     def children(path: str) -> list:
         snap = engine.cache.snapshot(path)
@@ -221,12 +227,13 @@ def remote_matches(pattern: str, engine: UsageEngine, policy) -> list[str]:
                 policy.never or not policy.is_stale(snap.at, engine.clock())):
             return list(snap.rows)
         if policy.never:
+            unchecked.append(path)
             return []
         if engine.on_call is not None:
             engine.on_call("list", path)
         return engine.source.list_dir(path)
 
-    return expand_pattern(pattern, children)
+    return expand_pattern(pattern, children), unchecked
 
 
 PLAN_HINT = "% of plan needs your plan size: protonfs config set --global du.plan_size 3TB"

@@ -36,8 +36,10 @@ root or any subdirectory). A local path that is in no store is an error.
 A quoted glob pattern is expanded by ``du`` itself, like ``pull`` and ``status`` do, so it
 works for folders that are not on disk. A local pattern matches the store's files and its
 index, so offloaded folders match; a remote one matches a listing of the folder it
-names. Each match is its own section, and a pattern that matches nothing is reported
-and skipped:
+names (the Drive section itself is written out: ``/my-files/sim/*``, not ``/my-*``).
+Each match is its own section, and a pattern that matches nothing is reported and
+skipped. Under ``--refresh never`` a remote pattern is matched only against cached
+listings, and ``du`` says where it could not check it:
 
 .. code-block:: bash
 

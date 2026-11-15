@@ -815,7 +815,7 @@ def ls(
 
 
 
-def _du_targets(paths: tuple[str, ...], options) -> tuple[list, list[str], object]:
+def _du_targets(paths: tuple[str, ...], options) -> tuple[list, list[str], dict, object]:
     """Resolve ``du``'s PATHs, expanding quoted glob patterns as the sibling commands do.
 
     A local pattern matches within its store via :func:`_glob_known` (the local tree and
@@ -823,33 +823,49 @@ def _du_targets(paths: tuple[str, ...], options) -> tuple[list, list[str], objec
     one via :func:`protonfs.commands.du.remote_matches` (a listing of its literal
     parent).
 
-    :returns: ``(targets, unmatched_patterns, engine)``; ``engine`` is the one built to
-        list a remote pattern's parent (to be reused for the run), else ``None``.
+    :returns: ``(targets, unmatched_patterns, unchecked, engine)``: ``unchecked`` maps a
+        remote pattern to the folders it could not be matched against (nothing cached
+        under ``--refresh never``); ``engine`` is the one built to list a remote
+        pattern's parent (to be reused for the run), else ``None``.
     :raises protonfs.usage.paths.TargetError: for a PATH outside the supported sections
-        or outside any store.
+        or outside any store, or a pattern in the Drive section itself (``/my-*``).
     """
+    import fnmatch
     import os
 
     from protonfs.commands.du import default_engine, remote_matches
     from protonfs.context import load_context
-    from protonfs.usage.paths import is_remote, resolve_target
+    from protonfs.usage.paths import SECTIONS, TargetError, is_remote, resolve_target, split
     from protonfs.usage.policy import RefreshPolicy
 
     cwd = Path.cwd()
     targets: list = []
     unmatched: list[str] = []
+    unchecked: dict[str, list[str]] = {}
     engine = None
     for arg in paths or (None,):
         if arg is None or not _is_pattern(arg):
             targets.append(resolve_target(arg, cwd))
             continue
+        segs = split(arg)
+        if (arg.startswith("/") and segs and _is_pattern(segs[0])
+                and any(fnmatch.fnmatchcase(s, segs[0]) for s in SECTIONS)):
+            raise TargetError(
+                f"{arg!r}: write the Drive section out (/my-files or /devices); only the "
+                "folders below it can be patterns"
+            )
         if is_remote(arg):
             resolve_target(arg, cwd)  # rejects a section du cannot analyse
             policy = RefreshPolicy.parse(options.refresh)
             if engine is None:
                 engine = default_engine()
                 engine.check_account(policy)
-            found = [resolve_target(m, cwd) for m in remote_matches(arg, engine, policy)]
+            matches, missed = remote_matches(arg, engine, policy)
+            found = [resolve_target(m, cwd) for m in matches]
+            if missed:
+                unchecked[arg] = missed
+                if not found:
+                    continue  # not checked, so not "matched nothing" either
         else:
             store = resolve_target(arg, cwd).store_root  # rejects a path in no store
             rel = Path(os.path.abspath(cwd / arg)).resolve().relative_to(store).as_posix()
@@ -858,7 +874,7 @@ def _du_targets(paths: tuple[str, ...], options) -> tuple[list, list[str], objec
         if not found:
             unmatched.append(arg)
         targets.extend(t for t in found if t not in targets)
-    return targets, unmatched, engine
+    return targets, unmatched, unchecked, engine
 
 
 @main.command()
@@ -920,15 +936,23 @@ def du(path, exclude_updates, exclude, mindepth, maxdepth, depth, dirs_only, ref
     )
     engine = None
     try:
-        targets, unmatched, engine = _du_targets(path, options)
+        targets, unmatched, unchecked, engine = _du_targets(path, options)
     except TargetError as exc:
         # --gui needs exactly one PATH or the current store mapping, else a usage error.
         if gui:
             raise click.UsageError(str(exc)) from exc
         raise click.ClickException(str(exc)) from exc
+    except KeyboardInterrupt:  # while listing a remote pattern's parent
+        click.echo("\ninterrupted.", err=True)
+        sys.exit(130)
     if unmatched:
         listed = ", ".join(map(repr, unmatched))
         click.echo(f"pattern(s) matched nothing, skipped: {listed}", err=True)
+    for pattern, missed in unchecked.items():
+        click.echo(
+            f"pattern {pattern!r} not checked under {', '.join(missed)}: nothing is cached "
+            "there and --refresh never makes no Drive calls", err=True,
+        )
     if gui:
         if len(targets) != 1:
             raise click.UsageError(
