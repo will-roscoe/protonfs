@@ -170,7 +170,7 @@ class JobQueue:
                     self._rerun[key] = policy
                 else:
                     self._active[key] = policy
-                how = "after the running job" if key in self._running else "upgrading the queued job"
+                how = "after the running job" if key in self._running else "upgrading queued job"
                 self._log(f"job queued {path} refresh={_describe(policy)} (forced, {how})")
                 return True
             self._active[key] = policy
