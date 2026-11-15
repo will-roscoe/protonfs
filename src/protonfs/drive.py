@@ -65,6 +65,9 @@ LIST_TIMEOUT_SECONDS = float(os.environ.get("PROTONFS_LIST_TIMEOUT", "45"))
 # #193: `/trash` is one flat account-wide listing with no paging or filter, so a large trash
 # takes minutes (27 MB of JSON had streamed after 5 min on a measured account). It gets its
 # own, much longer bound; overridable for bigger trashes.
+# #231: bounds for the UID-to-path folder search behind `trash list`.
+FOLDER_SEARCH_MAX_LISTS = 200
+FOLDER_SEARCH_TIME_BUDGET_SECONDS = 120.0
 TRASH_LIST_TIMEOUT_SECONDS = float(os.environ.get("PROTONFS_TRASH_LIST_TIMEOUT", "900"))
 LIST_MAX_RETRIES = int(os.environ.get("PROTONFS_LIST_RETRIES", "4"))
 LIST_BACKOFF_BASE_SECONDS = float(os.environ.get("PROTONFS_LIST_BACKOFF", "2"))
@@ -1608,10 +1611,19 @@ class DriveClient:
                 raise
         return [self._restore_from_trash(path) for path in remote_paths]
 
-    def _node_uid(self, remote_path: str) -> str | None:
-        """The node UID of `remote_path`, via `filesystem info`."""
+    def node_uid(self, remote_path: str) -> str | None:
+        """The node UID of ``remote_path``, via ``filesystem info``.
+
+        :param remote_path: an absolute Drive path (a real path, not a bare UID).
+        :returns: the UID, or ``None`` when the result carries none.
+        :raises DriveError: when the path cannot be resolved.
+
+        .. versionadded:: 3.4.0
+        """
         result = self._run_json(["filesystem", "info", remote_path])
         return result.get("uid") if isinstance(result, dict) else None
+
+    _node_uid = node_uid
 
     def _restore_from_trash(self, original_path: str) -> dict:
         """Restore one node by translating its original path to a `/trash/<name>`
@@ -1661,17 +1673,84 @@ class DriveClient:
         return result if isinstance(result, list) else []
 
     def parent_name(self, parent_uid: str) -> str | None:
-        """Best-effort decrypted name of a trashed node's original parent, given its
-        ``parentUid`` from a `/trash` listing entry. proton-drive accepts a bare node
-        UID in place of a path segment (per `filesystem info --help`), so this is
-        tried directly; returns None on any failure or undecryptable name so callers
-        (``protonfs trash list``) can show "(unknown)" rather than fail the listing.
+        """Decrypted name of the node ``parent_uid``, or ``None`` when it can't be read.
+
+        :param parent_uid: a bare node UID, e.g. a ``parentUid`` from a `/trash` entry.
+        :returns: the name, or ``None`` on any failure.
+
+        .. deprecated:: 3.4.0
+           proton-drive 0.9.0 rejects a bare UID as a whole path (``Path "<uid>" not
+           supported``), so this returns ``None`` for every UID. Use
+           :meth:`find_folder_paths` to resolve folder UIDs to paths (#231).
         """
         try:
             result = self._run_json(["filesystem", "info", parent_uid])
         except DriveError:
             return None
         return decrypted_name(result) if isinstance(result, dict) else None
+
+    def find_folder_paths(
+        self,
+        root: str,
+        wanted: set[str],
+        *,
+        max_lists: int = FOLDER_SEARCH_MAX_LISTS,
+        time_budget: float = FOLDER_SEARCH_TIME_BUDGET_SECONDS,
+        timeout: float = LIST_TIMEOUT_SECONDS,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> tuple[dict[str, str], bool]:
+        """Resolve folder UIDs to display paths by walking the tree under ``root``.
+
+        proton-drive cannot look a node up by UID alone, but a UID works as a path
+        segment under its real parent, so the walk lists each folder by UID path
+        (robust to duplicate or undecryptable names) and records the decrypted-name path
+        for every folder whose UID is in ``wanted``. It is breadth-first and stops as
+        soon as everything is found, or when ``max_lists`` listings or ``time_budget``
+        seconds are used, or after a listing fails (that subtree is skipped).
+
+        :param root: absolute Drive folder to search under; ``root`` itself is not matched.
+        :param wanted: the folder UIDs to find.
+        :param max_lists: most ``filesystem list`` calls to make.
+        :param time_budget: most seconds to spend before giving up; each listing's timeout
+            is also capped at the budget remaining.
+        :param timeout: per-listing timeout in seconds.
+        :param clock: monotonic clock (overridable for tests).
+        :returns: ``(paths, complete)``: ``paths`` maps each found UID to its path;
+            ``complete`` is true when every wanted UID was found, or the whole subtree was
+            searched (so a UID missing from ``paths`` is then known not to be under
+            ``root``); when false it may just not have been reached.
+
+        .. versionadded:: 3.4.0
+        """
+        found: dict[str, str] = {}
+        if not wanted:
+            return found, True
+        root = root.rstrip("/")
+        queue: deque[tuple[str, str]] = deque([(root, root)])
+        deadline = clock() + time_budget
+        lists = 0
+        complete = True
+        while queue and len(found) < len(wanted):
+            remaining = deadline - clock()
+            if lists >= max_lists or remaining <= 0:
+                return found, False
+            walk_path, shown = queue.popleft()
+            lists += 1
+            try:
+                children = self.list(walk_path, timeout=min(timeout, remaining))
+            except (DriveError, subprocess.TimeoutExpired):
+                complete = False
+                continue
+            for entry in children:
+                if entry.get("type") != "folder" or not entry.get("uid"):
+                    continue
+                name = decrypted_name(entry)
+                label = name.replace("/", "\\/") if name is not None else f"<{entry['uid']}>"
+                child_shown = f"{shown}/{label}"
+                if entry["uid"] in wanted:
+                    found[entry["uid"]] = child_shown
+                queue.append((f"{walk_path}/{entry['uid']}", child_shown))
+        return found, complete
 
     def empty_trash(self) -> None:
         """Permanently empty /trash for the whole account. Irreversible and NOT

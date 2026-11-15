@@ -25,30 +25,84 @@ from rich.console import Console
 from rich.table import Table
 
 from protonfs.context import RepoContext
-from protonfs.drive import decrypted_name
+from protonfs.drive import FOLDER_SEARCH_TIME_BUDGET_SECONDS, DriveError, decrypted_name
 
 _CONFIRMATION_PHRASE = "empty trash"
 
 
+PARENT_UNKNOWN = "(unknown)"
+
+
+def resolve_parents(ctx: RepoContext, entries: list[dict]) -> dict[str, str]:
+    """Map each ``parentUid`` in a `/trash` listing to a human-readable original parent.
+
+    proton-drive cannot resolve a bare UID, so this works from what can be known: the
+    account root and the repo's ``remote_root`` (one ``filesystem info`` each), parents
+    that are themselves trashed (named from the same listing), and a bounded search of
+    the ``remote_root`` subtree (:meth:`DriveClient.find_folder_paths`). Whatever stays
+    unresolved gets an honest marker rather than a bare ``?``: ``(not under <remote_root>)``
+    when the whole subtree was searched, ``(not found within search limit)`` when the
+    search was cut short, ``(unknown)`` for an entry with no ``parentUid``.
+
+    :param ctx: the repo context (its ``remote_root`` bounds the search).
+    :param entries: raw `/trash` listing entries.
+    :returns: ``{parentUid: display text}`` for every distinct ``parentUid``.
+
+    .. versionadded:: 3.4.0
+    """
+    wanted = {e["parentUid"] for e in entries if e.get("parentUid")}
+    resolved: dict[str, str] = {}
+    root = ctx.config.remote_root.rstrip("/")
+    for path in ("/my-files", root):
+        uid = _node_uid_or_none(ctx, path)
+        if uid in wanted:
+            resolved[uid] = path
+    trashed = {e.get("uid"): decrypted_name(e) for e in entries if e.get("type") == "folder"}
+    for uid in wanted - set(resolved):
+        if uid in trashed:
+            shown = trashed[uid]
+            resolved[uid] = f"(trashed folder {shown})" if shown else "(trashed folder)"
+    todo = wanted - set(resolved)
+    complete = True
+    if todo:
+        click.echo(
+            f"Looking up {len(todo)} original folder(s) under {root} (up to "
+            f"{FOLDER_SEARCH_TIME_BUDGET_SECONDS / 60:g} min)...",
+            err=True,
+        )
+        found, complete = ctx.drive.find_folder_paths(root, todo)
+        resolved.update(found)
+    for uid in wanted - set(resolved):
+        resolved[uid] = f"(not under {root})" if complete else "(not found within search limit)"
+    return resolved
+
+
+def _node_uid_or_none(ctx: RepoContext, path: str) -> str | None:
+    """UID of the node at ``path``, or ``None`` if it can't be read (never raises)."""
+    try:
+        return ctx.drive.node_uid(path)
+    except DriveError:
+        return None
+
+
 def list_trash(ctx: RepoContext, console: Console) -> None:
-    """Render every item in /trash: name, original parent (best-effort -- "?" when
-    proton-drive can't resolve it), and how many OTHER trashed items share the same
-    name. A nonzero duplicate count is exactly the ambiguity `restore` warns about
-    (#56): proton-drive would act on the first name-match, not necessarily this one.
+    """Render every item in /trash: name, type, original parent path and duplicates.
+
+    The parent comes from :func:`resolve_parents` (an honest marker when it can't be
+    resolved). The duplicate column counts how many OTHER trashed items share the name,
+    which is exactly the ambiguity `restore` warns about (#56): proton-drive would act on
+    the first name-match, not necessarily this one.
+
+    .. versionchanged:: 3.4.0
+       The original parent is a resolved path (was always ``?``, #231).
     """
     entries = ctx.drive.list_trash()
     names = [decrypted_name(entry) for entry in entries]
     counts = Counter(name for name in names if name is not None)
-
-    parent_cache: dict[str, str | None] = {}
+    parents = resolve_parents(ctx, entries)
 
     def parent_for(entry: dict) -> str:
-        parent_uid = entry.get("parentUid")
-        if not parent_uid:
-            return "?"
-        if parent_uid not in parent_cache:
-            parent_cache[parent_uid] = ctx.drive.parent_name(parent_uid)
-        return parent_cache[parent_uid] or "?"
+        return parents.get(entry.get("parentUid") or "", PARENT_UNKNOWN)
 
     table = Table("name", "type", "original parent", "duplicates")
     for entry, name in zip(entries, names):

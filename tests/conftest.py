@@ -56,7 +56,9 @@ class FakeDrive:
         report_claimed_size: bool = True,
         version: str | None = "v0.4.6",
         authed: bool = True,
-        parent_names: dict[str, str | None] | None = None,
+        folder_paths: dict[str, str] | None = None,
+        node_uids: dict[str, str] | None = None,
+        folder_search_complete: bool = True,
         no_thumbnail_codec: tuple[str, ...] = (),
         fail_moves: bool = False,
         fail_renames: bool = False,
@@ -71,8 +73,10 @@ class FakeDrive:
         self.deleted: list[str] = []
         self.restored: list[str] = []
         self.emptied_trash_calls: int = 0
-        self._parent_names: dict[str, str | None] = parent_names or {}
-        self.parent_name_calls: list[str] = []
+        self._folder_paths = folder_paths or {}
+        self._node_uids = node_uids or {}
+        self._folder_search_complete = folder_search_complete
+        self.find_folder_calls: list[tuple[str, frozenset]] = []
         self.walk_roots: list[str] = []
         self.identity_calls: list[str] = []
         self.list_calls: list[str] = []
@@ -400,9 +404,13 @@ class FakeDrive:
     def list_trash(self, timeout=None):
         return self.list("/trash")
 
-    def parent_name(self, parent_uid):
-        self.parent_name_calls.append(parent_uid)
-        return self._parent_names.get(parent_uid)
+    def node_uid(self, remote_path):
+        return self._node_uids.get(remote_path)
+
+    def find_folder_paths(self, root, wanted, **kwargs):
+        self.find_folder_calls.append((root, frozenset(wanted)))
+        found = {u: p for u, p in self._folder_paths.items() if u in wanted}
+        return found, self._folder_search_complete
 
     def empty_trash(self):
         self.emptied_trash_calls += 1
