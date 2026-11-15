@@ -21,9 +21,31 @@ class FakeClock:
         self.now += seconds
 
 
+class TickingClock(FakeClock):
+    """A :class:`FakeClock` that also moves ``tick`` seconds on every read.
+
+    Real time passes between Drive calls, so measurements made later in a run carry later
+    times; a clock that never moves on its own hides ordering bugs (a trash pass's own
+    listings look exactly as old as the pass).
+    """
+
+    def __init__(self, start: float = 1_800_000_000.0, tick: float = 0.01) -> None:
+        super().__init__(start)
+        self.tick = tick
+
+    def __call__(self) -> float:
+        self.now += self.tick
+        return self.now
+
+
 @pytest.fixture()
 def clock() -> FakeClock:
     return FakeClock()
+
+
+@pytest.fixture()
+def ticking_clock() -> TickingClock:
+    return TickingClock()
 
 
 @pytest.fixture()

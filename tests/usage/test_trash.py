@@ -319,6 +319,30 @@ def test_a_relisted_parent_covers_the_trash_of_a_child_trashed_since(usage_cache
     assert figures_for(eng, paths) == {p: eng.trash_for(p) for p in paths}
 
 
+def test_the_pass_own_listings_never_override_its_verdict(usage_cache, ticking_clock):
+    """N3/R39: with real time, the pass's breakdowns are later than its start; they must not
+    count as listings made since the pass (a zero remainder over a frozen child's older
+    figure stays unknown, as the pass said)."""
+    from protonfs.usage.report import collect_rows
+
+    d = TreeDrive()
+    d.add_file(P + "/F/x", 1000)
+    d.add_file(P + "/k", 10)
+    d.add_folder(P + "/T")
+    eng = UsageEngine(d, usage_cache, clock=ticking_clock)
+    eng.breakdown(P, REVAL, NO_RULES, target=P)
+    d.trash(P + "/T")
+    ticking_clock.advance(60)
+    rules = ExcludeRules(freeze=["my-files/p/F"])
+
+    rows = collect_rows(eng, "/", RefreshPolicy.parse("5d"), rules, now=ticking_clock.now)
+
+    (group,) = [g for g in eng.trash_summary().groups if g.folders]
+    assert group.bytes is None
+    assert rows[0].path == "/" and rows[0].in_trash_complete is False
+    assert eng.trash_summary().ended_at > eng.trash_summary().at
+
+
 def test_complete_figure_reads_no_snapshots(usage_cache, clock):
     """M7: a complete figure needs no walk of the cached subtree."""
     d = TreeDrive()

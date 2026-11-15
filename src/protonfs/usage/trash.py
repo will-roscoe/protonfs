@@ -75,6 +75,9 @@ class TrashSummary:
     :ivar partial: why the listing is incomplete (timeout or error text), else ``None``.
     :ivar unresolved_parents: the uids of those original parents, so a later run can tell
         when one has been listed; ``None`` for a summary stored before they were recorded.
+    :ivar ended_at: Unix time the pass finished, or ``None`` for a summary stored before it
+        was recorded. Only listings made after it count as newer than the pass; the
+        pass's own breakdowns fall between :attr:`at` and this.
 
     .. versionadded:: 3.4.0
     """
@@ -84,6 +87,13 @@ class TrashSummary:
     unresolved_folders: int
     partial: str | None
     unresolved_parents: tuple[str, ...] | None = ()
+    ended_at: float | None = None
+
+    @property
+    def listed_after(self) -> float:
+        """Listings made after this time are newer than the pass: :attr:`ended_at`, else
+        :attr:`at`."""
+        return self.at if self.ended_at is None else self.ended_at
 
     @property
     def total_known(self) -> int:
@@ -113,6 +123,7 @@ class TrashSummary:
             "partial": self.partial,
             "unresolved_parents": (None if self.unresolved_parents is None
                                    else list(self.unresolved_parents)),
+            "ended_at": self.ended_at,
         })
 
     @classmethod
@@ -132,6 +143,7 @@ class TrashSummary:
                 int(d["unresolved_folders"]),
                 d["partial"],
                 None if parents is None else tuple(str(u) for u in parents),
+                None if d.get("ended_at") is None else float(d["ended_at"]),
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError(f"not a trash summary: {exc}") from exc
@@ -206,13 +218,15 @@ def run_trash_pass(
     now = engine.clock()
     rules = rules if rules is not None else ExcludeRules()
     if policy.never:
-        return TrashSummary(now, (), 0, "trash not refreshed (refresh policy is never)")
+        return TrashSummary(now, (), 0, "trash not refreshed (refresh policy is never)",
+                            (), now)
     try:
         entries = engine.source.list_trash(timeout=timeout)
     except subprocess.TimeoutExpired as exc:
-        return TrashSummary(now, (), 0, f"trash listing timed out after {exc.timeout:.0f} s")
+        return TrashSummary(now, (), 0, f"trash listing timed out after {exc.timeout:.0f} s",
+                            (), engine.clock())
     except DriveError as exc:
-        return TrashSummary(now, (), 0, str(exc) or type(exc).__name__)
+        return TrashSummary(now, (), 0, str(exc) or type(exc).__name__, (), engine.clock())
 
     files: dict[str | None, list[int]] = {}
     folders: dict[str | None, int] = {}
@@ -247,7 +261,8 @@ def run_trash_pass(
         folder_bytes, reason = _folder_bytes(engine, bd, file_bytes)
         groups.append(TrashGroup(parent, 0, count, folder_bytes, reason))
     groups.sort(key=lambda g: (g.parent_path or "", g.folders))
-    return TrashSummary(now, tuple(groups), unresolved, None, tuple(sorted(unresolved_uids)))
+    return TrashSummary(now, tuple(groups), unresolved, None, tuple(sorted(unresolved_uids)),
+                        engine.clock())
 
 
 def excluded(rules: ExcludeRules, path: str) -> bool:
@@ -301,9 +316,10 @@ def figure_for(engine: UsageEngine, path: str) -> TrashFigure:
 
     Reads the stored summary and cache only; makes no Drive calls. With a stored trash
     pass, the figure sums, for each folder ``D`` under ``path``, the trash whose original
-    parent is ``D``: from ``D``'s cached listing when that listing is newer than the pass
-    (its remainder: ``in_trash`` counts, a zero remainder is 0, any other label leaves it
-    unknown), else from the pass's groups for ``D``. A folder whose newer-listed parent no
+    parent is ``D``: from ``D``'s cached listing when that listing was made after the pass
+    ended (:attr:`TrashSummary.listed_after`; its remainder: ``in_trash`` counts, a zero
+    remainder is 0, any other label leaves it unknown), else from the pass's groups for
+    ``D``. A folder whose newer-listed parent no
     longer lists it is not counted again, since that parent's remainder holds it. When
     incomplete, ``unchecked_bytes`` bounds what is missing (see :class:`TrashFigure`).
 
@@ -382,7 +398,8 @@ class _PassFigures:
     def __init__(self, engine: UsageEngine, summary: TrashSummary, base: str) -> None:
         self.engine = engine
         self.summary = summary
-        self.newer = engine.cache.snapshots_newer_than(summary.at, under=base)
+        # Listings the pass made itself are not newer than it: they back its own verdict.
+        self.newer = engine.cache.snapshots_newer_than(summary.listed_after, under=base)
         self.children = {
             p: [child_path(p, r.name, r.uid, r.decrypted) for r in snap.rows
                 if r.kind == "folder"]
