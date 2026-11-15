@@ -66,8 +66,9 @@
       } else {
         n.value = n.row.size == null ? 0 : n.row.size;
         n.placeholder = n.row.size == null;
-        n.sized = n.kind === "folder" && n.state !== "listed" && n.state !== "error" &&
-          !n.placeholder;
+        // hatched: not walked, or listed but none of its children has a size to draw
+        n.sized = n.kind === "folder" && n.state !== "error" && !n.placeholder &&
+          (n.state !== "listed" || n.unsized > 0);
       }
     })(root);
     return root;
@@ -103,7 +104,7 @@
     } else if (r.kind === "folder") line(box, "in trash unknown");
     line(box, r.age_seconds == null ? "age unknown" : formatAge(r.age_seconds) + " ago");
     line(box, "state " + (r.exclusion === "none" ? r.state : r.state + " (" + r.exclusion + ")") +
-      (n.sized ? ", not walked" : ""));
+      (n.sized ? (r.state === "listed" ? ", children without a size" : ", not walked") : ""));
     if (n.unsized) line(box, n.unsized + " child item(s) without a size are not drawn");
     if (r.error) line(box, r.error, "tt-error");
     box.hidden = false;
@@ -131,7 +132,6 @@
   function bind(sel) {
     sel.on("mouseenter", function (ev, d) {
         showTip(ev, d.data);
-        if (d.data.kind !== "gap" && d.data.path !== S.selected) PFS.select(d.data.path);
       })
       .on("mousemove", moveTip)
       .on("mouseleave", hideTip)
@@ -139,8 +139,11 @@
         var n = d.data;
         if (n.kind === "gap") return;
         if (n.path === S.path) { PFS.up(); return; }
-        if (n.kind === "folder") PFS.navigate(n.path);
-        else PFS.select(n.path);
+        PFS.select(n.path);
+      })
+      .on("dblclick", function (ev, d) {
+        var n = d.data;
+        if (n.kind === "folder" && n.path !== S.path) PFS.navigate(n.path);
       });
   }
   function valueLabel(r) {
@@ -154,7 +157,12 @@
     if (max < 2) return "";
     return text.length <= max ? text : text.slice(0, Math.max(1, max - 1)) + "…";
   }
-  function defs(svg) {
+  // One shared, always-rendered defs element: a paint server inside a display:none subtree
+  // (the hidden pane) does not resolve, so per-chart patterns would not hatch the other tab.
+  function sharedDefs() {
+    if (document.getElementById("pfs-defs")) return;
+    var svg = d3.select(document.body).append("svg").attr("id", "pfs-defs")
+      .attr("width", 0).attr("height", 0).attr("aria-hidden", "true");
     var d = svg.append("defs");
     var p = d.append("pattern").attr("id", "pfs-hatch").attr("width", 6).attr("height", 6)
       .attr("patternUnits", "userSpaceOnUse").attr("patternTransform", "rotate(45)");
@@ -174,7 +182,6 @@
   function newSvg(box, w, h, label) {
     var svg = d3.select(box).append("svg").attr("width", w).attr("height", h)
       .attr("viewBox", "0 0 " + w + " " + h).attr("role", "img").attr("aria-label", label);
-    defs(svg);
     return svg;
   }
   function emptyNote(box, text) {
@@ -193,7 +200,12 @@
     box.replaceChildren();
     var w = box.clientWidth, h = box.clientHeight;
     if (!root || w < 20 || h < 20) return;
-    if (!root.value) { emptyNote(box, "Nothing with a known size here to draw."); return; }
+    if (!root.value || !root.children) {
+      emptyNote(box, root.children || !root.value
+        ? "Nothing with a known size here to draw."
+        : root.name + " has no listing yet (" + valueLabel(root.row) + "); walk it to see inside.");
+      return;
+    }
     var top = build(root);
     d3.treemap().tile(d3.treemapSquarify).size([w, h]).paddingInner(1).paddingOuter(2)
       .paddingTop(function (d) { return d.children && d.depth > 0 ? HEADER : 2; })
@@ -224,6 +236,12 @@
         return fit(txt.trim(), pw, 6.4);
       });
     bind(g);
+    if (root.unsized) {
+      var note = document.createElement("p");
+      note.className = "chart-note";
+      note.textContent = root.unsized + " item(s) without a size are not drawn.";
+      box.appendChild(note);
+    }
   }
 
   // ------------------------------------------------------------------ sunburst / icicle
@@ -286,6 +304,8 @@
       g.filter(function (d) { return d.data.sized || d.data.kind === "gap" &&
         d.data.gapKind !== "in_trash"; })
         .append("path").attr("class", "hatch").attr("d", arc);
+      // a zero-width placeholder shares its start angle with the next sibling: keep it on top
+      g.filter(function (d) { return d.data.placeholder; }).raise();
       var hub = c.append("g").attr("class", "node hub root")
         .attr("data-path", root.path);
       hub.append("circle").attr("r", ring - 1).attr("class", "fill");
@@ -309,12 +329,23 @@
     var m = document.querySelector('meta[name="pfs-token"]');
     return m ? m.getAttribute("content") : "";
   }
-  function post(url, body) {
+  function say(text) {
+    var m = document.getElementById("chart-msg");
+    if (m) m.textContent = text || "";
+  }
+  // POST an action; any failure (HTTP error, network) is shown in the bar, never thrown.
+  function post(url, body, label) {
+    say("");
     return fetch(url, {
       method: "POST", credentials: "same-origin",
       headers: { "X-Protonfs-Token": token(), "Content-Type": "application/json" },
       body: JSON.stringify(body || {})
-    });
+    }).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (data) {
+        if (!r.ok) say(label + " failed: " + (data.error || "HTTP " + r.status));
+        return r.ok ? data : null;
+      });
+    }).catch(function (e) { say(label + " failed: " + e.message); return null; });
   }
   function btn(id, text, title) {
     var b = document.createElement("button");
@@ -329,6 +360,7 @@
   }
   function ensureBar() {
     if (bar) return bar;
+    sharedDefs();
     bar = document.createElement("div");
     bar.id = "chart-actions";
     var refresh = btn("chart-refresh", "Refresh now", "Re-measure the current folder now");
@@ -339,28 +371,42 @@
     var prog = document.createElement("progress"); prog.id = "walkbar-meter"; prog.max = 1;
     var cancel = btn("chart-walk-cancel", "Cancel", "Stop the walk before its next folder");
     wb.appendChild(txt); wb.appendChild(prog); wb.appendChild(cancel);
-    bar.appendChild(refresh); bar.appendChild(walk); bar.appendChild(wb);
+    var msg = document.createElement("span");
+    msg.id = "chart-msg"; msg.setAttribute("role", "alert");
+    bar.appendChild(refresh); bar.appendChild(walk); bar.appendChild(wb); bar.appendChild(msg);
     document.getElementById("charts").appendChild(bar);
     refresh.addEventListener("click", function () {
-      if (S.path != null) post("/api/refresh", { path: S.path });
+      if (S.path != null) post("/api/refresh", { path: S.path }, "Refresh");
     });
     walk.addEventListener("click", function () {
       var p = selectedFolder();
-      if (p) post("/api/walk", { paths: [p] });
+      if (p) post("/api/walk", { paths: [p] }, "Walk").then(function (d) {
+        if (d && d.started === false) say("A walk is already running.");
+      });
     });
-    cancel.addEventListener("click", function () { post("/api/walk/cancel", {}); });
+    cancel.addEventListener("click", function () { post("/api/walk/cancel", {}, "Cancel"); });
     var live = document.getElementById("progress");
     if (live) new MutationObserver(renderBar).observe(live, { childList: true, characterData: true,
       subtree: true });
     return bar;
   }
+  var endKey = "", endTimer = null, dismissed = false, END_LINGER_MS = 5000;
   function renderBar() {
     if (!bar) return;
     var p = S.progress, wb = document.getElementById("walkbar");
     document.getElementById("chart-walk").disabled = !selectedFolder();
-    wb.hidden = !p;
+    var running = p && p.state === "running";
+    // a finished/cancelled/failed walk's line clears itself after a few seconds
+    var key = p ? p.state + "|" + (p.message || "") : "";
+    if (p && !running && key !== endKey) {
+      endKey = key; dismissed = false;
+      clearTimeout(endTimer);
+      endTimer = setTimeout(function () { dismissed = true; renderBar(); },
+        PFS.charts.endLingerMs || END_LINGER_MS);
+    }
+    if (running) { endKey = ""; dismissed = false; clearTimeout(endTimer); }
+    wb.hidden = !p || dismissed;
     if (!p) return;
-    var running = p.state === "running";
     document.getElementById("walkbar-text").textContent = running
       ? "Walking " + p.done + (p.total ? " / " + p.total : "") + " folders"
       : p.state === "done" ? "Walk finished" : p.state === "cancelled" ? "Walk cancelled"
@@ -387,9 +433,10 @@
     ensureBar();
     renderBar();
     var depth = (S.settings && S.settings.maxdepth) || 3;
-    var sig = [S.tab, S.icicle, S.mode, S.path, sizeKey()].join("|");
-    var same = sig === lastSig && S.rows === lastRows;
-    lastSig = sig; lastRows = S.rows;
+    // compare content, not identity: every refetch assigns a fresh S.rows array
+    var sig = [S.tab, S.icicle, S.mode, S.path, depth, sizeKey(), JSON.stringify(S.rows)].join("|");
+    var same = sig === lastSig;
+    lastSig = sig;
     if (same) { restyleSelection(); return; }
     hideTip();
     var root = hierarchy(S, depth);
@@ -399,8 +446,11 @@
       PFS.charts.treemap(document.getElementById("chart-treemap"), root, S.mode);
     }
   }
-  var lastRows = null;
-  window.addEventListener("resize", function () { render(); });
+  var resizeTimer = null;
+  window.addEventListener("resize", function () {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(render, 120);
+  });
 
   PFS.charts = { render: render, treemap: treemap, sunburst: sunburst, hierarchy: hierarchy };
   if (S.rows && S.rows.length) render();

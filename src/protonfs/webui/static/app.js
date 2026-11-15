@@ -226,8 +226,9 @@
       if (r.checked_at != null) age.title = new Date(r.checked_at * 1000).toLocaleString();
       tr.appendChild(age);
       var full = r.exclusion === "none" ? r.state : r.state + " (" + r.exclusion + ")";
-      var st = el("td", { "class": "state" }, r.exclusion === "freeze" ? "frozen"
-        : r.exclusion === "hide" ? "hidden" : r.state);
+      var st = el("td", { "class": "state" });
+      st.appendChild(el("span", { "class": "st" }, r.exclusion === "freeze" ? "frozen"
+        : r.exclusion === "hide" ? "hidden" : r.state));
       st.title = r.error ? full + ": " + r.error : full;
       tr.appendChild(st);
       frag.appendChild(tr);

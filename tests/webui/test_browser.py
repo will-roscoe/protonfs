@@ -2,19 +2,13 @@
 
 from __future__ import annotations
 
-import io
 import os
-import threading
-from datetime import datetime
 
 import pytest
-from tests.usage.conftest import FakeClock
 from tests.usage.treedrive import TreeDrive
+from tests.webui._demo import serve_demo
 
-from protonfs.usage.cache import UsageCache
-from protonfs.usage.engine import UsageEngine
-from protonfs.webui.logtarget import resolve_log_target
-from protonfs.webui.server import THROTTLE_NOTICE, serve
+from protonfs.webui.server import THROTTLE_NOTICE
 from protonfs.webui.settings import GuiSettings
 
 pytestmark = pytest.mark.browser
@@ -24,11 +18,6 @@ TIMEOUT = 5000
 TARGET = "/my-files"
 LONG_NAME = "L" * 120
 SHOTS = os.environ.get("PFS_SHOTS")  # directory for screenshots, when set
-
-
-class Demo:
-    def __init__(self, url, drive, engine):
-        self.url, self.drive, self.engine = url, drive, engine
 
 
 @pytest.fixture()
@@ -42,50 +31,8 @@ def demo_server(tmp_path):
     drive.add_file("/my-files/gone/h", 300)
     drive.add_file("/my-files/sizedonly/deep/q", 2222)
     drive.add_file("/my-files/" + LONG_NAME + "/w", 10)
-    drive.on_slow_size = None  # lets serve() wire the throttle notice
-    cache = UsageCache(tmp_path / "du.sqlite")
-    engine = UsageEngine(drive, cache, clock=FakeClock())
-    out, err = io.StringIO(), io.StringIO()
-    ready, stop = threading.Event(), threading.Event()
-    log = resolve_log_target(str(tmp_path / "server.log"), now=datetime.now())
-    errors = []
-
-    def run():
-        try:
-            serve(engine, GuiSettings(TARGET, freeze=["frozen"]), port=None, log=log,
-                  open_browser=False, stdout=out, stderr=err, ready=ready, stop=stop)
-        except BaseException as exc:  # noqa: BLE001
-            errors.append(exc)
-            ready.set()
-
-    t = threading.Thread(target=run, daemon=True)
-    t.start()
-    assert ready.wait(15), "server did not start"
-    assert not errors, errors
-    url = out.getvalue().strip().splitlines()[-1]
-    yield Demo(url, drive, engine)
-    stop.set()
-    t.join(5)
-    cache.close()
-
-
-# module scope: two sync_playwright() instances cannot be alive in one thread at once
-@pytest.fixture(scope="module")
-def pw_browser():
-    try:
-        pw = sync_api.sync_playwright().start()
-    except Exception as exc:  # noqa: BLE001
-        pytest.skip(f"playwright cannot start: {exc!r}")
-    try:
-        if not os.path.exists(pw.chromium.executable_path):
-            pytest.skip("playwright chromium is not installed")
-        b = pw.chromium.launch()
-    except Exception as exc:  # noqa: BLE001
-        pw.stop()
-        pytest.skip(f"chromium cannot launch: {exc!r}")
-    yield b
-    b.close()
-    pw.stop()
+    with serve_demo(tmp_path, drive, GuiSettings(TARGET, freeze=["frozen"])) as demo:
+        yield demo
 
 
 @pytest.fixture()

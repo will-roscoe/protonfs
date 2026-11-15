@@ -12,7 +12,7 @@
   stroke: color-mix(in srgb, var(--bg) 70%, transparent); stroke-width: 2px; }
 #charts text.label.sub { fill: var(--muted); }
 #charts .hatch { fill: url(#pfs-hatch); pointer-events: none; }
-#charts .hatch-line { stroke: var(--fg); stroke-opacity: .35; stroke-width: 1.4; }
+.hatch-line { stroke: var(--fg); stroke-opacity: .35; stroke-width: 1.4; }
 #charts g.node.gap-trash .fill { fill: var(--trash); fill-opacity: .55; }
 #charts g.node.gap-unattributed .fill { fill: var(--gap); fill-opacity: .45; }
 #charts g.node.gap-unreconciled .fill { fill: var(--err); fill-opacity: .25;
@@ -32,3 +32,8 @@
   background: var(--bg); color: var(--fg); box-shadow: 0 2px 8px rgba(0, 0, 0, .25); }
 #chart-tooltip .tt-name { font-weight: 600; word-break: break-all; }
 #chart-tooltip .tt-error { color: var(--err); }
+#charts g.node.placeholder path.fill { pointer-events: all; }
+.chart-body .chart-note { position: absolute; left: 6px; bottom: 4px; margin: 0; padding: 1px 6px;
+  font-size: 12px; color: var(--muted); background: var(--bg); border-radius: 3px; }
+#chart-msg { color: var(--err); }
+#pfs-defs { position: absolute; width: 0; height: 0; overflow: hidden; }

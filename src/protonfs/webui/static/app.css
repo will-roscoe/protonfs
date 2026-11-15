@@ -55,7 +55,7 @@ tbody tr:hover { background: color-mix(in srgb, var(--bg) 92%, var(--fg)); }
 tbody tr.selected { background: var(--sel); }
 tr.folder .name { font-weight: 500; }
 td.name .nm { display: inline-block; max-width: 14em; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; }
-td.state { max-width: 8em; overflow: hidden; text-overflow: ellipsis; }
+td.state .st { display: inline-block; max-width: 8em; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; }
 .indent { display: inline-block; }
 tr.gap-trash td, tr.gap-unattributed td, tr.gap-unreconciled td { font-style: italic; color: var(--gap); }
 tr.gap-trash td.name { color: var(--trash); }
