@@ -378,11 +378,15 @@ def serve(
     :param ready: set once the server is listening and the URL is printed.
     :param stop: when set, the server shuts down and ``serve`` returns.
     :param plan_size: plan size in bytes for percentage columns, or ``None``.
-    :raises click.ClickException: if the log cannot be opened, an explicit ``port`` is in
-        use or the address cannot be bound.
+    :raises click.ClickException: if an exclusion pattern in ``settings`` is invalid, the log
+        cannot be opened, an explicit ``port`` is in use or the address cannot be bound.
 
     .. versionadded:: 3.4.0
     """
+    try:
+        settings.rules()
+    except ValueError as exc:
+        raise click.ClickException(f"invalid -x/-X pattern: {exc}") from exc
     try:
         stream = log.open()
     except OSError as exc:

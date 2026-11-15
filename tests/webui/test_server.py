@@ -339,6 +339,25 @@ def test_settings_roundtrip(srv):
     assert srv.json("GET", f"/api/tree?path={TARGET}&depth=1&queue=0")[0] == 200
 
 
+def test_invalid_exclusion_pattern_is_rejected_and_settings_kept(srv):
+    status, _ = srv.json("POST", "/api/settings", {"freeze": ["keep"]})
+    assert status == 200
+    for bad in (["!"], ["\\"], ["a", "!"]):
+        status, body = srv.json("POST", "/api/settings", {"hide": bad})
+        assert status == 400 and body["error"], bad
+    status, body = srv.json("GET", "/api/settings")
+    assert (body["freeze"], body["hide"]) == (["keep"], [])
+    assert srv.json("GET", "/api/root?queue=0")[0] == 200  # nothing 500s afterwards
+    assert srv.json("GET", f"/api/tree?path={TARGET}&depth=1&queue=0")[0] == 200
+
+
+def test_serve_refuses_invalid_initial_patterns(tmp_path):
+    bad = GuiSettings(TARGET, freeze=["!"])
+    *_, errors = _start(tmp_path, settings=bad)
+    assert len(errors) == 1 and isinstance(errors[0], click.ClickException)
+    assert "pattern" in errors[0].message
+
+
 def test_root_includes_trash(srv):
     status, body = srv.json("GET", "/api/root")
     assert status == 200 and "trash" in body and body["rows"][0]["path"] == TARGET
