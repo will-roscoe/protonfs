@@ -175,13 +175,17 @@ class Api:
     def refresh(self, path: str) -> dict:
         """Queue a fresh breakdown of ``path`` (refresh ``0``: everything re-measured).
 
+        The refresh always starts after this call: a navigation job already queued for
+        ``path`` is upgraded to refresh ``0``, and one already running is followed by a
+        second, forced run.
+
         :param path: escaped Drive path within the target.
-        :returns: ``{"queued": bool, "pending": [paths]}``; ``queued`` is ``False`` when the
-            same path was already queued or running.
+        :returns: ``{"queued": bool, "pending": [paths]}``; ``queued`` is ``False`` only when
+            the job queue is closed.
         :raises ValueError: if ``path`` is outside the target.
         """
         self._within(path)
-        queued = self.jobs.submit("breakdown", path, _FORCE)
+        queued = self.jobs.submit("breakdown", path, _FORCE, force=True)
         return {"queued": queued, "pending": self.jobs.pending()}
 
     def walk(self, paths: list) -> dict:

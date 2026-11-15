@@ -62,6 +62,8 @@ class JobQueue:
         self._lock = threading.Lock()
         self._jobs: queue.Queue = queue.Queue()
         self._active: dict = {}
+        self._running: set = set()
+        self._rerun: dict = {}
         self._tried: set = set()
         self._subs: list = []
         self._walking = False
@@ -109,21 +111,42 @@ class JobQueue:
 
     # -------------------------------------------------------------- breakdowns
 
-    def submit(self, kind: str, path: str, policy: RefreshPolicy) -> bool:
+    def submit(
+        self, kind: str, path: str, policy: RefreshPolicy, *, force: bool = False
+    ) -> bool:
         """Queue a job unless the same ``(kind, path)`` is already queued or running.
+
+        With ``force`` (a user's "refresh now") a duplicate is not dropped: a queued job is
+        upgraded to run under ``policy``, and a running one is followed by a second run
+        under ``policy``, so the refresh always starts after this call.
 
         :param kind: ``"breakdown"``.
         :param path: escaped Drive path.
         :param policy: the refresh policy the job runs under.
-        :returns: ``True`` if queued, ``False`` if it was a duplicate or the queue is closed.
+        :param force: make sure a run under ``policy`` starts after this call, even when the
+            path is already queued or running.
+        :returns: ``True`` if a job was queued (or upgraded, or a re-run queued), ``False``
+            if it was a duplicate (without ``force``) or the queue is closed.
         :raises ValueError: for an unknown ``kind``.
+
+        .. versionchanged:: 3.4.0
+           Added ``force``.
         """
         if kind != "breakdown":
             raise ValueError(f"unknown job kind {kind!r}")
+        key = (kind, path)
         with self._lock:
-            if self._closed or (kind, path) in self._active:
+            if self._closed:
                 return False
-            self._active[(kind, path)] = policy
+            if key in self._active:
+                if not force:
+                    return False
+                if key in self._running:
+                    self._rerun[key] = policy
+                else:
+                    self._active[key] = policy
+                return True
+            self._active[key] = policy
         self._jobs.put((kind, path, policy))
         return True
 
@@ -143,18 +166,29 @@ class JobQueue:
             if item is _STOP:
                 return
             kind, path, policy = item
+            key = (kind, path)
+            with self._lock:
+                policy = self._active.get(key, policy)  # a forced submit may have upgraded it
+                self._running.add(key)
             events: list = []
             try:
                 events = self._run_breakdown(path, policy)
             except Exception as exc:  # noqa: BLE001 - a job must never kill its worker
                 events = [{"event": "error", "path": path, "message": str(exc) or repr(exc)}]
             # leave pending() before anyone hears the result, so a reader reacting to the
-            # event never still sees the path as pending
+            # event never still sees the path as pending (unless a forced re-run follows)
             with self._lock:
-                self._active.pop((kind, path), None)
+                self._running.discard(key)
+                again = self._rerun.pop(key, None)
+                if again is None:
+                    self._active.pop(key, None)
+                else:
+                    self._active[key] = again
                 self._tried.add(path)
             for ev in events:
                 self._publish(ev)
+            if again is not None:
+                self._jobs.put((kind, path, again))
 
     def _run_breakdown(self, path: str, policy: RefreshPolicy) -> list:
         s = self._settings()

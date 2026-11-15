@@ -146,9 +146,9 @@ def _record_submits(api, monkeypatch) -> list:
     seen: list = []
     real = api.jobs.submit
 
-    def submit(kind, path, policy):
+    def submit(kind, path, policy, **kw):
         seen.append(path)
-        return real(kind, path, policy)
+        return real(kind, path, policy, **kw)
 
     monkeypatch.setattr(api.jobs, "submit", submit)
     return seen
@@ -259,7 +259,9 @@ def test_refresh_forces_fresh(make, drive, engine):
     gate = threading.Event()
     drive.before("list", f"{TARGET}/B", lambda: gate.wait(5))
     assert api.refresh(f"{TARGET}/B")["queued"] is True
-    assert api.refresh(f"{TARGET}/B")["queued"] is False
+    # a forced refresh while one is in flight queues a re-run behind it (R34), so the
+    # page never reports success for a refresh that will not happen
+    assert api.refresh(f"{TARGET}/B")["queued"] is True
     gate.set()
 
 
@@ -505,3 +507,72 @@ def test_invalidated_breakdown_is_queued_by_new_mode_once(make, drive, monkeypat
     del submitted[:]
     api.tree(parent, 1, queue="new")  # re-measured: valid again, nothing to queue
     assert submitted == []
+
+
+def _spy_policies(engine, monkeypatch):
+    seen: list = []
+    real = engine.breakdown
+
+    def spy(path, policy, *a, **kw):
+        seen.append((path, policy.fresh_only))
+        return real(path, policy, *a, **kw)
+
+    monkeypatch.setattr(engine, "breakdown", spy)
+    return seen
+
+
+def test_refresh_upgrades_a_queued_navigation_job_to_forced(engine, drive, monkeypatch):
+    seen = _spy_policies(engine, monkeypatch)
+    gate = threading.Event()
+    drive.before("list", f"{TARGET}/A", lambda: gate.wait(5))
+    holder = {}
+    jobs = JobQueue(engine, lambda: holder["api"].settings, workers=1)
+    holder["api"] = api = Api(engine, jobs, GuiSettings(TARGET))
+    try:
+        stale = RefreshPolicy.parse("5d")
+        jobs.submit("breakdown", f"{TARGET}/A", stale)  # occupies the only worker
+        jobs.submit("breakdown", f"{TARGET}/B", stale)  # queued behind it
+        assert api.refresh(f"{TARGET}/B")["queued"] is True
+        gate.set()
+        _wait_idle(api)
+    finally:
+        gate.set()
+        jobs.close()
+    assert (f"{TARGET}/B", True) in seen and (f"{TARGET}/B", False) not in seen
+
+
+def test_refresh_during_a_running_job_reruns_forced_after_it(engine, drive, monkeypatch):
+    seen = _spy_policies(engine, monkeypatch)
+    started, gate = threading.Event(), threading.Event()
+    drive.before("list", f"{TARGET}/A", lambda: (started.set(), gate.wait(5)))
+    holder = {}
+    jobs = JobQueue(engine, lambda: holder["api"].settings)
+    holder["api"] = api = Api(engine, jobs, GuiSettings(TARGET))
+    q = jobs.subscribe()
+    try:
+        jobs.submit("breakdown", f"{TARGET}/A", RefreshPolicy.parse("5d"))
+        assert started.wait(5)
+        assert api.refresh(f"{TARGET}/A")["queued"] is True
+        drive.before("list", f"{TARGET}/A", lambda: None)  # the re-run is not held
+        gate.set()
+        _next(q, "breakdown")
+        _next(q, "breakdown")
+        _wait_idle(api)
+    finally:
+        gate.set()
+        jobs.close()
+    assert [x for x in seen if x[0] == f"{TARGET}/A"] == [(f"{TARGET}/A", False),
+                                                           (f"{TARGET}/A", True)]
+
+
+def test_plain_submit_still_dedupes(engine, drive):
+    gate = threading.Event()
+    drive.before("list", f"{TARGET}/A", lambda: gate.wait(5))
+    jobs = JobQueue(engine, lambda: GuiSettings(TARGET))
+    try:
+        pol = RefreshPolicy.parse("5d")
+        assert jobs.submit("breakdown", f"{TARGET}/A", pol) is True
+        assert jobs.submit("breakdown", f"{TARGET}/A", pol) is False
+    finally:
+        gate.set()
+        jobs.close()
