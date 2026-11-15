@@ -187,8 +187,22 @@ def test_gap_not_in_trash_leaves_folder_group_unmeasured(usage_cache, clock):
 
 def test_summary_json_round_trip():
     s = TrashSummary(5.0, (TrashGroup(P, 1, 0, 7), TrashGroup(None, 0, 2, None, "why")), 3,
-                     "x")
+                     "x", ("uid-9",))
     assert TrashSummary.from_json(s.to_json()) == s
+
+
+def test_trash_pass_records_the_unresolved_parent_uids(usage_cache, clock):
+    d = _probe()
+    d.trash(P + "/sub")
+    eng = UsageEngine(d, usage_cache, clock=clock)
+    summary = run_trash_pass(eng, REVAL)
+    assert summary.unresolved_folders == 1
+    assert summary.unresolved_parents == (d.list_trash()[0].parent_uid,)
+
+
+def test_summary_stored_before_unresolved_parents_has_them_unknown():
+    old = '{"at": 5.0, "groups": [], "unresolved_folders": 1, "partial": null}'
+    assert TrashSummary.from_json(old).unresolved_parents is None
 
 
 def test_summary_json_without_reasons_still_loads():

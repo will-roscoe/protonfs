@@ -69,14 +69,18 @@ folder's total holds beyond them appears as one extra row:
    being fetched), so they cannot be subtracted honestly. Run again with
    ``--refresh 0`` to fetch them together.
 
-At ``/``, ``du`` also measures the whole trash. A trashed folder can only be measured
-through the folder it was trashed from, so a figure ``du`` could not complete is shown as
-a lower bound with how much it could not check, e.g. ``≥ 12.4 GiB (190.0 GiB / 13%
-unchecked)``. Below the table, ``du /`` says which trashed folders it could not
-measure and why, and it exits ``3``. A trashed empty folder counts as 0 B. Listing a
-very large trash can take minutes; it is given
-:envvar:`PROTONFS_TRASH_LIST_TIMEOUT` seconds (default 900), after which the trash total
-is shown as partial.
+At ``/``, ``du`` also measures the whole trash, after the breakdowns it was asked for. A
+trashed folder can only be measured through the folder it was trashed from, which ``du``
+must have listed. If it has not, ``du /`` reports the trashed folder as ``size
+unknown``; once a deeper ``du`` (or ``du / -d 2``) has listed the folder it came from,
+the next ``du /`` measures it, however recent its last trash pass. A trashed empty
+folder counts as 0 B.
+
+A figure ``du`` could not complete is shown as a lower bound with how much it could not
+check, e.g. ``≥ 12.4 GiB (190.0 GiB / 13% unchecked)``. Below the table, ``du /`` says
+which trashed folders it could not measure and why, and it exits ``3``. Listing a very
+large trash can take minutes; it is given :envvar:`PROTONFS_TRASH_LIST_TIMEOUT` seconds
+(default 900), after which the trash total is shown as partial.
 
 Caching and ``--refresh``
 -------------------------

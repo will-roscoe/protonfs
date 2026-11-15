@@ -107,9 +107,9 @@ class _Collector:
         self.now = now
         self.rows: list[DuRow] = []
         self.used = None
-        # Without a stored trash pass every folder's figure would be a vacuous "≥ 0 B".
-        # Checked at the first row, after the breakdown that may have run the pass.
-        self.trash_measured: bool | None = None
+        # Row indexes whose In-trash cells are filled by fill_trash, once every breakdown
+        # (and the root's trash pass) has run.
+        self.trash_rows: list[int] = []
 
     def row(self, depth, entry, parent_size, *, bd: Breakdown | None = None, at=None):
         size = bd.size if bd is not None and bd.size is not None else entry.size
@@ -117,22 +117,32 @@ class _Collector:
             else entry.descendants
         state = bd.state if bd is not None else entry.state
         when = at if at is not None else entry.at
-        trash = (None, None, None)
-        if self.trash_measured is None:
-            self.trash_measured = self.engine.trash_summary() is not None
-        if self.trash_measured and entry.kind != "file" and state in (
+        if entry.kind != "file" and state in (
                 NodeState.LISTED, NodeState.SIZED, NodeState.PARTIAL):
-            fig = self.engine.trash_for(entry.path)
-            trash = (fig.known, fig.complete, fig.unchecked_bytes)
+            self.trash_rows.append(len(self.rows))
         self.rows.append(DuRow(
             depth, entry.path, entry.name, entry.kind, size, desc,
             _pct(size, parent_size), _pct(size, self.used), _pct(size, self.plan_size),
-            trash[0], trash[1], trash[2], when,
+            None, None, None, when,
             None if when is None else max(0.0, self.now - when),
             state.value, entry.exclusion.value, GapKind.NONE.value,
             # The row's own breakdown, when there is one, decides both state and error.
             bd.error if bd is not None else entry.error,
         ))
+
+    def fill_trash(self) -> None:
+        """Fill the In-trash cells from the stored trash pass; blank when none is stored.
+
+        Without a stored pass every folder's figure would be a vacuous "≥ 0 B".
+        """
+        if self.engine.trash_summary() is None:
+            return
+        for i in self.trash_rows:
+            fig = self.engine.trash_for(self.rows[i].path)
+            self.rows[i] = dataclasses.replace(
+                self.rows[i], in_trash=fig.known, in_trash_complete=fig.complete,
+                unchecked_bytes=fig.unchecked_bytes,
+            )
 
     def gap(self, depth, bd: Breakdown):
         if bd.gap_kind is GapKind.NONE or bd.gap is None:
@@ -180,6 +190,10 @@ def collect_rows(
 
     Children are sorted by size descending (unknown last). A gap pseudo-row follows a
     folder's children when its remainder is labelled. The first row is always the target.
+    For ``target == "/"`` the trash pass
+    (:meth:`~protonfs.usage.engine.UsageEngine.refresh_trash`) runs after every breakdown
+    shown, so it can resolve the folders they listed; the In-trash cells are filled
+    last, from the stored pass.
 
     :param engine: the usage engine (makes the Drive calls the policy allows).
     :param target: escaped Drive path; depth 0.
@@ -205,8 +219,12 @@ def collect_rows(
         col.used = None
         col.row(0, entry, None)
         col.rows[0] = _with_used(col.rows[0], engine.used_total())
+        col.fill_trash()
         return col.rows
-    bd = engine.breakdown(target, policy, rules, base)
+    if target == "/":
+        bd = engine.root(policy, rules, trash=False)
+    else:
+        bd = engine.breakdown(target, policy, rules, base)
     col.used = engine.used_total()
     entry = Entry(
         "/" if target == "/" else target.rsplit("/", 1)[-1], target,
@@ -216,6 +234,9 @@ def collect_rows(
     col.row(0, entry, None, bd=bd, at=bd.oldest_at if bd.oldest_at is not None else bd.at)
     if limit > 0:
         col.children(0, bd)
+    if target == "/":
+        engine.refresh_trash(policy, rules)
+    col.fill_trash()
     # used_total is only known once the breakdowns have populated the cache
     used = engine.used_total()
     if used != col.used:

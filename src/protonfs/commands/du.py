@@ -218,7 +218,11 @@ def _trash_lines(summary) -> list:
             f"trash: partial, >= {human_size(summary.total_known)} measured ({summary.partial})"
         )
     if summary.unresolved_folders:
-        lines.append(f"{summary.unresolved_folders} trashed folders, size unknown")
+        lines.append(
+            f"{summary.unresolved_folders} trashed folders, size unknown (the folders they "
+            "came from are not cached yet; once a deeper du has listed them, the next "
+            "du / measures these)"
+        )
     for g in summary.groups:
         if g.folders and g.bytes is None:
             lines.append(f"trash from {g.parent_path}: {g.folders} trashed folder"

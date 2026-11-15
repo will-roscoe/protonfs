@@ -70,6 +70,8 @@ class TrashSummary:
     :ivar unresolved_folders: trashed folders whose original parent is not in the cache,
         so their bytes are unknown.
     :ivar partial: why the listing is incomplete (timeout or error text), else ``None``.
+    :ivar unresolved_parents: the uids of those original parents, so a later run can tell
+        when one has been listed; ``None`` for a summary stored before they were recorded.
 
     .. versionadded:: 3.4.0
     """
@@ -78,6 +80,7 @@ class TrashSummary:
     groups: tuple[TrashGroup, ...]
     unresolved_folders: int
     partial: str | None
+    unresolved_parents: tuple[str, ...] | None = ()
 
     @property
     def total_known(self) -> int:
@@ -105,6 +108,8 @@ class TrashSummary:
                        for g in self.groups],
             "unresolved_folders": self.unresolved_folders,
             "partial": self.partial,
+            "unresolved_parents": (None if self.unresolved_parents is None
+                                   else list(self.unresolved_parents)),
         })
 
     @classmethod
@@ -117,11 +122,13 @@ class TrashSummary:
         """
         try:
             d = json.loads(text)
+            parents = d.get("unresolved_parents")
             return cls(
                 float(d["at"]),
                 tuple(_group(g) for g in d["groups"]),
                 int(d["unresolved_folders"]),
                 d["partial"],
+                None if parents is None else tuple(str(u) for u in parents),
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError(f"not a trash summary: {exc}") from exc
@@ -213,6 +220,7 @@ def run_trash_pass(
 
     groups: list[TrashGroup] = []
     unresolved = 0
+    unresolved_uids: list[str] = []
     paths_by_uid: dict[str | None, str | None] = {}
     for uid in {*files, *folders}:
         paths_by_uid[uid] = engine.cache.path_for_uid(uid) if uid is not None else None
@@ -222,6 +230,8 @@ def run_trash_pass(
         parent = paths_by_uid[uid]
         if parent is None:
             unresolved += count
+            if uid is not None:
+                unresolved_uids.append(uid)
             continue
         if excluded(rules, parent):
             groups.append(TrashGroup(parent, 0, count, None, EXCLUDED_REASON))
@@ -231,7 +241,7 @@ def run_trash_pass(
         folder_bytes, reason = _folder_bytes(engine, bd, file_bytes)
         groups.append(TrashGroup(parent, 0, count, folder_bytes, reason))
     groups.sort(key=lambda g: (g.parent_path or "", g.folders))
-    return TrashSummary(now, tuple(groups), unresolved, None)
+    return TrashSummary(now, tuple(groups), unresolved, None, tuple(sorted(unresolved_uids)))
 
 
 def excluded(rules: ExcludeRules, path: str) -> bool:

@@ -322,7 +322,9 @@ class UsageEngine:
                 on_progress(done, done + len(queue))
         return done
 
-    def root(self, policy: RefreshPolicy, rules: ExcludeRules) -> Breakdown:
+    def root(
+        self, policy: RefreshPolicy, rules: ExcludeRules, *, trash: bool = True
+    ) -> Breakdown:
         """Return the account view ``/``: ``/my-files``, each device, and the photo library.
 
         The device list comes from ``list /devices`` (cached, refreshed under ``policy``);
@@ -332,6 +334,8 @@ class UsageEngine:
 
         :param policy: refresh policy for the device list and each figure.
         :param rules: freeze/hide rules relative to ``/``.
+        :param trash: run :meth:`refresh_trash` too; pass ``False`` to run it later, after
+            breaking down the folders the pass may need (as ``du /`` does).
         :returns: a breakdown at ``"/"`` whose entries all have kind ``"section"``:
             ``/my-files`` and each ``/devices/<name>`` (``SIZED`` when measured), then
             ``/photos`` (always ``UNMEASURED``). When the device list is unknown (nothing
@@ -344,11 +348,7 @@ class UsageEngine:
             other than ``/photos`` is hidden or has no figure, so ``size`` understates
             "used"; otherwise ``LISTED``.
 
-        Side effect: when no trash summary is stored, the stored one is partial, it left
-        out a folder ``rules`` no longer exclude, or it is stale under ``policy``, runs the
-        trash pass (``filesystem list /trash`` plus breakdowns, none under a folder
-        ``rules`` exclude) and stores the summary; read it with :meth:`trash_summary`.
-        Nothing runs under ``policy.never``.
+        Side effect (unless ``trash`` is false): :meth:`refresh_trash`.
 
         .. versionadded:: 3.4.0
         """
@@ -391,7 +391,8 @@ class UsageEngine:
         if x_photos is not Exclusion.HIDE:
             entries.append(Entry("photos", PHOTOS_PATH, "section", None, None, None, None,
                                  NodeState.UNMEASURED, x_photos, None, True, None))
-        self._refresh_trash(policy, rules)
+        if trash:
+            self.refresh_trash(policy, rules)
         measured = [e for e in entries if e.size is not None]
         sizes = [e.size for e in measured if e.size is not None]
         times = [e.at for e in measured if e.at is not None]
@@ -412,7 +413,8 @@ class UsageEngine:
     def trash_summary(self) -> TrashSummary | None:
         """Return the stored trash summary, or ``None`` if no trash pass has run.
 
-        No Drive calls. :meth:`root` runs and stores the pass when it is missing or stale.
+        No Drive calls. :meth:`refresh_trash` (run by :meth:`root`) runs and stores the
+        pass.
 
         .. versionadded:: 3.4.0
         """
@@ -438,26 +440,45 @@ class UsageEngine:
         """
         return figure_for(self, path)
 
-    def _refresh_trash(self, policy: RefreshPolicy, rules: ExcludeRules) -> None:
-        """Run and store the trash pass unless a fresh, usable summary is stored.
+    def refresh_trash(self, policy: RefreshPolicy, rules: ExcludeRules) -> None:
+        """Run and store the trash pass unless a fresh summary that cannot improve is stored.
 
-        A stored summary is always rerun when its listing was partial (timed out or
-        failed), or when it skipped a parent that ``rules`` (relative to ``/``) no longer
-        exclude.
+        The pass (:func:`~protonfs.usage.trash.run_trash_pass`: ``filesystem list /trash``
+        plus breakdowns, none under a folder ``rules`` exclude) runs when no summary is
+        stored or it is stale under ``policy``, and also, however recent, when its listing
+        was partial (timed out or failed), when an original parent it could not resolve
+        is now in the cache, when it skipped a parent ``rules`` no longer exclude, or when
+        it is incomplete and was stored before unresolved parents were recorded. Read the
+        result with :meth:`trash_summary`. Nothing runs under ``policy.never``.
+
+        :param policy: the run's refresh policy.
+        :param rules: freeze/hide rules relative to ``/``.
+
+        .. versionadded:: 3.4.0
         """
         if policy.never:
             return
         stored = self.cache.trash()
         if stored is not None and not policy.is_stale(stored[1], self.clock()):
             summary = self.trash_summary()
-            if summary is not None and summary.partial is None and not any(
-                g.reason == EXCLUDED_REASON and g.parent_path is not None
-                and not excluded(rules, g.parent_path)
-                for g in summary.groups
-            ):
+            if summary is not None and not self._trash_can_improve(summary, rules):
                 return
         summary = run_trash_pass(self, policy, rules=rules)
         self.cache.put_trash(summary.to_json(), summary.at)
+
+    def _trash_can_improve(self, summary: TrashSummary, rules: ExcludeRules) -> bool:
+        """Whether running the pass again now could measure more than ``summary`` did."""
+        if summary.partial is not None:
+            return True
+        if summary.unresolved_parents is None:
+            return not summary.complete
+        if any(self.cache.path_for_uid(u) is not None for u in summary.unresolved_parents):
+            return True
+        return any(
+            g.reason == EXCLUDED_REASON and g.parent_path is not None
+            and not excluded(rules, g.parent_path)
+            for g in summary.groups
+        )
 
     def device_paths(self) -> list[str] | None:
         """Return the escaped Drive paths of the devices in the cached device list.

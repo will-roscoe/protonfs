@@ -209,6 +209,44 @@ def test_du_root_reruns_a_trash_pass_that_skipped_a_folder_no_longer_excluded(du
     assert drive.calls.count(("list_trash", "/trash")) == 2
 
 
+def test_du_root_retries_unresolved_trash_once_its_parent_is_cached(du, drive):
+    """I2: listing the parent makes the next ``du /`` measure the trashed folder."""
+    drive.trash("/my-files/A/sub")
+    first = du("/")
+    assert first.exit_code == 3 and "1 trashed folders, size unknown" in first.stdout
+    assert du("/my-files/A").exit_code == 0
+    res = du("/", "--json")
+    assert res.exit_code == 0, res.output + res.stderr
+    trash = json.loads(res.stdout)["trash"]
+    assert trash["complete"] and trash["unresolved_folders"] == 0 and trash["known"] == 1300
+    assert drive.calls.count(("list_trash", "/trash")) == 2
+
+
+def test_du_root_lists_before_the_trash_pass_on_a_cold_cache(du, drive):
+    """I2: ``du / -d 2`` lists /my-files first, so a folder trashed from it resolves."""
+    drive.trash("/my-files/B")
+    res = du("/", "-d", "2", "--json")
+    assert res.exit_code == 0, res.output + res.stderr
+    trash = json.loads(res.stdout)["trash"]
+    assert trash["complete"] and trash["known"] == 5000
+    assert drive.calls.count(("list_trash", "/trash")) == 1
+
+
+def test_du_root_reruns_an_incomplete_summary_stored_before_unresolved_parents(du, drive):
+    from protonfs.usage.trash import TrashSummary
+
+    du("/my-files/A")
+    drive.trash("/my-files/A/sub")
+    old = '{"at": 1800000000.0, "groups": [], "unresolved_folders": 1, "partial": null}'
+    assert not TrashSummary.from_json(old).complete
+    from protonfs.commands import du as du_command
+
+    du_command.default_engine().cache.put_trash(old, 1800000000.0)  # the fixture's engine
+    res = du("/", "--json")
+    assert res.exit_code == 0, res.output + res.stderr
+    assert json.loads(res.stdout)["trash"]["complete"]
+
+
 def test_du_root_trashed_empty_folder_is_complete(du, drive):
     drive.add_folder("/my-files/A/empty")
     assert du("/my-files/A").exit_code == 0
