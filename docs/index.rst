@@ -24,6 +24,7 @@ Next steps
   walkthroughs.
 - :doc:`getting-started/syncing` -- the push/pull/status sync model in depth.
 - :doc:`getting-started/git-to-store` -- moving committed files out of git into a store, and back with ``export``.
+- :doc:`getting-started/storage` -- what is taking up your Drive space, trash included (``du``).
 - :doc:`reference/index` -- every command, option, and behaviour.
 - :doc:`upgrading` -- upgrading protonfs, the proton-drive binary, and repo state.
 - :doc:`stability` -- the 3.x contract and versioning policy.
@@ -37,6 +38,7 @@ Next steps
    getting-started/guide
    getting-started/syncing
    getting-started/git-to-store
+   getting-started/storage
    reference/index
    guarantees
    stability

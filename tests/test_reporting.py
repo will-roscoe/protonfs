@@ -121,3 +121,40 @@ def test_first_progress_always_renders(monkeypatch) -> None:
     r = _reporter(1)
     r.progress(1, 10)
     assert "1/10" in r._stream.getvalue()
+
+
+def test_reporter_inline_property():
+    import io
+
+    from protonfs.reporting import Reporter
+
+    assert Reporter(1, progress_style="inline", stream=io.StringIO(), isatty=True).inline
+    assert not Reporter(1, progress_style="lines", stream=io.StringIO(), isatty=True).inline
+    assert not Reporter(1, progress_style="inline", stream=io.StringIO(), isatty=False).inline
+
+
+def test_running_rewrites_one_line_inline_and_pads_over_longer_text() -> None:
+    r = _reporter(1, style="inline", isatty=True)
+    r.running("du", calls=1, last="size /my-files/long-name")
+    r.running("du", calls=2, last="size /x")
+    out = r._stream.getvalue()
+    assert "\n" not in out
+    first, second = out.split("\r")[1:]
+    assert second.startswith("du calls=2 last=size /x") and len(second) == len(first)
+    r.end_progress()
+    assert r._stream.getvalue().endswith("\n")
+    r.end_progress()  # nothing open: no extra newline
+    assert not r._stream.getvalue().endswith("\n\n")
+
+
+def test_running_writes_one_line_each_in_lines_style() -> None:
+    r = _reporter(1, style="lines")
+    r.running("du", calls=1)
+    r.running("du", calls=2)
+    assert r._stream.getvalue() == "du calls=1\ndu calls=2\n"
+
+
+def test_running_is_silent_at_level_zero() -> None:
+    r = _reporter(0, style="inline", isatty=True)
+    r.running("du", calls=1)
+    assert r._stream.getvalue() == ""

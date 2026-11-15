@@ -234,6 +234,15 @@ def test_human_size_units() -> None:
     assert human_size(3 * 1024**3) == "3.0 GiB"
 
 
+def test_human_size_negative_keeps_its_unit() -> None:
+    """A negative ``du`` remainder renders like a positive one, with a minus sign."""
+    from protonfs.commands.ls import human_size
+
+    assert human_size(-53687091200) == "-50.0 GiB"
+    assert human_size(-1536) == "-1.5 KiB"
+    assert human_size(-7) == "-7 B"
+
+
 def test_render_ls_dirs_json_format(tmp_path: Path) -> None:
     import json
 
