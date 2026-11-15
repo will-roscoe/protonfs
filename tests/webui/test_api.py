@@ -462,3 +462,46 @@ def test_walk_reports_folders_it_could_not_measure(make, drive):
             break
     assert last["state"] == "done" and last["failed"] == 1
     assert [e["path"] for e in errors] == [f"{TARGET}/A"]
+
+
+def _invalidated_parent(api, drive):
+    """Walk the target, then refresh a child after a deletion so the parent snapshot is
+    invalidated; return the parent and child paths."""
+    parent, child = f"{TARGET}/A", f"{TARGET}/A/sub"
+    api.tree(parent, 1)
+    _wait_idle(api)
+    api.refresh(child)
+    _wait_idle(api)
+    api.refresh(parent)  # settle the parent once so the child's growth can invalidate it
+    _wait_idle(api)
+    drive.add_file(f"{child}/y", 500)
+    api.refresh(child)
+    _wait_idle(api)
+    return parent, child
+
+
+def test_invalidated_breakdown_is_flagged_and_requeued_on_navigation(make, drive, monkeypatch):
+    api = make()
+    submitted = _record_submits(api, monkeypatch)
+    parent, child = _invalidated_parent(api, drive)
+    out = api.tree(parent, 2, queue="none")
+    assert out["breakdowns"][parent]["invalid"] is True
+    assert out["breakdowns"][child]["invalid"] is False
+    del submitted[:]
+    api.tree(parent, 1)  # navigation (stale mode), well within the 5 d threshold
+    assert parent in submitted
+    _wait_idle(api)
+    assert api.tree(parent, 1, queue="none")["breakdowns"][parent]["invalid"] is False
+
+
+def test_invalidated_breakdown_is_queued_by_new_mode_once(make, drive, monkeypatch):
+    api = make()
+    submitted = _record_submits(api, monkeypatch)
+    parent, _ = _invalidated_parent(api, drive)
+    del submitted[:]
+    api.tree(parent, 1, queue="new")
+    assert parent in submitted
+    _wait_idle(api)
+    del submitted[:]
+    api.tree(parent, 1, queue="new")  # re-measured: valid again, nothing to queue
+    assert submitted == []

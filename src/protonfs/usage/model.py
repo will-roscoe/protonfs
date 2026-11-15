@@ -116,6 +116,9 @@ class Breakdown:
     :ivar oldest_at: the oldest measurement time among all inputs, or ``None``.
     :ivar newest_at: the newest measurement time among all inputs, or ``None``.
     :ivar error: the failure text when ``state`` is ``ERROR``, else ``None``.
+    :ivar invalid: ``True`` when the cached listing was invalidated by a newer measurement
+        of one of its children (so ``entries`` may no longer add up to ``size``); a fresh
+        pass replaces it. ``False`` otherwise, including when nothing is cached.
 
     .. versionadded:: 3.4.0
     """
@@ -131,3 +134,4 @@ class Breakdown:
     oldest_at: float | None
     newest_at: float | None
     error: str | None = None
+    invalid: bool = False

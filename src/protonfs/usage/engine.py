@@ -770,7 +770,7 @@ class UsageEngine:
                 entries.append(self._row_entry(child, row, excl))
         gap = size - known
         return Breakdown(path, size, descendants, at, NodeState.LISTED, tuple(entries), gap,
-                         _label(gap, holes, mixed), min(times), max(times))
+                         _label(gap, holes, mixed), min(times), max(times), invalid=snap.invalid)
 
     def _row_entry(self, child: str, row: Row, excl: Exclusion) -> Entry:
         error = None

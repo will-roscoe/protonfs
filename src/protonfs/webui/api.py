@@ -83,6 +83,7 @@ class Api:
         self.jobs = jobs
         self.settings = settings
         self.plan_size = plan_size
+        self._invalid_queued: set = set()
         self._walk_cancel = threading.Event()
         self._walk_lock = threading.Lock()
 
@@ -143,11 +144,18 @@ class Api:
     def _queue_if_due(self, bd, policy: RefreshPolicy, now: float, *, only_new: bool) -> None:
         if bd.state in (NodeState.EXCLUDED, NodeState.ERROR):
             return
+        if not bd.invalid:
+            self._invalid_queued.discard(bd.path)
         if only_new:
             due = bd.state is not NodeState.LISTED and not self.jobs.tried(bd.path)
+            if bd.invalid and bd.path not in self._invalid_queued:
+                # once per invalidation: a job that fails leaves it invalid, and refetches
+                # must not retry it (navigation does)
+                self._invalid_queued.add(bd.path)
+                due = True
         else:
             at = bd.oldest_at if bd.oldest_at is not None else bd.at
-            due = bd.state is not NodeState.LISTED or policy.is_stale(at, now)
+            due = bd.state is not NodeState.LISTED or bd.invalid or policy.is_stale(at, now)
         if due:
             self.jobs.submit("breakdown", bd.path, policy)
 
