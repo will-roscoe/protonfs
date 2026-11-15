@@ -507,14 +507,58 @@ def test_du_prints_throttle_notice_once(du, drive):
     assert res.stderr.count("rate-limiting folder sizes") == 1
 
 
-def test_du_ctrl_c_keeps_sizes_and_exits_130(du, drive):
-    def interrupt():
-        raise KeyboardInterrupt
+def _interrupt():
+    raise KeyboardInterrupt
 
-    drive.before("size", "/my-files/B", interrupt)
+
+def test_du_ctrl_c_keeps_sizes_and_exits_130(du, drive):
+    drive.before("size", "/my-files/B", _interrupt)
+    res = du("/my-files", "--refresh", "1h")
+    assert res.exit_code == 130
+    assert "sizes measured so far are kept; run again to continue" in res.stderr
+
+
+def test_du_ctrl_c_under_refresh_0_does_not_promise_to_continue(du, drive):
+    """I4: --refresh 0 measures everything again, so a re-run with it does not continue."""
+    drive.before("size", "/my-files/B", _interrupt)
     res = du("/my-files", "--refresh", "0")
     assert res.exit_code == 130
     assert "sizes measured so far are kept" in res.stderr
+    assert "run again to continue" not in res.stderr and "--refresh 0" in res.stderr
+
+
+def test_du_ctrl_c_during_the_trash_pass_says_it_starts_over(du, drive):
+    assert du("/my-files/A").exit_code == 0
+    drive.trash("/my-files/A/sub")
+    drive.before("size", "/my-files/A", _interrupt)  # the trash pass re-sizes A
+    res = du("/")
+    assert res.exit_code == 130
+    assert "trash pass" in res.stderr and "starts over" in res.stderr
+    assert "continue" not in res.stderr
+
+
+@pytest.mark.parametrize(("args", "expect", "never"), [
+    (["/my-files", "--refresh", "1h"], "continue from them", "--refresh 0"),
+    (["/my-files", "--refresh", "0"], "without --refresh 0", "Ctrl-C and run again"),
+])
+def test_du_throttle_notice_says_what_a_rerun_would_reuse(du, drive, args, expect, never):
+    drive.on_slow_size = None
+
+    drive.before("size", "/my-files/A", lambda: drive.on_slow_size("/my-files/A"))
+    res = du(*args)
+    assert "rate-limiting folder sizes" in res.stderr
+    assert expect in res.stderr and never not in res.stderr
+
+
+def test_du_throttle_notice_in_the_trash_pass_says_it_starts_over(du, drive):
+    assert du("/my-files/A").exit_code == 0
+    drive.trash("/my-files/A/sub")
+    drive.on_slow_size = None
+    drive.before("size", "/my-files/A", lambda: drive.on_slow_size("/my-files/A"))
+    res = du("/")
+    assert res.exit_code == 0, res.output + res.stderr
+    assert "rate-limiting folder sizes" in res.stderr
+    assert "trash pass starts over" in res.stderr and "continue" not in res.stderr
 
 
 def test_du_trash_cells_blank_until_trash_measured(du):

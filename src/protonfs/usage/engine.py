@@ -123,6 +123,10 @@ class UsageEngine:
     Each argument is kept as the public attribute of the same name; ``on_call`` may be
     replaced after construction.
 
+    :ivar in_trash_pass: ``True`` while :meth:`refresh_trash` runs the trash pass, and
+        still ``True`` after the pass was interrupted (an interrupted pass is not kept:
+        the next one starts over).
+
     .. versionadded:: 3.4.0
     """
 
@@ -141,6 +145,7 @@ class UsageEngine:
         self._lock = threading.Lock()
         self._scope_checked = False
         self._errors: dict[str, str] = {}
+        self.in_trash_pass = False
 
     # ----------------------------------------------------------------- public API
 
@@ -463,8 +468,10 @@ class UsageEngine:
             summary = self.trash_summary()
             if summary is not None and not self._trash_can_improve(summary, rules):
                 return
+        self.in_trash_pass = True
         summary = run_trash_pass(self, policy, rules=rules)
         self.cache.put_trash(summary.to_json(), summary.at)
+        self.in_trash_pass = False
 
     def _trash_can_improve(self, summary: TrashSummary, rules: ExcludeRules) -> bool:
         """Whether running the pass again now could measure more than ``summary`` did."""

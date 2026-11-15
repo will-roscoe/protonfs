@@ -880,10 +880,9 @@ def du(path, exclude_updates, exclude, mindepth, maxdepth, depth, dirs_only, ref
 
         sys.exit(run_gui(targets[0].remote, options, stdout=sys.stdout, stderr=sys.stderr))
     try:
-        code = run_du(targets, options)
-    except KeyboardInterrupt:
-        click.echo("\ninterrupted -- sizes measured so far are kept; run again to continue.",
-                   err=True)
+        code = run_du(targets, options)  # says itself what Ctrl-C left behind (130)
+    except KeyboardInterrupt:  # before run_du could measure anything
+        click.echo("\ninterrupted.", err=True)
         sys.exit(130)
     if code:
         sys.exit(code)

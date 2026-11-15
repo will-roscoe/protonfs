@@ -100,7 +100,9 @@ minutes. ``du`` sizes one folder at a time and waits the pauses out, so the firs
 breakdown of a folder with hundreds of subfolders is slow (163 simulation folders took
 72 minutes). It prints a notice when this happens. Every size is kept as soon as it is
 measured, so you can press Ctrl-C and run the same command later to carry on where it
-stopped.
+stopped. Two exceptions, which the notice and the Ctrl-C message point out: a run with
+``--refresh 0`` measures everything again, so only a run without it carries on; and the
+trash pass of ``du /`` is not kept when interrupted, so it starts over next time.
 
 A figure older than the refresh threshold is re-checked when it is used. The threshold
 is checked every time a figure is used, so in a long-running GUI a folder you revisit

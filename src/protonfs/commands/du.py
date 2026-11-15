@@ -199,12 +199,42 @@ def default_engine() -> UsageEngine:
 
 PLAN_HINT = "% of plan needs your plan size: protonfs config set --global du.plan_size 3TB"
 
-#: Printed once to stderr when a ``size`` call is held up by Proton's rate limit.
-THROTTLE_NOTICE = (
+_THROTTLED = (
     "du: Proton is rate-limiting folder sizes (about 20 at a time, then a pause of a few "
-    "minutes), so this can take a while. Sizes measured so far are kept: Ctrl-C and run "
-    "again later to continue from them (not with --refresh 0)."
+    "minutes), so this can take a while."
 )
+
+#: Printed once to stderr when a ``size`` call is held up by Proton's rate limit, unless
+#: the run is under ``--refresh 0`` or in the trash pass, where a re-run would not
+#: continue from the sizes kept and the notice says what happens instead.
+THROTTLE_NOTICE = (
+    _THROTTLED + " Sizes measured so far are kept: Ctrl-C and run again later to continue "
+    "from them."
+)
+
+
+def _throttle_notice(policy, in_trash_pass: bool) -> str:
+    """The rate-limit notice that is true for this run at this moment."""
+    if in_trash_pass:
+        return (_THROTTLED + " An interrupted trash pass starts over from the beginning, so "
+                "let it finish if you can.")
+    if policy.fresh_only:
+        return (_THROTTLED + " Sizes measured so far are kept, but --refresh 0 measures "
+                "everything again: only a run without --refresh 0 can continue from them.")
+    return THROTTLE_NOTICE
+
+
+def _interrupt_message(policy, in_trash_pass: bool) -> str:
+    """What Ctrl-C left behind, said truthfully for the policy and the step it stopped."""
+    if in_trash_pass:
+        return ("interrupted during the trash pass -- an interrupted trash pass starts over "
+                "from the beginning next time.")
+    if policy.never:
+        return "interrupted."
+    if policy.fresh_only:
+        return ("interrupted -- sizes measured so far are kept, but --refresh 0 measures "
+                "everything again; a run without --refresh 0 picks up from them.")
+    return "interrupted -- sizes measured so far are kept; run again to continue."
 
 
 def _trash_lines(summary) -> list:
@@ -249,20 +279,25 @@ def _trash_incomplete(summary, rules) -> bool:
     )
 
 
-def _attach_throttle_notice(engine, err) -> None:
-    """Print :data:`THROTTLE_NOTICE` once when the engine's source reports a slow size."""
+def _attach_throttle_notice(engine, err, policy) -> None:
+    """Print a rate-limit notice when the engine's source reports a slow size.
+
+    The text depends on the policy and on whether the trash pass is running when it fires
+    (see :data:`THROTTLE_NOTICE`); each distinct text is printed once.
+    """
     source = getattr(engine, "source", None)
     if source is None or not hasattr(source, "on_slow_size"):
         return
     lock = threading.Lock()
-    shown = []
+    shown: set = set()
 
     def on_slow_size(path: str) -> None:
+        text = _throttle_notice(policy, getattr(engine, "in_trash_pass", False))
         with lock:
-            if shown:
+            if text in shown:
                 return
-            shown.append(path)
-            err.write(THROTTLE_NOTICE + "\n")
+            shown.add(text)
+            err.write(text + "\n")
             err.flush()
 
     source.on_slow_size = on_slow_size
@@ -292,25 +327,20 @@ def run_du(
         partial results (a row in state ``error``, including a target whose size was
         measured but whose listing failed, a ``/`` or ``/devices`` total that leaves out
         a section or device, an unmeasurable ``/devices`` row, or an incomplete trash
-        pass). A user's ``-x``/``-X``
-        alone is not partial.
+        pass; a user's ``-x``/``-X`` alone is not partial); ``130`` after Ctrl-C, having
+        said on ``err`` what a re-run would reuse.
 
     .. versionadded:: 3.4.0
     """
-    import json
-
-    from rich.console import Console
-
     from protonfs.reporting import Reporter, get_reporter
     from protonfs.usage.excludes import ExcludeRules
     from protonfs.usage.policy import RefreshPolicy
-    from protonfs.usage.report import collect_rows, render_plain, render_table, select_rows, to_json
 
     out = out if out is not None else sys.stdout
     err = err if err is not None else sys.stderr
     engine = (engine_factory or default_engine)()
-    _attach_throttle_notice(engine, err)
     policy = RefreshPolicy.parse(options.refresh)
+    _attach_throttle_notice(engine, err, policy)
     rules = ExcludeRules(options.exclude_updates, options.exclude)
     if options.progress:
         reporter = Reporter(
@@ -330,8 +360,25 @@ def run_du(
                     reporter.phase("du", calls=state["n"], last=f"{op} {path}")
 
         engine.on_call = on_call
-    engine.check_account(policy)
+    try:
+        return _report(engine, targets, options, policy, rules, out=out, err=err)
+    except KeyboardInterrupt:
+        out.flush()
+        err.write("\n" + _interrupt_message(policy, getattr(engine, "in_trash_pass", False))
+                  + "\n")
+        err.flush()
+        return 130
 
+
+def _report(engine, targets, options, policy, rules, *, out, err) -> int:
+    """Measure and print every target for :func:`run_du`; returns its exit code."""
+    import json
+
+    from rich.console import Console
+
+    from protonfs.usage.report import collect_rows, render_plain, render_table, select_rows, to_json
+
+    engine.check_account(policy)
     fatal = partial = need_used = need_trash = False
     docs = []
     hint = False
