@@ -77,7 +77,7 @@
     if (S.path == null || !S.settings) return Promise.resolve();
     var seq = ++loadSeq;
     var url = (atTarget() ? "/api/root?" : "/api/tree?path=" + encodeURIComponent(S.path) +
-      "&depth=" + S.settings.maxdepth + "&") + "queue=" + (queue ? "1" : "0");
+      "&depth=" + S.settings.maxdepth + "&") + "queue=" + queue;
     return api("GET", url).then(function (data) {
       if (seq !== loadSeq) return; // a newer navigation superseded this answer
       S.rows = data.rows || [];
@@ -98,7 +98,7 @@
     if (!firstPending) firstPending = now;
     clearTimeout(timer);
     var wait = Math.max(0, Math.min(DEBOUNCE_MS, firstPending + MAX_WAIT_MS - now));
-    timer = setTimeout(function () { firstPending = 0; load(false); }, wait);
+    timer = setTimeout(function () { firstPending = 0; load("new"); }, wait);
   }
   function parseEvent(ev) {
     try { return JSON.parse(ev.data); } catch (e) {
@@ -110,7 +110,7 @@
   PFS.navigate = function (path) {
     S.path = path;
     S.selected = null;
-    return load(true);
+    return load("stale");
   };
   PFS.up = function () {
     if (atTarget() || S.path == null) return Promise.resolve();
@@ -438,7 +438,7 @@
     msgEl.textContent = "";
     return api("POST", "/api/settings", patch).then(function (s) {
       S.settings = s;
-      return load(true);
+      return load("stale");
     }).catch(function (e) {
       msgEl.textContent = e.message;
       revert();
@@ -525,6 +525,6 @@
     fillControls();
     S.path = s.target;
     connect();
-    return load(true);
+    return load("stale");
   }).catch(function (e) { setStatus("Could not start: " + e.message); });
 })();

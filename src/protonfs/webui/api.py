@@ -32,6 +32,11 @@ if TYPE_CHECKING:
 _NEVER = RefreshPolicy.parse("never")
 _FORCE = RefreshPolicy.parse("0")
 
+#: The values :meth:`Api.tree`'s ``queue`` takes, and the ``queue=`` query parameter of
+#: ``/api/tree`` and ``/api/root`` (which also accepts ``1`` for ``stale`` and ``0`` for
+#: ``none``).
+QUEUE_MODES = ("stale", "new", "none")
+
 
 def to_jsonable(obj):
     """Convert dataclasses, enums, tuples and dicts to plain JSON-able values.
@@ -88,27 +93,33 @@ class Api:
 
     # ------------------------------------------------------------------ reading
 
-    def tree(self, path: str, depth: int, *, queue: bool = True) -> dict:
-        """Return the cached rows and breakdowns under ``path``, queueing stale ones.
+    def tree(self, path: str, depth: int, *, queue: str = "stale") -> dict:
+        """Return the cached rows and breakdowns under ``path``, queueing the ones to fetch.
 
-        Makes no Drive calls. With ``queue`` true, every breakdown shown that is stale under
-        the current refresh setting, or has no listing, is submitted for a background
-        refresh (a breakdown that is excluded or failed is not; nothing is queued under
-        refresh ``never``; a path already queued or running is not queued twice); the page
-        hears the result as a ``breakdown`` event. Exclusion patterns are matched relative to
-        the settings' target, whatever ``path`` is.
+        Makes no Drive calls; whatever ``queue`` selects is submitted for a background
+        refresh, and the page hears each result as a ``breakdown`` event. A breakdown that is
+        excluded or failed is never queued, nothing is queued under refresh ``never``, and a
+        path already queued or running is not queued twice. Exclusion patterns are matched
+        relative to the settings' target, whatever ``path`` is.
 
         :param path: escaped Drive path, within the settings' target.
         :param depth: levels to include, within :data:`~protonfs.webui.settings.DEPTH_RANGE`.
-        :param queue: whether to queue stale breakdowns; pass ``False`` for a refetch
-            triggered by an event, ``True`` for user navigation.
+        :param queue: which breakdowns to queue, one of :data:`QUEUE_MODES`: ``"stale"``
+            (user navigation) queues every one shown that is stale under the current refresh
+            setting or has no listing; ``"new"`` (a refetch triggered by an event) queues
+            only those with no listing that no job has tried since the page started, so the
+            subfolders a finished job revealed get listed but refetches cannot feed
+            themselves; ``"none"`` queues nothing.
         :returns: ``{"rows": [...], "breakdowns": {path: {...}}, "pending": [paths]}`` where
             rows have the :data:`~protonfs.usage.report.JSON_ROW_KEYS` keys.
-        :raises ValueError: if ``path`` is outside the target or ``depth`` is out of range.
+        :raises ValueError: if ``path`` is outside the target, ``depth`` is out of range or
+            ``queue`` is not a known mode.
         """
         self._within(path)
         if type(depth) is not int or not DEPTH_RANGE[0] <= depth <= DEPTH_RANGE[1]:
             raise ValueError(f"depth must be an int from {DEPTH_RANGE[0]} to {DEPTH_RANGE[1]}")
+        if queue not in QUEUE_MODES:
+            raise ValueError(f"queue must be one of {', '.join(QUEUE_MODES)}, not {queue!r}")
         s = self.settings
         rules = s.rules()
         now = self.engine.clock()
@@ -120,23 +131,27 @@ class Api:
             rows = [r for r in rows if r.kind != "file"]
         bds = self.engine.tree(path, _NEVER, rules, maxdepth=depth, base=s.target)
         policy = s.policy()
-        if queue and not policy.never:
+        if queue != "none" and not policy.never:
             for bd in bds.values():
-                self._queue_if_stale(bd, policy, now)
+                self._queue_if_due(bd, policy, now, only_new=queue == "new")
         return {
             "rows": [{k: getattr(r, k) for k in JSON_ROW_KEYS} for r in rows],
             "breakdowns": {p: to_jsonable(bd) for p, bd in bds.items()},
             "pending": self.jobs.pending(),
         }
 
-    def _queue_if_stale(self, bd, policy: RefreshPolicy, now: float) -> None:
+    def _queue_if_due(self, bd, policy: RefreshPolicy, now: float, *, only_new: bool) -> None:
         if bd.state in (NodeState.EXCLUDED, NodeState.ERROR):
             return
-        at = bd.oldest_at if bd.oldest_at is not None else bd.at
-        if bd.state is not NodeState.LISTED or policy.is_stale(at, now):
+        if only_new:
+            due = bd.state is not NodeState.LISTED and not self.jobs.tried(bd.path)
+        else:
+            at = bd.oldest_at if bd.oldest_at is not None else bd.at
+            due = bd.state is not NodeState.LISTED or policy.is_stale(at, now)
+        if due:
             self.jobs.submit("breakdown", bd.path, policy)
 
-    def root(self, *, queue: bool = True) -> dict:
+    def root(self, *, queue: str = "stale") -> dict:
         """Return :meth:`tree` for the settings' target at the current depth, plus trash.
 
         :param queue: as for :meth:`tree`.

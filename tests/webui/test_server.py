@@ -252,6 +252,13 @@ def test_tree_request_makes_no_drive_calls_and_queues_stale(srv):
     assert data["breakdown"]["size"] == 6100
     status, body = srv.json("GET", f"/api/tree?path={TARGET}&depth=2&queue=0")
     assert {"A", "B"} <= {r["name"] for r in body["rows"]}
+    # the page's event refetch: the subfolders the job revealed are queued once
+    status, body = srv.json("GET", f"/api/tree?path={TARGET}&depth=2&queue=new")
+    assert status == 200 and sorted(body["pending"]) == [f"{TARGET}/A", f"{TARGET}/B"]
+
+
+def test_unknown_queue_mode_is_a_bad_request(srv):
+    assert srv.json("GET", "/api/root?queue=sometimes")[0] == 400
 
 
 def test_bad_requests(srv):

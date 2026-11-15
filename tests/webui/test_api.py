@@ -106,11 +106,66 @@ def test_revisit_after_threshold_queues_again(make, clock):
     _settle(api, q)
 
 
-def test_queue_false_never_queues(make):
+def test_queue_none_never_queues(make):
     api = make(refresh="0")
-    out = api.tree(TARGET, 1, queue=False)
-    assert out["pending"] == [] and api.root(queue=False)["pending"] == []
+    out = api.tree(TARGET, 1, queue="none")
+    assert out["pending"] == [] and api.root(queue="none")["pending"] == []
     assert api.tree(TARGET, 1)["pending"] == [TARGET]
+
+
+def test_unknown_queue_mode_is_rejected(make):
+    with pytest.raises(ValueError, match="queue"):
+        make().tree(TARGET, 1, queue="sometimes")
+
+
+def _settle_all(api, q, n):
+    for _ in range(n):
+        _next(q, "breakdown")
+    deadline = threading.Event()
+    for _ in range(50):
+        if not api.jobs.pending():
+            return
+        deadline.wait(0.05)
+    raise AssertionError(f"still pending: {api.jobs.pending()}")
+
+
+def test_refetch_queues_folders_a_finished_job_revealed(make):
+    # cold cache: navigation can only queue the target, because its subfolders are not
+    # known yet; the event-driven refetch after it lands must queue them, or a -d 2 page
+    # never lists them
+    api = make(refresh="0")
+    q = api.jobs.subscribe()
+    assert api.tree(TARGET, 2)["pending"] == [TARGET]
+    _settle(api, q)
+    out = api.tree(TARGET, 2, queue="new")
+    assert sorted(out["pending"]) == [f"{TARGET}/A", f"{TARGET}/B"]
+    _settle_all(api, q, 2)
+    assert api.tree(TARGET, 2)["breakdowns"][f"{TARGET}/A"]["state"] == "listed"
+    # under refresh 0 everything shown is stale, but a refetch never queues a folder
+    # again once a job for it has finished, so refetches cannot feed themselves
+    assert api.tree(TARGET, 2, queue="new")["pending"] == []
+
+
+def test_refetch_does_not_retry_a_failed_job(make, engine, monkeypatch):
+    api = make()
+    q = api.jobs.subscribe()
+    api.tree(TARGET, 2)
+    _settle(api, q)
+    real = engine.breakdown
+
+    def flaky(path, policy, *a, **kw):
+        if path == f"{TARGET}/A" and not policy.never:  # cache reads still work
+            raise RuntimeError("boom")
+        return real(path, policy, *a, **kw)
+
+    monkeypatch.setattr(engine, "breakdown", flaky)
+    assert f"{TARGET}/A" in api.tree(TARGET, 2, queue="new")["pending"]
+    _next(q, "error")
+    _settle_all(api, q, 1)  # B
+    assert api.tree(TARGET, 2, queue="new")["pending"] == []
+    # navigating there again is the user asking, so it is retried
+    assert f"{TARGET}/A" in api.tree(TARGET, 2)["pending"]
+    _next(q, "error")
 
 
 def test_refresh_zero_queues_on_every_navigation(make):
@@ -127,12 +182,12 @@ def test_drilling_down_keeps_target_relative_rules(make):
     q = api.jobs.subscribe()
     api.tree(f"{TARGET}/A", 2)
     _settle(api, q)
-    out = api.tree(f"{TARGET}/A", 2, queue=False)
+    out = api.tree(f"{TARGET}/A", 2, queue="none")
     names = {r["name"] for r in out["rows"]}
     assert "f1" in names and "sub" not in names
     # relative to the drilled-into folder the same pattern would match nothing
     api.set_settings({"hide": ["/sub"]})
-    names = {r["name"] for r in api.tree(f"{TARGET}/A", 2, queue=False)["rows"]}
+    names = {r["name"] for r in api.tree(f"{TARGET}/A", 2, queue="none")["rows"]}
     assert "sub" in names
 
 
@@ -269,7 +324,7 @@ def test_bad_settings_are_rejected_and_never_stored(make, patch):
     with pytest.raises(ValueError):
         api.set_settings(patch)
     assert api.get_settings() == before
-    api.tree(TARGET, 1, queue=False)  # still usable
+    api.tree(TARGET, 1, queue="none")  # still usable
 
 
 def test_refused_walk_does_not_break_cancel(make, drive):

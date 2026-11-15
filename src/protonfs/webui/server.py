@@ -204,9 +204,9 @@ class _Handler(BaseHTTPRequestHandler):
             routes = {
                 ("GET", "/api/tree"): lambda: api.tree(
                     query.get("path", api.settings.target), _int(query.get("depth"), api),
-                    queue=query.get("queue", "1") != "0",
+                    queue=_queue_mode(query),
                 ),
-                ("GET", "/api/root"): lambda: api.root(queue=query.get("queue", "1") != "0"),
+                ("GET", "/api/root"): lambda: api.root(queue=_queue_mode(query)),
                 ("GET", "/api/settings"): api.get_settings,
                 ("POST", "/api/settings"): lambda: api.set_settings(body),
                 ("POST", "/api/refresh"): lambda: api.refresh(body.get("path")),
@@ -330,6 +330,15 @@ def _int(text: str | None, api: Api) -> int:
         return int(text)
     except ValueError:
         raise ValueError(f"depth {text!r} is not an integer") from None
+
+
+_QUEUE_ALIASES = {"1": "stale", "0": "none"}
+
+
+def _queue_mode(query: dict) -> str:
+    """Return the :data:`~protonfs.webui.api.QUEUE_MODES` value a ``queue=`` parameter names."""
+    text = query.get("queue", "stale")
+    return _QUEUE_ALIASES.get(text, text)
 
 
 def serve(

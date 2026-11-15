@@ -62,6 +62,7 @@ class JobQueue:
         self._lock = threading.Lock()
         self._jobs: queue.Queue = queue.Queue()
         self._active: dict = {}
+        self._tried: set = set()
         self._subs: list = []
         self._walking = False
         self._closed = False
@@ -131,6 +132,11 @@ class JobQueue:
         with self._lock:
             return [path for (_kind, path) in self._active]
 
+    def tried(self, path: str) -> bool:
+        """Return whether a breakdown job for ``path`` has finished, either way, since start."""
+        with self._lock:
+            return path in self._tried
+
     def _worker(self) -> None:
         while True:
             item = self._jobs.get()
@@ -146,6 +152,7 @@ class JobQueue:
             # event never still sees the path as pending
             with self._lock:
                 self._active.pop((kind, path), None)
+                self._tried.add(path)
             for ev in events:
                 self._publish(ev)
 
