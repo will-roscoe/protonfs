@@ -906,3 +906,20 @@ def test_newer_contradicting_child_figure_invalidates_a_snapshot_written_after_i
         other.close()
     assert usage_cache.figure(F + "/c2").size == 2307
     assert usage_cache.snapshot(F).invalid
+
+
+def test_negative_gap_with_holes_is_unreconciled():
+    """A missing child can only make the remainder bigger, so a negative one means change."""
+    from protonfs.usage.engine import _label
+
+    assert _label(-5, True, False) is GapKind.UNRECONCILED
+    assert _label(-5, False, True) is GapKind.UNRECONCILED
+    assert _label(5, True, True) is GapKind.UNATTRIBUTED
+
+
+def test_root_hiding_devices_on_an_empty_cache_makes_no_device_calls(usage_cache, clock):
+    d = _root_tree()
+    eng = UsageEngine(d, usage_cache, clock=clock)
+    bd = eng.root(FIVE_DAYS, ExcludeRules(hide=["devices"]))
+    assert not any(p == "/devices" or p.startswith("/devices/") for _, p in d.calls)
+    assert all(not e.path.startswith("/devices") for e in bd.entries)
