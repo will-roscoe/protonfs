@@ -52,7 +52,14 @@ from .paths import (
 )
 from .policy import RefreshPolicy
 from .source import DriveSource, RawEntry
-from .trash import TrashFigure, TrashSummary, figure_for, run_trash_pass
+from .trash import (
+    EXCLUDED_REASON,
+    TrashFigure,
+    TrashSummary,
+    excluded,
+    figure_for,
+    run_trash_pass,
+)
 
 _SCOPE_KEY = "scope"
 _DEVICES_KEY = "devices"
@@ -337,10 +344,11 @@ class UsageEngine:
             other than ``/photos`` is hidden or has no figure, so ``size`` understates
             "used"; otherwise ``LISTED``.
 
-        Side effect: when no trash summary is stored, the stored one is partial, or it is
-        stale under ``policy``, runs the trash pass (``filesystem list /trash`` plus
-        breakdowns) and stores the summary; read it with :meth:`trash_summary`. Nothing
-        runs under ``policy.never``.
+        Side effect: when no trash summary is stored, the stored one is partial, it left
+        out a folder ``rules`` no longer exclude, or it is stale under ``policy``, runs the
+        trash pass (``filesystem list /trash`` plus breakdowns, none under a folder
+        ``rules`` exclude) and stores the summary; read it with :meth:`trash_summary`.
+        Nothing runs under ``policy.never``.
 
         .. versionadded:: 3.4.0
         """
@@ -383,7 +391,7 @@ class UsageEngine:
         if x_photos is not Exclusion.HIDE:
             entries.append(Entry("photos", PHOTOS_PATH, "section", None, None, None, None,
                                  NodeState.UNMEASURED, x_photos, None, True, None))
-        self._refresh_trash(policy)
+        self._refresh_trash(policy, rules)
         measured = [e for e in entries if e.size is not None]
         sizes = [e.size for e in measured if e.size is not None]
         times = [e.at for e in measured if e.at is not None]
@@ -430,19 +438,25 @@ class UsageEngine:
         """
         return figure_for(self, path)
 
-    def _refresh_trash(self, policy: RefreshPolicy) -> None:
-        """Run and store the trash pass unless a complete, fresh summary is stored.
+    def _refresh_trash(self, policy: RefreshPolicy, rules: ExcludeRules) -> None:
+        """Run and store the trash pass unless a fresh, usable summary is stored.
 
-        A stored summary whose listing was partial (timed out or failed) is always stale.
+        A stored summary is always rerun when its listing was partial (timed out or
+        failed), or when it skipped a parent that ``rules`` (relative to ``/``) no longer
+        exclude.
         """
         if policy.never:
             return
         stored = self.cache.trash()
         if stored is not None and not policy.is_stale(stored[1], self.clock()):
             summary = self.trash_summary()
-            if summary is not None and summary.partial is None:
+            if summary is not None and summary.partial is None and not any(
+                g.reason == EXCLUDED_REASON and g.parent_path is not None
+                and not excluded(rules, g.parent_path)
+                for g in summary.groups
+            ):
                 return
-        summary = run_trash_pass(self, policy)
+        summary = run_trash_pass(self, policy, rules=rules)
         self.cache.put_trash(summary.to_json(), summary.at)
 
     def device_paths(self) -> list[str] | None:

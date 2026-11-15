@@ -126,6 +126,10 @@ anchors a pattern to the target.
 ``-X PATTERN`` / ``--exclude PATTERN``
    Leave matching folders out entirely.
 
+Both hold for the trash pass of ``du /`` as well: a trashed folder whose original folder
+is excluded is not measured, and ``du /`` says so below the table. That alone does not
+make it exit ``3``, and the next ``du /`` without the exclusion measures it.
+
 Depth, output and exit codes
 ----------------------------
 

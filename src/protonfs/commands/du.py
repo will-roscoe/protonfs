@@ -226,9 +226,23 @@ def _trash_lines(summary) -> list:
     return lines
 
 
-def _trash_incomplete(summary) -> bool:
-    """Whether a stored trash summary leaves part of the trash unmeasured."""
-    return summary is not None and not summary.complete
+def _trash_incomplete(summary, rules) -> bool:
+    """Whether the trash summary is incomplete for a reason other than this run's ``-x``/``-X``.
+
+    :param summary: the stored :class:`~protonfs.usage.trash.TrashSummary`, or ``None``.
+    :param rules: this run's rules, relative to ``/``.
+    """
+    from protonfs.usage.trash import EXCLUDED_REASON, excluded
+
+    if summary is None:
+        return False
+    if summary.partial is not None or summary.unresolved_folders:
+        return True
+    return any(
+        g.bytes is None and not (g.reason == EXCLUDED_REASON and g.parent_path is not None
+                                 and excluded(rules, g.parent_path))
+        for g in summary.groups
+    )
 
 
 def _attach_throttle_notice(engine, err) -> None:
@@ -339,7 +353,7 @@ def run_du(
             if r.state == "error":
                 err.write(f"! {r.path}: {r.error or 'measurement failed'}\n")
         summary = engine.trash_summary() if target.remote == "/" else None
-        partial = partial or _trash_incomplete(summary)
+        partial = partial or _trash_incomplete(summary, rules)
         if options.fmt == "json":
             docs.append(to_json(shown, target=target.remote, trash=summary,
                                 used_total=engine.used_total(), plan_size=options.plan_size,

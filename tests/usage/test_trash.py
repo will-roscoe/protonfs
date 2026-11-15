@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import subprocess
 
+import pytest
 from tests.usage.treedrive import TreeDrive
 
 from protonfs.drive import DriveError
 from protonfs.usage.engine import UsageEngine
 from protonfs.usage.excludes import ExcludeRules
 from protonfs.usage.policy import RefreshPolicy
-from protonfs.usage.trash import TrashGroup, TrashSummary, run_trash_pass
+from protonfs.usage.trash import EXCLUDED_REASON, TrashGroup, TrashSummary, run_trash_pass
 
 P = "/my-files/p"
 REVAL = RefreshPolicy.revalidate()
@@ -73,6 +74,38 @@ def test_trashed_empty_folder_is_zero_bytes_not_unknown(usage_cache, clock):
 
     assert summary.groups == (TrashGroup(P, 0, 1, 0),)
     assert summary.complete and summary.total_known == 0
+
+
+def test_zero_remainder_over_mixed_passes_stays_unknown(usage_cache, clock):
+    """A zero remainder only proves 0 B when every input comes from the one pass."""
+    d = _probe()
+    d.add_folder(P + "/empty")
+    eng = UsageEngine(d, usage_cache, clock=clock)
+    eng.breakdown(P, REVAL, NO_RULES, target=P)
+    d.trash(P + "/empty")
+    # sub is frozen, so the pass reuses its figure from the earlier pass
+    summary = run_trash_pass(eng, REVAL, rules=ExcludeRules(freeze=["sub"]))
+
+    (group,) = summary.groups
+    assert group.bytes is None and "different" in (group.reason or "")
+    assert not summary.complete
+
+
+@pytest.mark.parametrize("rules", [ExcludeRules(freeze=["my-files/p"]),
+                                   ExcludeRules(hide=["p"]),
+                                   ExcludeRules(freeze=["/my-files"])])
+def test_trash_pass_makes_no_calls_under_an_excluded_parent(usage_cache, clock, rules):
+    """I3: -x/-X mean no Drive calls for a match or below, for the trash pass too."""
+    d, eng = _trashed(usage_cache, clock)
+    d.calls.clear()
+
+    summary = run_trash_pass(eng, REVAL, rules=rules)
+
+    assert d.calls == [("list_trash", "/trash")]
+    (group,) = [g for g in summary.groups if g.folders]
+    assert group.bytes is None and group.reason == EXCLUDED_REASON
+    assert TrashGroup(P, 1, 0, 1048723) in summary.groups  # trashed files need no call
+    assert not summary.complete
 
 
 def test_trash_pass_unresolved_parent_counts_folder(usage_cache, clock):

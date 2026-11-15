@@ -184,6 +184,31 @@ def test_du_root_exit_3_and_names_a_trash_group_it_could_not_measure(du, drive):
     assert doc["trash"]["complete"] is False
 
 
+@pytest.mark.parametrize("flag", ["-x", "-X"])
+def test_du_root_trash_pass_honours_exclusions(du, drive, flag):
+    """I3: no Drive calls under an excluded folder; a user's exclusion alone exits 0."""
+    assert du("/my-files/A").exit_code == 0
+    drive.trash("/my-files/A/sub")
+    drive.calls.clear()
+    res = du("/", flag, "my-files/A")
+    assert res.exit_code == 0, res.output + res.stderr
+    assert not [c for c in drive.calls if c[1].startswith("/my-files/A")]
+    assert "/my-files/A" in res.stdout and "excluded" in res.stdout
+
+
+def test_du_root_reruns_a_trash_pass_that_skipped_a_folder_no_longer_excluded(du, drive):
+    assert du("/my-files/A").exit_code == 0
+    drive.trash("/my-files/A/sub")
+    assert du("/", "-x", "my-files/A").exit_code == 0
+    # Cache-only, the stored summary still has the unmeasured group: partial now.
+    assert du("/", "--refresh", "never").exit_code == 3
+    res = du("/", "--json")
+    assert res.exit_code == 0, res.output + res.stderr
+    trash = json.loads(res.stdout)["trash"]
+    assert trash["complete"] and trash["known"] == 1300
+    assert drive.calls.count(("list_trash", "/trash")) == 2
+
+
 def test_du_root_trashed_empty_folder_is_complete(du, drive):
     drive.add_folder("/my-files/A/empty")
     assert du("/my-files/A").exit_code == 0

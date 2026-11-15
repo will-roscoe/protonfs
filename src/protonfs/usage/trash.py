@@ -21,13 +21,17 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from ..drive import DriveError
-from .excludes import ExcludeRules
+from .excludes import ExcludeRules, Exclusion
 from .model import Breakdown, GapKind, NodeState
-from .paths import child_path, is_within
+from .paths import child_path, is_within, relative
 from .policy import RefreshPolicy
 
 if TYPE_CHECKING:
     from .engine import UsageEngine
+
+#: :attr:`TrashGroup.reason` of a group whose original parent matched a ``-x``/``-X`` rule,
+#: so the trash pass made no Drive calls for it.
+EXCLUDED_REASON = "excluded by -x/-X, so it was not measured"
 
 # Threshold 0 without the shortcut: the parent is re-listed and every child folder re-sized
 # in one pass, so the remainder is measured fresh rather than from reused child sizes.
@@ -154,7 +158,11 @@ class TrashFigure:
 
 
 def run_trash_pass(
-    engine: UsageEngine, policy: RefreshPolicy, *, timeout: float | None = None
+    engine: UsageEngine,
+    policy: RefreshPolicy,
+    *,
+    timeout: float | None = None,
+    rules: ExcludeRules | None = None,
 ) -> TrashSummary:
     """List the trash and attribute its bytes to original parent folders.
 
@@ -165,11 +173,14 @@ def run_trash_pass(
     trashed files of the same parent. Otherwise the group's ``bytes`` is ``None`` with a
     ``reason``. Parents are resolved with
     :meth:`~protonfs.usage.cache.UsageCache.path_for_uid`, so they must have been listed.
+    A parent that ``rules`` exclude gets no calls at all (its group's ``reason`` is
+    :data:`EXCLUDED_REASON`), and the breakdowns size no excluded child either.
 
     Issues ``filesystem list /trash`` plus the breakdown calls; stores nothing itself.
 
     :param engine: the engine to measure with.
     :param policy: ``policy.never`` makes no calls and returns an empty partial summary.
+    :param rules: freeze/hide rules relative to ``/`` (none by default).
     :param timeout: seconds allowed for the trash listing, or ``None`` for the source's
         default (:data:`~protonfs.drive.TRASH_LIST_TIMEOUT_SECONDS` for the CLI source,
         set by ``PROTONFS_TRASH_LIST_TIMEOUT``).
@@ -180,6 +191,7 @@ def run_trash_pass(
     .. versionadded:: 3.4.0
     """
     now = engine.clock()
+    rules = rules if rules is not None else ExcludeRules()
     if policy.never:
         return TrashSummary(now, (), 0, "trash not refreshed (refresh policy is never)")
     try:
@@ -211,12 +223,27 @@ def run_trash_pass(
         if parent is None:
             unresolved += count
             continue
+        if excluded(rules, parent):
+            groups.append(TrashGroup(parent, 0, count, None, EXCLUDED_REASON))
+            continue
         file_bytes = files[uid][1] if uid in files else 0
-        bd = engine.breakdown(parent, _FULL, ExcludeRules(), target=parent)
+        bd = engine.breakdown(parent, _FULL, rules, target="/")
         folder_bytes, reason = _folder_bytes(engine, bd, file_bytes)
         groups.append(TrashGroup(parent, 0, count, folder_bytes, reason))
     groups.sort(key=lambda g: (g.parent_path or "", g.folders))
     return TrashSummary(now, tuple(groups), unresolved, None)
+
+
+def excluded(rules: ExcludeRules, path: str) -> bool:
+    """Return whether ``rules`` (relative to ``/``) freeze or hide the folder ``path``.
+
+    :param rules: freeze/hide rules relative to ``/``.
+    :param path: escaped Drive path of a folder.
+    :returns: ``True`` for ``FREEZE`` or ``HIDE``, inherited from an ancestor included.
+
+    .. versionadded:: 3.4.0
+    """
+    return rules.match(relative(path, "/"), True) is not Exclusion.NONE
 
 
 def _folder_bytes(
