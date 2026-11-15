@@ -266,9 +266,11 @@ every command behaves as it did before 3.4.0; run from a subdirectory, which fai
   it already had (``push`` against the local tree, ``pull`` against the index). A
   ``*``, ``?`` or ``[`` in the name of the directory you are standing in is taken
   literally.
-* Messages print paths as you would type them from the current directory (``../sibling/x``
-  from a sibling directory). From the store root they are the store-relative paths they
-  always were. That includes ``ls`` rows and ``-v`` narration. The event log
+* Human-readable messages print paths as you would type them from the current directory
+  (``../sibling/x`` from a sibling directory). From the store root they are the
+  store-relative paths they always were. That includes the ``ls`` table and ``-v``
+  narration; the machine formats (``--format json`` and ``plain``) always carry
+  store-relative paths, wherever they are run. The event log
   (``.protonfs/events.log``) and the remote manifest always record store-relative paths.
 * ``setup`` keeps creating a store in the directory it is run from. ``deinit`` run from a
   subdirectory is a usage error (exit ``2``) naming the store root to run it from.

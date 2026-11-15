@@ -174,13 +174,26 @@ def test_pull_pattern_matches_the_index_relative_to_the_current_directory(
     assert not (root / "sim" / "mload006" / "d1").exists()
 
 
-def test_ls_prints_paths_as_typed_from_the_current_directory(store, monkeypatch) -> None:
+def test_ls_table_prints_paths_as_typed_from_the_current_directory(store, monkeypatch) -> None:
     root, _ = store
     assert _run("push", ".").exit_code == 0
     monkeypatch.chdir(root / "sim")
-    result = _run("ls", "--format", "plain", "mload005")
+    result = _run("ls", "mload005")
     assert result.exit_code == 0, result.output
-    assert result.output.split("\t")[0] == "mload005/d1"
+    assert " mload005/d1 " in result.output
+    assert "sim/mload005/d1" not in result.output
+
+
+def test_ls_machine_formats_stay_store_relative_from_a_subdirectory(store, monkeypatch) -> None:
+    import json
+
+    root, _ = store
+    assert _run("push", ".").exit_code == 0
+    monkeypatch.chdir(root / "sim" / "mload005")
+    plain = _run("ls", "--format", "plain", ".")
+    assert plain.output.split("\t")[0] == "sim/mload005/d1"
+    rows = json.loads(_run("ls", "--format", "json", ".").output)
+    assert [r["path"] for r in rows] == ["sim/mload005/d1"]
 
 
 def test_ls_from_the_root_prints_store_relative_paths_unchanged(store) -> None:
@@ -326,3 +339,62 @@ def test_doctor_checks_the_discovered_store(store, monkeypatch) -> None:
     monkeypatch.chdir(root / "sim")
     doctor_mod.run_doctor()
     assert seen == [root.resolve()]
+
+
+def test_setup_event_log_never_goes_to_an_enclosing_store(store, monkeypatch) -> None:
+    root, _ = store
+    seen: list = []
+    monkeypatch.setattr(
+        "protonfs.commands.setup.run_setup", lambda cwd, **kw: seen.append(cwd)
+    )
+    (root / "other" / ".protonfs").mkdir()  # a store being set up again, config not yet written
+    monkeypatch.chdir(root / "other")
+    result = _run("--event-log", "-vv", "setup", "--dry-run")
+    assert result.exit_code == 0, result.output
+    assert seen == [(root / "other").resolve()]
+    assert (root / "other" / ".protonfs" / "events.log").exists()
+    assert not (root / ".protonfs" / "events.log").exists()
+
+
+def test_event_log_goes_to_the_discovered_store_for_other_commands(store, monkeypatch) -> None:
+    root, _ = store
+    monkeypatch.chdir(root / "other")
+    assert _run("--event-log", "status").exit_code in (0, 1)
+    assert (root / ".protonfs" / "events.log").exists()
+    assert not (root / "other" / ".protonfs").exists()
+
+
+def test_dry_run_git_commands_are_pasteable_from_a_subdirectory(
+    store, monkeypatch, tmp_path
+) -> None:
+    import subprocess
+
+    root, _ = store
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    subprocess.run(["git", "-C", str(root), "config", "user.email", "t@t"], check=True)
+    subprocess.run(["git", "-C", str(root), "config", "user.name", "t"], check=True)
+    subprocess.run(
+        ["git", "-C", str(root), "add", "sim/mload005/d1"], check=True
+    )
+    subprocess.run(["git", "-C", str(root), "commit", "-qm", "x"], check=True)
+    monkeypatch.chdir(root / "sim")
+    result = _run("import", "--dry-run", "mload005")
+    assert result.exit_code == 0, result.output
+    cmds = [ln for ln in result.output.splitlines() if "git " in ln and "rm --cached" in ln]
+    assert cmds, result.output
+    assert f"git -C {root.resolve()} --literal-pathspecs rm --cached" in cmds[0]
+    assert "[dry-run] import mload005/d1" in result.output
+
+
+def test_hint_commands_name_paths_as_typed_from_the_current_directory(
+    store, monkeypatch
+) -> None:
+    from protonfs.commands.gitmove import verify_exported
+
+    root, _ = store
+    assert _run("push", ".").exit_code == 0
+    (root / "sim" / "mload005" / "d1").write_bytes(b"changed on disk")
+    monkeypatch.chdir(root / "sim")
+    failures = verify_exported(load_context(), ["sim/mload005/d1"])
+    assert failures, "the edit must be detected"
+    assert "`protonfs push mload005/d1`" in failures[0]["error"]

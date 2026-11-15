@@ -229,6 +229,16 @@ def _schedule_path(ctx, path: str | None) -> str | None:
     return mapped[0] if mapped else None
 
 
+def _runnable_git(ctx, command: str) -> str:
+    """A ``git ...`` command protonfs runs from the store root, as the user can paste it
+    from where they are: prefixed with ``git -C <root>`` when that is not the root."""
+    if ctx.invocation_dir() == ctx.root:
+        return command
+    import shlex
+
+    return f"git -C {shlex.quote(str(ctx.root))} {command[len('git '):]}"
+
+
 def _echo_failure(ctx, failure: dict, *, rel: bool = False) -> None:
     """Print one ``FAILED`` line; ``rel`` says ``failure["name"]`` is a store-relative path
     (else it is a bare file name, which does not depend on where the command ran)."""
@@ -617,7 +627,11 @@ def main(verbose: int, progress_inline: bool | None, event_log: bool | None) -> 
     # command's group callback: `doctor`/`config set` are how you FIX a broken config,
     # and the command itself will surface config errors where they actually matter.
     here = Path.cwd()
-    root = find_store_root(here) or here  # #232: the store this invocation belongs to
+    # #232: the store this invocation belongs to. `setup` creates a store where it is run,
+    # so it never belongs to an enclosing one.
+    root = here
+    if click.get_current_context().invoked_subcommand != "setup":
+        root = find_store_root(here) or here
     try:
         cfg = load_layered_config(root)
     except Exception:
@@ -1382,7 +1396,7 @@ def _import(ctx, path: tuple[str, ...], dry_run: bool, strict: bool) -> None:
         for line in result.gitignore_lines:
             click.echo(f"[dry-run] {line}")
         for command in result.git_commands:
-            click.echo(f"[dry-run] {command}")
+            click.echo(f"[dry-run] {_runnable_git(ctx, command)}")
         click.echo(
             "[dry-run] each file is verified on Drive and against HEAD when run for real"
         )
@@ -1551,7 +1565,7 @@ def _export(ctx, path: tuple[str, ...], dry_run: bool, strict: bool, trash_remot
         for line in result.ignore_lines:
             click.echo(f"[dry-run] {line}")
         for command in result.git_commands:
-            click.echo(f"[dry-run] {command}")
+            click.echo(f"[dry-run] {_runnable_git(ctx, command)}")
         if trash_remote:
             click.echo(f"[dry-run] would trash {len(files)} Drive copy(ies)")
         click.echo("[dry-run] each file is verified on Drive when run for real")

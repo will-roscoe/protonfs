@@ -224,10 +224,10 @@ def render_ls(
     """Print tracked files (or ``--dirs`` aggregates, or a trash listing).
 
     :param ctx: the loaded repo context.
-    :param subpath: repo-root-relative subtree to list, or ``None`` for everything. File
-        paths are printed as typed from the current directory
-        (:meth:`~protonfs.context.RepoContext.shown`), which from the store root is the
-        store-relative path.
+    :param subpath: repo-root-relative subtree to list, or ``None`` for everything. The
+        ``table`` format prints file paths as typed from the current directory
+        (:meth:`~protonfs.context.RepoContext.shown`); ``plain`` and ``json`` always
+        print store-relative paths, wherever the command is run.
     :param remote: when true, cross-reference a recursive remote walk so remote-only
         and remote-changed states are shown (otherwise state is local-vs-index only).
     :param trash: when true, list ``/trash`` entries instead of tracked files;
@@ -315,10 +315,10 @@ def render_ls(
         return
 
     if fmt == "json":
-        echo(json.dumps([{"path": ctx.shown(e.rel_path), "state": e.state.value} for e in entries]))
+        echo(json.dumps([{"path": e.rel_path, "state": e.state.value} for e in entries]))
     elif fmt == "plain":
         for entry in entries:
-            echo(f"{ctx.shown(entry.rel_path)}\t{entry.state.value}")
+            echo(f"{entry.rel_path}\t{entry.state.value}")
     else:
         table = Table("path", "state")
         for entry in entries:
