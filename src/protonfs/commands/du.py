@@ -299,8 +299,10 @@ def _trash_lines(summary) -> list:
     return lines
 
 
-def _since_pass_lines(figure, summary) -> list:
+def _since_pass_lines(engine, figure, summary, rules) -> list:
     """Lines for the trash the ``/`` figure leaves unknown beyond what the summary says."""
+    from protonfs.usage.trash import frozen_reason
+
     if figure is None or figure.complete:
         return []
     said = {g.parent_path for g in summary.groups if g.folders and g.bytes is None}
@@ -310,39 +312,49 @@ def _since_pass_lines(figure, summary) -> list:
             lines.append(f"trash: {reason}, so / shows the larger figure "
                          "(`du / --refresh 0` measures it)")
         elif path not in said:
-            lines.append(f"trash in {path} since the last trash pass: unknown ({reason}); "
-                         f"`du {path} --refresh 0` measures it")
+            frozen = frozen_reason(engine, path, rules)
+            if frozen is not None:  # this run's own -x/-X: re-measuring would not help
+                lines.append(f"trash in {path} since the last trash pass: unknown ({frozen})")
+            else:
+                lines.append(f"trash in {path} since the last trash pass: unknown "
+                             f"({reason}); `du {path} --refresh 0` measures it")
     return lines
 
 
-def _root_trash_unknown(figure, rules) -> bool:
+def _excused(engine, path, reason, rules) -> bool:
+    """Whether trash unknown in ``path`` for ``reason`` is this run's own ``-x``/``-X``:
+    the folder itself is excluded, or only folders this run excludes keep an older
+    figure (or none) in its listing."""
+    from protonfs.usage.trash import EXCLUDED_REASON, excluded, frozen_reason
+
+    if path is None:
+        return False
+    if reason == EXCLUDED_REASON:
+        return excluded(rules, path)
+    return frozen_reason(engine, path, rules) is not None
+
+
+def _root_trash_unknown(engine, figure, rules) -> bool:
     """Whether the ``/`` figure leaves trash unknown for a reason other than this run's
     ``-x``/``-X``."""
-    from protonfs.usage.trash import EXCLUDED_REASON, excluded
-
     if figure is None or figure.complete:
         return False
-    return any(
-        not (reason == EXCLUDED_REASON and path is not None and excluded(rules, path))
-        for path, reason in figure.unknown
-    )
+    return any(not _excused(engine, path, reason, rules) for path, reason in figure.unknown)
 
 
-def _trash_incomplete(summary, rules) -> bool:
+def _trash_incomplete(engine, summary, rules) -> bool:
     """Whether the trash summary is incomplete for a reason other than this run's ``-x``/``-X``.
 
+    :param engine: the engine holding the cache.
     :param summary: the stored :class:`~protonfs.usage.trash.TrashSummary`, or ``None``.
     :param rules: this run's rules, relative to ``/``.
     """
-    from protonfs.usage.trash import EXCLUDED_REASON, excluded
-
     if summary is None:
         return False
     if summary.partial is not None or summary.unresolved_folders:
         return True
     return any(
-        g.bytes is None and not (g.reason == EXCLUDED_REASON and g.parent_path is not None
-                                 and excluded(rules, g.parent_path))
+        g.bytes is None and not _excused(engine, g.parent_path, g.reason, rules)
         for g in summary.groups
     )
 
@@ -496,8 +508,8 @@ def _report(engine, targets, options, policy, rules, *, out, say, end_line) -> i
         root_trash = (engine.trash_for("/") if target.remote == "/" and summary is not None
                       else None)
         if target.remote == "/":
-            partial = (partial or _trash_incomplete(summary, rules)
-                       or _root_trash_unknown(root_trash, rules))
+            partial = (partial or _trash_incomplete(engine, summary, rules)
+                       or _root_trash_unknown(engine, root_trash, rules))
         if options.fmt == "json":
             docs.append(to_json(shown, target=target.remote, trash=summary,
                                 used_total=engine.used_total(), plan_size=options.plan_size,
@@ -509,7 +521,8 @@ def _report(engine, targets, options, policy, rules, *, out, say, end_line) -> i
             render_table(shown, console, title=target.remote if len(targets) > 1 else None,
                          now=now)
             if target.remote == "/":
-                for line in _trash_lines(summary) + _since_pass_lines(root_trash, summary):
+                for line in (_trash_lines(summary)
+                             + _since_pass_lines(engine, root_trash, summary, rules)):
                     out.write(line + "\n")
             hint = hint or options.plan_size is None
             need_used = need_used or (engine.used_total() is None and options.fmt == "table")

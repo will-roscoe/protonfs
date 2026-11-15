@@ -534,7 +534,8 @@ flag/argument name; these names, not just their presence, are frozen.
        unmeasurable section or device, or
        the ``/`` row's In trash is incomplete, whether from the trash pass or from a folder
        listed since it whose trash is unknown, with a line below the table saying which
-       (a ``-x``/``-X`` you gave is not partial). The output is
+       (a ``-x``/``-X`` you gave is not partial, including a remainder that is unknown
+       only because a folder you excluded keeps an older figure). The output is
        printed in full in every case.
 
 Sync states

@@ -162,8 +162,10 @@ anchors a pattern to the target.
    Leave matching folders out entirely.
 
 Both hold for the trash pass of ``du /`` as well: a trashed folder whose original folder
-is excluded is not measured, and ``du /`` says so below the table. That alone does not
-make it exit ``3``, and the next ``du /`` without the exclusion measures it.
+is excluded is not measured, and ``du /`` says so below the table. The same goes for a
+folder whose remainder is unknown only because a subfolder you excluded keeps an older
+figure (or none). Your own exclusion alone does not make ``du /`` exit ``3``, and the next
+``du /`` without it measures what it left out.
 
 Depth, output and exit codes
 ----------------------------

@@ -54,10 +54,12 @@ from .policy import RefreshPolicy
 from .source import DriveSource, RawEntry
 from .trash import (
     EXCLUDED_REASON,
+    FROZEN_REASONS,
     TrashFigure,
     TrashSummary,
     excluded,
     figure_for,
+    frozen_reason,
     run_trash_pass,
     trash_list_timeout,
 )
@@ -527,8 +529,11 @@ class UsageEngine:
         if self._unresolved_now_cached(summary):
             return True
         return any(
-            g.reason == EXCLUDED_REASON and g.parent_path is not None
-            and not excluded(rules, g.parent_path)
+            g.parent_path is not None and (
+                (g.reason == EXCLUDED_REASON and not excluded(rules, g.parent_path))
+                # unknown only through a freeze these rules no longer make
+                or (g.reason in FROZEN_REASONS
+                    and frozen_reason(self, g.parent_path, rules) is None))
             for g in summary.groups
         )
 

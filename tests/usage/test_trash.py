@@ -13,6 +13,7 @@ from protonfs.usage.excludes import ExcludeRules
 from protonfs.usage.policy import RefreshPolicy
 from protonfs.usage.trash import (
     EXCLUDED_REASON,
+    FROZEN_OLDER_REASON,
     TrashGroup,
     TrashSummary,
     figures_for,
@@ -93,7 +94,8 @@ def test_zero_remainder_over_mixed_passes_stays_unknown(usage_cache, clock):
     summary = run_trash_pass(eng, REVAL, rules=ExcludeRules(freeze=["sub"]))
 
     (group,) = summary.groups
-    assert group.bytes is None and "different" in (group.reason or "")
+    # R41: the freeze alone makes it unknown, and the reason says so
+    assert group.bytes is None and group.reason == FROZEN_OLDER_REASON
     assert not summary.complete
 
 

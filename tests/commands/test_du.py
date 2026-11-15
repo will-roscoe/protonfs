@@ -390,6 +390,48 @@ def test_du_root_says_when_a_loose_trashed_file_may_already_be_counted(du_live, 
     assert "≥ 4.9 KiB" in res.stdout.splitlines()[1]
 
 
+def test_du_root_trash_unknown_only_because_of_a_freeze_is_not_partial(du_live, drive):
+    """R41: the trash pass cannot attribute P's remainder only because the -x'd P/F keeps
+    an older figure: the user's own exclusion, so exit 0, with a line saying so."""
+    drive.add_file("/my-files/P/F/x", 1000)
+    drive.add_file("/my-files/P/k", 10)
+    drive.add_folder("/my-files/P/T")
+    assert du_live("/my-files/P").exit_code == 0
+    drive.trash("/my-files/P/T")
+    du_live.clock.advance(60)
+    res = du_live("/", "-x", "my-files/P/F")
+    assert res.exit_code == 0, res.output + res.stderr
+    line = next(ln for ln in res.stdout.splitlines() if ln.startswith("trash from"))
+    assert "/my-files/P" in line and "excluded with -x/-X keeps an older figure" in line
+    # without the -x, the next du / measures it rather than keep the frozen verdict
+    lists = drive.calls.count(("list_trash", "/trash"))
+    again = du_live("/", "--json")
+    assert again.exit_code == 0, again.output + again.stderr
+    assert drive.calls.count(("list_trash", "/trash")) == lists + 1
+    assert json.loads(again.stdout)["trash"]["complete"] is True
+
+
+def test_du_root_listing_unknown_only_because_of_a_freeze(du_live, drive):
+    """R41 for a folder listed since the pass: the freeze is this run's, so exit 0 with the
+    reason; without the -x the same remainder is unreconciled for this run: exit 3."""
+    drive.add_file("/my-files/P/F/x", 1000)
+    drive.add_file("/my-files/P/k", 10)
+    drive.add_file("/my-files/P/T/y", 50)
+    assert du_live("/my-files/P").exit_code == 0
+    assert du_live("/").exit_code == 0  # an empty, complete trash pass
+    du_live.clock.advance(60)
+    drive.trash("/my-files/P/T")
+    assert du_live("/my-files/P", "-x", "F", "--refresh", "0").exit_code == 0  # F mixed
+    frozen = du_live("/", "-x", "my-files/P/F")
+    assert frozen.exit_code == 0, frozen.output + frozen.stderr
+    line = next(ln for ln in frozen.stdout.splitlines() if "since the last trash pass" in ln)
+    assert "/my-files/P" in line and "excluded with -x/-X keeps an older figure" in line
+    plain = du_live("/")
+    assert plain.exit_code == 3, plain.output + plain.stderr
+    line = next(ln for ln in plain.stdout.splitlines() if "since the last trash pass" in ln)
+    assert "unreconciled" in line
+
+
 def test_du_root_trashed_empty_folder_is_complete(du, drive):
     drive.add_folder("/my-files/A/empty")
     assert du("/my-files/A").exit_code == 0

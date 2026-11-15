@@ -37,6 +37,15 @@ if TYPE_CHECKING:
 #: so the trash pass made no Drive calls for it.
 EXCLUDED_REASON = "excluded by -x/-X, so it was not measured"
 
+#: :attr:`TrashGroup.reason` (and ``du /``'s line) when a remainder is unknown only because a
+#: folder excluded with ``-x``/``-X`` keeps a figure from an earlier pass.
+FROZEN_OLDER_REASON = "a folder excluded with -x/-X keeps an older figure"
+#: The same when an excluded folder has no figure at all.
+FROZEN_NONE_REASON = "a folder excluded with -x/-X has no figure"
+#: The same when excluded folders of both kinds are involved.
+FROZEN_BOTH_REASON = "folders excluded with -x/-X keep older figures or have none"
+FROZEN_REASONS = frozenset({FROZEN_OLDER_REASON, FROZEN_NONE_REASON, FROZEN_BOTH_REASON})
+
 # Threshold 0 without the shortcut: the parent is re-listed and every child folder re-sized
 # in one pass, so the remainder is measured fresh rather than from reused child sizes.
 _FULL = RefreshPolicy(0.0, allow_shortcut=False)
@@ -291,7 +300,7 @@ def run_trash_pass(
             continue
         file_bytes = files[uid][1] if uid in files else 0
         bd = engine.breakdown(parent, _FULL, rules, target="/")
-        folder_bytes, reason = _folder_bytes(engine, bd, file_bytes)
+        folder_bytes, reason = _folder_bytes(engine, bd, file_bytes, rules)
         groups.append(TrashGroup(parent, 0, count, folder_bytes, reason, uid))
     groups.sort(key=lambda g: (g.parent_path or "", g.folders))
     return TrashSummary(now, tuple(groups), unresolved, None, tuple(sorted(unresolved_uids)),
@@ -310,8 +319,47 @@ def excluded(rules: ExcludeRules, path: str) -> bool:
     return rules.match(relative(path, "/"), True) is not Exclusion.NONE
 
 
+def frozen_reason(engine: UsageEngine, path: str, rules: ExcludeRules) -> str | None:
+    """Return why the cached remainder of ``path`` is unknown, when that is only because
+    folders ``rules`` exclude keep an older figure or have none; else ``None``.
+
+    Reads the cache only. The remainder is then the user's own exclusion: every other
+    input (the folder's own figure, its files, every child folder ``rules`` do not
+    exclude) has a size from the listing's own pass.
+
+    :param engine: the engine holding the cache.
+    :param path: escaped Drive path of a listed folder.
+    :param rules: freeze/hide rules relative to ``/``.
+    :returns: :data:`FROZEN_OLDER_REASON`, :data:`FROZEN_NONE_REASON` or
+        :data:`FROZEN_BOTH_REASON`; ``None`` without a listing, when nothing excluded is
+        out of step, or when anything else is.
+
+    .. versionadded:: 3.4.0
+    """
+    snap = engine.cache.snapshot(path)
+    if snap is None:
+        return None
+    fig = engine.cache.figure(path)
+    if fig is not None and (fig.size, fig.descendants) != tuple(snap.fingerprint):
+        return None
+    older = none = False
+    for r in snap.rows:
+        if r.size is not None and r.pass_id == snap.pass_id:
+            continue
+        if r.kind != "folder" or not excluded(rules, child_path(path, r.name, r.uid,
+                                                                  r.decrypted)):
+            return None
+        if r.size is None:
+            none = True
+        else:
+            older = True
+    if older and none:
+        return FROZEN_BOTH_REASON
+    return FROZEN_OLDER_REASON if older else FROZEN_NONE_REASON if none else None
+
+
 def _folder_bytes(
-    engine: UsageEngine, bd: Breakdown, file_bytes: int
+    engine: UsageEngine, bd: Breakdown, file_bytes: int, rules: ExcludeRules
 ) -> tuple[int | None, str | None]:
     """Return ``(bytes, reason)`` for the trashed folders whose original parent is ``bd``.
 
@@ -322,11 +370,16 @@ def _folder_bytes(
         return None, f"measuring the folder failed: {bd.error or 'unknown error'}"
     if bd.gap is None:
         return None, "the folder could not be listed"
+    trash = bd.gap_kind is GapKind.TRASH or (bd.gap == 0 and _one_pass(engine, bd.path))
+    if not trash or bd.gap < 0:
+        frozen = frozen_reason(engine, bd.path, rules)
+        if frozen is not None:
+            return None, frozen
     if bd.gap_kind is GapKind.UNATTRIBUTED:
         return None, "a subfolder has no size, so the remainder includes its bytes"
     if bd.gap < 0:
         return None, "the folder changed while it was measured"
-    if bd.gap_kind is not GapKind.TRASH and not (bd.gap == 0 and _one_pass(engine, bd.path)):
+    if not trash:
         return None, "its figures come from different passes"
     if bd.gap < file_bytes:
         return None, "the remainder is smaller than the trashed files in the folder"
