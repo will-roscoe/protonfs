@@ -319,14 +319,18 @@ class UsageCache:
     def path_for_uid(self, uid: str) -> str | None:
         """Return the Drive path of the folder with ``uid``, or ``None`` if unknown.
 
-        Looks at folder rows of every snapshot, then at each snapshot's own uid.
+        Looks at folder rows of every snapshot, then at each snapshot's own uid. The path
+        has the form listings use (:func:`~protonfs.usage.paths.child_path`): an
+        undecryptable folder is addressed by its uid, not its name.
         """
         with self._lock:
             r = self._db.execute(
-                "SELECT parent, name FROM rows WHERE uid=? AND kind='folder' LIMIT 1", (uid,)
+                "SELECT parent, name, decrypted FROM rows WHERE uid=? AND kind='folder' "
+                "LIMIT 1", (uid,)
             ).fetchone()
             if r:
-                return _join(r[0], r[1])
+                # as paths.node_segment: the uid stands in for a name that is not decrypted
+                return _join(r[0], r[1] if r[2] else uid)
             s = self._db.execute(
                 "SELECT path FROM snapshots WHERE uid=? LIMIT 1", (uid,)
             ).fetchone()

@@ -105,6 +105,15 @@ def test_path_for_uid(cache):
     assert cache.path_for_uid("nope") is None
 
 
+def test_path_for_uid_uses_the_uid_of_an_undecryptable_folder(cache):
+    """One folder, one path: the same segment child_path builds (the uid), not the name."""
+    from protonfs.usage.paths import child_path
+
+    row = Row("garbled", "folder", "U-x", 1, 1, 10.0, 1, None, False)
+    cache.put_snapshot(_snap(rows=(row,)))
+    assert cache.path_for_uid("U-x") == child_path("/a", "garbled", "U-x", False) == "/a/U-x"
+
+
 def test_schema_version_mismatch_rebuilds(tmp_path):
     p = tmp_path / "du.sqlite"
     c = UsageCache(p)
