@@ -2056,7 +2056,8 @@ def rm(path: tuple[str, ...], recursive: bool, force: bool, yes: bool) -> None:
 
     .. versionchanged:: 3.4.0
        Run from a subdirectory of a store it finds the store, PATH is read relative to
-       the current directory, and with no PATH it acts on that subdirectory (#232).
+       the current directory, and the store root itself (``.``, ``..`` up to it, its
+       absolute path or ``/``) is refused with a usage error (#232).
     """
     from protonfs.commands.rm import rm as rm_path
     from protonfs.context import load_context
@@ -2088,7 +2089,8 @@ def restore(path: tuple[str, ...]) -> None:
 
     .. versionchanged:: 3.4.0
        Run from a subdirectory of a store it finds the store, PATH is read relative to
-       the current directory, and with no PATH it acts on that subdirectory (#232).
+       the current directory, and the store root itself (``.``, ``..`` up to it, its
+       absolute path or ``/``) is refused with a usage error (#232).
     """
     from protonfs.commands.restore import restore as restore_path
     from protonfs.context import load_context
