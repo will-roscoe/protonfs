@@ -340,7 +340,7 @@ def run_doctor(fix: bool = False, root: Path | None = None) -> list[Check]:
     """
     checks: list[Check] = []
     if root is None:
-        from protonfs.context import find_store_root
+        from protonfs.storeroot import find_store_root
 
         root = find_store_root(Path.cwd()) or Path.cwd()
 

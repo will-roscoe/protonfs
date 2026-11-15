@@ -246,3 +246,21 @@ def test_symlinked_cwd_resolves_to_the_store(store, monkeypatch, tmp_path) -> No
     result = _run("push", "mload005")
     assert result.exit_code == 0, result.output
     assert load_context(root).index.get("sim/mload005/d1") is not None
+
+
+def test_item_narration_names_paths_as_typed_from_the_current_directory(
+    store, monkeypatch
+) -> None:
+    root, _ = store
+    monkeypatch.chdir(root / "sim")
+    result = _run("-vv", "push", "mload005")
+    assert result.exit_code == 0, result.output
+    assert " mload005/d1" in result.output
+    assert "sim/mload005/d1" not in result.output
+
+
+def test_status_phase_names_the_subpath_as_typed(store, monkeypatch) -> None:
+    root, _ = store
+    monkeypatch.chdir(root / "sim")
+    result = _run("-v", "status", "mload005")
+    assert "subpath=mload005" in result.output

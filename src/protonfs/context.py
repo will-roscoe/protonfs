@@ -20,6 +20,8 @@ import click
 from protonfs.config import Config, MissingDeviceIdError, load_layered_config
 from protonfs.drive import DriveClient
 from protonfs.index import IndexStore
+from protonfs.reporting import get_reporter
+from protonfs.storeroot import find_store_root
 
 if TYPE_CHECKING:
     from protonfs.hashcache import HashCache
@@ -166,22 +168,9 @@ def load_context(start: Path | None = None) -> RepoContext:
         drive = DriveClient(clock_skew=config.defaults.clock_skew)
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
-    return RepoContext(root=root, config=config, index=IndexStore(root), drive=drive)
+    ctx = RepoContext(root=root, config=config, index=IndexStore(root), drive=drive)
+    get_reporter().path_view = ctx.shown  # narration names paths as typed from here
+    return ctx
 
 
-def find_store_root(start: Path) -> Path | None:
-    """Return the nearest ancestor of ``start`` (inclusive) holding ``.protonfs/config.json``.
-
-    :param start: A path, which need not exist; the search begins at its nearest existing
-        ancestor.
-    :returns: The resolved store root, or ``None`` if no ancestor is a protonfs store.
-
-    .. versionadded:: 3.4.0
-    """
-    current = Path(start).resolve()
-    while not current.exists() and current != current.parent:
-        current = current.parent
-    for candidate in (current, *current.parents):
-        if (candidate / ".protonfs" / "config.json").is_file():
-            return candidate
-    return None
+__all__ = ["RepoContext", "find_store_root", "load_context"]

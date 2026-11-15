@@ -242,7 +242,7 @@ def offload(
             # pass the size verify below. Compare the live local sha256 to the index's record.
             local_sha256, _ = hash_file_digests(local_path)
             if local_sha256 != entry.sha256:
-                reporter.warn(f"skip {rel}: unsynced local edits")
+                reporter.warn(f"skip {reporter.show(rel)}: unsynced local edits")
                 result.skipped_modified += 1
                 result.modified_paths.append(rel)
                 continue
@@ -267,7 +267,7 @@ def offload(
                 else:
                     reason = None
                 if reason is not None:
-                    reporter.warn(f"skip {rel}: {reason}")
+                    reporter.warn(f"skip {reporter.show(rel)}: {reason}")
                     result.skipped_unverified += 1
                     result.skipped_paths.append(rel)
                     continue

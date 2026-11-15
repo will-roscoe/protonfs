@@ -175,7 +175,7 @@ def _store_or_cwd() -> Path:
 
     .. versionadded:: 3.4.0
     """
-    from protonfs.context import find_store_root
+    from protonfs.storeroot import find_store_root
 
     here = Path.cwd()
     return find_store_root(here) or here
@@ -605,8 +605,8 @@ def _split_file_paths(
 def main(verbose: int, progress_inline: bool | None, event_log: bool | None) -> None:
     """Sync a local directory tree with Proton Drive."""
     from protonfs.config import load_layered_config
-    from protonfs.context import find_store_root
     from protonfs.logs import configure_logging
+    from protonfs.storeroot import find_store_root
 
     # #136: before anything can spawn proton-drive, make a kill signal unwind cleanly
     # rather than leave an orphaned child holding the Drive cache lock.
@@ -686,8 +686,8 @@ def deinit(dry_run: bool, yes: bool) -> None:
        from (#232): a teardown acts only where it is run.
     """
     from protonfs.commands.deinit import ensure_deinit_target, run_deinit
-    from protonfs.context import find_store_root
     from protonfs.locking import repo_lock
+    from protonfs.storeroot import find_store_root
 
     root = Path.cwd()
     store = find_store_root(root)
