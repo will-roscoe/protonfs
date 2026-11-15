@@ -1,0 +1,34 @@
+/* protonfs du: charts panel. Gap and state styles mirror the table's row classes. */
+#charts svg { display: block; width: 100%; height: 100%; }
+#charts g.node { cursor: pointer; }
+#charts g.node.gap { cursor: default; }
+#charts g.node rect.fill, #charts g.node path.fill, #charts g.node circle.fill {
+  stroke: var(--bg); stroke-width: 1; }
+#charts g.node:hover rect.fill, #charts g.node:hover path.fill { stroke: var(--fg); }
+#charts g.node.selected rect.fill, #charts g.node.selected path.fill {
+  stroke: var(--accent); stroke-width: 2.5; }
+#charts g.node.hub circle.fill { fill: color-mix(in srgb, var(--bg) 90%, var(--fg)); }
+#charts text.label { font-size: 11px; fill: var(--fg); pointer-events: none; paint-order: stroke;
+  stroke: color-mix(in srgb, var(--bg) 70%, transparent); stroke-width: 2px; }
+#charts text.label.sub { fill: var(--muted); }
+#charts .hatch { fill: url(#pfs-hatch); pointer-events: none; }
+#charts .hatch-line { stroke: var(--fg); stroke-opacity: .35; stroke-width: 1.4; }
+#charts g.node.gap-trash .fill { fill: var(--trash); fill-opacity: .55; }
+#charts g.node.gap-unattributed .fill { fill: var(--gap); fill-opacity: .45; }
+#charts g.node.gap-unreconciled .fill { fill: var(--err); fill-opacity: .25;
+  stroke: var(--err); stroke-dasharray: 3 2; }
+#charts g.node.excluded .fill { stroke: #1d7fd0; stroke-dasharray: 4 2; }
+#charts g.node.error .fill { stroke: var(--err); stroke-width: 2; }
+#charts g.node.placeholder path.fill { fill: none; stroke: var(--muted); stroke-width: 1.5; }
+.chart-empty { margin: 1em; color: var(--muted); }
+
+#chart-actions { display: flex; gap: 8px; align-items: center; padding: 4px 8px;
+  border-top: 1px solid var(--line); min-height: 2.2em; }
+#walkbar { display: flex; gap: 8px; align-items: center; flex: 1; color: var(--muted); }
+#walkbar progress { flex: 1; max-width: 16em; }
+
+#chart-tooltip { position: fixed; z-index: 10; pointer-events: none; max-width: 28em;
+  padding: 4px 8px; border: 1px solid var(--line); border-radius: 4px; font-size: 12px;
+  background: var(--bg); color: var(--fg); box-shadow: 0 2px 8px rgba(0, 0, 0, .25); }
+#chart-tooltip .tt-name { font-weight: 600; word-break: break-all; }
+#chart-tooltip .tt-error { color: var(--err); }

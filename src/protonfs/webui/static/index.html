@@ -6,6 +6,7 @@
 <meta name="pfs-token" content="{{PFS_TOKEN}}">
 <title>protonfs du</title>
 <link rel="stylesheet" href="/static/app.css">
+<link rel="stylesheet" href="/static/charts.css">
 </head>
 <body>
 <header id="topbar">
@@ -34,7 +35,9 @@
   </label>
   <span id="refresh-msg" class="msg" role="alert"></span>
   <label>Depth <input id="depth" type="range" min="1" max="6" value="3"><output id="depth-out">3</output></label>
+  <span id="depth-msg" class="msg" role="alert"></span>
   <label><input id="dirs-only" type="checkbox"> Folders only</label>
+  <span id="dirs-msg" class="msg" role="alert"></span>
   <fieldset id="excludes">
     <legend>Exclusions</legend>
     <div id="exclude-rows"></div>
@@ -84,5 +87,6 @@
 </main>
 <script src="/static/vendor/d3.v7.9.0.min.js"></script>
 <script src="/static/app.js"></script>
+<script src="/static/charts.js"></script>
 </body>
 </html>
