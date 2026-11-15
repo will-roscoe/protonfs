@@ -383,3 +383,17 @@ def test_build_options_records_an_explicit_depth(monkeypatch, tmp_path):
     assert build_options(gui=True, n_paths=1).maxdepth_given is False
     assert build_options(gui=True, depth="1", n_paths=1).maxdepth_given is True
     assert build_options(gui=True, maxdepth=2, n_paths=1).maxdepth_given is True
+
+
+def test_du_retries_a_child_whose_size_failed_once(du, drive):
+    drive.fail_next("size", "/my-files/A", DriveError("throttled"), times=1)
+    res = du("/my-files", "-d", "2", "--json")
+    assert res.exit_code == 0, res.output + res.stderr
+    row = next(r for r in _rows(res) if r["path"] == "/my-files/A")
+    assert row["size"] is not None and row["error"] is None
+
+
+def test_du_root_depth_two_never_sizes_the_devices_placeholder(du, drive):
+    drive.fail_next("list", "/devices", DriveError("nope"), times=9)
+    du("/", "-d", "2", "--json")
+    assert ("size", "/devices") not in drive.calls

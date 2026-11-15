@@ -38,8 +38,10 @@ class JobQueue:
     - ``progress``: ``done``, ``total``, ``path`` and ``state`` (``running``, ``done``,
       ``cancelled`` or ``error``), aggregated over every path of the walk. The last event of
       a walk is never ``running``; a ``cancelled`` or ``error`` one keeps the last known
-      ``done`` and ``total`` (``error`` adds ``message``).
-    - ``error``: ``path`` and ``message`` for a job that raised; the worker carries on.
+      ``done`` and ``total`` (``error`` adds ``message``). The last event also carries
+      ``failed``: how many folders could not be measured (their subtrees were not walked).
+    - ``error``: ``path`` and ``message`` for a job that raised, or for a folder a walk
+      could not measure; the work carries on.
 
     :param engine: the usage engine the jobs run on.
     :param settings: returns the current :class:`~protonfs.webui.settings.GuiSettings`; read
@@ -179,6 +181,7 @@ class JobQueue:
         state = "done"
         message = None
         last = None
+        failed = [0]
         try:
             for path in paths:
                 if cancel.is_set():
@@ -193,8 +196,13 @@ class JobQueue:
                         "path": _path, "state": "running",
                     })
 
+                def failed_one(fpath: str, text: str) -> None:
+                    failed[0] += 1
+                    self._publish({"event": "error", "path": fpath, "message": text})
+
                 finished += self.engine.walk(
-                    path, s.policy(), s.rules(), target=s.target, on_progress=tick, cancel=cancel
+                    path, s.policy(), s.rules(), target=s.target, on_progress=tick,
+                    cancel=cancel, on_error=failed_one,
                 )
                 known[0], known[1] = finished, max(finished, known[1])
             if cancel.is_set():
@@ -209,7 +217,7 @@ class JobQueue:
             final = {
                 "event": "progress", "done": known[0],
                 "total": known[0] if state == "done" else known[1],
-                "path": last or "", "state": state,
+                "path": last or "", "state": state, "failed": failed[0],
             }
             if message is not None:
                 final["message"] = message

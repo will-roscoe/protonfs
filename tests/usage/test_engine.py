@@ -843,3 +843,27 @@ def test_changed_folder_repass_reuses_fresh_child_sizes(usage_cache, clock):
     assert Counter(d.calls) == Counter({("size", F): 1, ("list", F): 1})
     assert _by_name(bd)["c2"].size == 2300
     assert bd.gap == 5 and bd.gap_kind is GapKind.UNRECONCILED
+
+
+def test_walk_retries_a_child_whose_size_failed(usage_cache, clock):
+    """A transient size failure in the parent's pass must not hide the child's subtree."""
+    t = "/my-files/T"
+    d = _deep_tree(t)
+    child = t + "/a"  # has a subtree (a/b/c) below it
+    d.fail_next("size", child, DriveError("throttled"), times=1)
+    failed: list[tuple[str, str]] = []
+    eng = UsageEngine(d, usage_cache, clock=clock)
+    eng.walk(t, FIVE_DAYS, NO_RULES, on_error=lambda p, text: failed.append((p, text)))
+    assert ("list", child) in d.calls
+    assert failed == []
+
+
+def test_walk_reports_folders_that_stay_unmeasured(usage_cache, clock):
+    t = "/my-files/T"
+    d = _deep_tree(t)
+    child = t + "/a"  # has a subtree (a/b/c) below it
+    d.fail_next("size", child, DriveError("gone"), times=9)
+    failed: list[tuple[str, str]] = []
+    eng = UsageEngine(d, usage_cache, clock=clock)
+    eng.walk(t, FIVE_DAYS, NO_RULES, on_error=lambda p, text: failed.append((p, text)))
+    assert [p for p, _ in failed] == [child] and "gone" in failed[0][1]

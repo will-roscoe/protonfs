@@ -262,6 +262,7 @@ class UsageEngine:
         target: str | None = None,
         on_progress: Callable[[int, int], None] | None = None,
         cancel: threading.Event | None = None,
+        on_error: Callable[[str, str], None] | None = None,
     ) -> int:
         """Break down ``path`` and every non-excluded folder beneath it, breadth first.
 
@@ -275,7 +276,9 @@ class UsageEngine:
         :param on_progress: called after each folder as ``on_progress(done, known)``,
             where ``known`` is ``done`` plus the folders found but not yet broken down.
         :param cancel: when set, the walk stops before the next folder.
-        :returns: the number of folders broken down.
+        :param on_error: called as ``on_error(path, text)`` for each folder whose breakdown
+            ended in ``ERROR`` (its subtree is not walked).
+        :returns: the number of folders broken down, failed ones included.
         :raises ValueError: if ``path`` is not within ``target``.
 
         .. versionadded:: 3.4.0
@@ -287,8 +290,11 @@ class UsageEngine:
         while queue:
             if cancel is not None and cancel.is_set():
                 break
-            bd = self.breakdown(queue.popleft(), policy, rules, base)
+            path_now = queue.popleft()
+            bd = self.breakdown(path_now, policy, rules, base)
             done += 1
+            if bd.state is NodeState.ERROR and on_error is not None:
+                on_error(path_now, bd.error or "measurement failed")
             for child in self._subfolders(bd):
                 if child not in seen:
                     seen.add(child)
@@ -788,15 +794,17 @@ class UsageEngine:
 
     @staticmethod
     def _subfolders(bd: Breakdown) -> list[str]:
-        """Entries worth breaking down next: measured, non-excluded, measurable folders.
+        """Entries worth breaking down next: non-excluded, measurable folders.
 
-        Skips files, excluded entries, ``ERROR`` and ``UNMEASURED`` entries (a failed
-        child, the ``/devices`` placeholder, ``/photos``) and paths ``size`` cannot take.
+        Skips files, excluded entries, ``UNMEASURED`` entries, the ``/devices`` placeholder
+        (not a folder; :meth:`root` retries the device list itself), ``/photos`` and paths
+        ``size`` cannot take. A folder whose size failed in the parent's pass (``ERROR``) is
+        kept: its own breakdown retries it.
         """
-        skip = (NodeState.ERROR, NodeState.UNMEASURED)
         return [e.path for e in bd.entries
                 if e.kind != "file" and e.exclusion is Exclusion.NONE
-                and e.state not in skip and _measurable(e.path)]
+                and e.state is not NodeState.UNMEASURED and e.path != "/devices"
+                and _measurable(e.path)]
 
     def _parent_row(self, path: str) -> tuple[str, Row] | None:
         """Return ``(parent_path, row)`` for ``path`` in its parent's snapshot, if cached."""

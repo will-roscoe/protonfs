@@ -129,7 +129,8 @@ class _Collector:
             trash[0], trash[1], trash[2], when,
             None if when is None else max(0.0, self.now - when),
             state.value, entry.exclusion.value, GapKind.NONE.value,
-            (bd.error if bd is not None and bd.error else None) or entry.error,
+            # The row's own breakdown, when there is one, decides both state and error.
+            bd.error if bd is not None else entry.error,
         ))
 
     def gap(self, depth, bd: Breakdown):
@@ -148,8 +149,10 @@ class _Collector:
             sub = None
             recurse = (
                 entry.kind != "file" and depth + 1 < self.maxdepth
-                and entry.state not in (NodeState.EXCLUDED, NodeState.ERROR,
-                                        NodeState.UNMEASURED)
+                # ERROR is retried: the child's own breakdown sizes it again. The /devices
+                # placeholder is not a folder; the root view retries the device list itself.
+                and entry.state not in (NodeState.EXCLUDED, NodeState.UNMEASURED)
+                and entry.path != "/devices"
                 and entry.exclusion.value == "none"
             )
             if recurse:

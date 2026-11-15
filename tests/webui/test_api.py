@@ -291,7 +291,7 @@ def test_refused_walk_does_not_break_cancel(make, drive):
 def test_walk_that_raises_ends_in_error_with_last_known_counts(make, engine, monkeypatch):
     api = make()
 
-    def boom(path, policy, rules, *, target, on_progress, cancel):
+    def boom(path, policy, rules, *, target, on_progress, cancel, on_error=None):
         on_progress(2, 5)
         raise RuntimeError("kaput")
 
@@ -310,7 +310,7 @@ def test_walk_that_raises_ends_in_error_with_last_known_counts(make, engine, mon
 def test_cancelled_walk_keeps_last_known_total(make, engine, monkeypatch):
     api = make()
 
-    def slow(path, policy, rules, *, target, on_progress, cancel):
+    def slow(path, policy, rules, *, target, on_progress, cancel, on_error=None):
         on_progress(1, 4)
         cancel.set()
         return 1
@@ -344,3 +344,22 @@ def test_slow_subscriber_is_dropped(make):
         api.jobs._publish({"event": "error", "path": str(i), "message": "x"})
     assert q not in api.jobs._subs
     assert q.get_nowait() is None  # backlog discarded, stream ends
+
+
+def test_walk_reports_folders_it_could_not_measure(make, drive):
+    from protonfs.drive import DriveError
+
+    api = make()
+    drive.fail_next("size", f"{TARGET}/A", DriveError("gone"), times=9)
+    q = api.jobs.subscribe()
+    assert api.walk([TARGET])["started"] is True
+    errors, last = [], None
+    while True:
+        ev = q.get(timeout=5)
+        if ev["event"] == "error":
+            errors.append(ev)
+        elif ev["event"] == "progress" and ev["state"] != "running":
+            last = ev
+            break
+    assert last["state"] == "done" and last["failed"] == 1
+    assert [e["path"] for e in errors] == [f"{TARGET}/A"]
