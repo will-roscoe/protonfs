@@ -576,3 +576,20 @@ def test_plain_submit_still_dedupes(engine, drive):
     finally:
         gate.set()
         jobs.close()
+
+
+def test_job_queue_logs_notices_and_job_failures(engine, monkeypatch):
+    lines: list = []
+    jobs = JobQueue(engine, lambda: GuiSettings(TARGET), log=lines.append)
+    q = jobs.subscribe()
+    try:
+        jobs.notify("slow now")
+        monkeypatch.setattr(engine, "breakdown",
+                            lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("kaput")))
+        jobs.submit("breakdown", TARGET, RefreshPolicy.parse("0"))
+        _next(q, "error")
+    finally:
+        jobs.close()
+    assert "notice: slow now" in lines
+    assert any(x.startswith(f"job failed {TARGET} in ") and x.endswith(": kaput") for x in lines)
+    assert any(x.startswith("job queued ") and "refresh=0" in x for x in lines)

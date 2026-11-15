@@ -11,9 +11,10 @@ from __future__ import annotations
 
 import queue
 import threading
+import time
 from typing import TYPE_CHECKING, Callable
 
-from protonfs.usage.model import Breakdown
+from protonfs.usage.model import Breakdown, NodeState
 
 if TYPE_CHECKING:
     from protonfs.usage.engine import UsageEngine
@@ -22,6 +23,14 @@ if TYPE_CHECKING:
     from .settings import GuiSettings
 
 _STOP = object()
+
+
+def _flat(text) -> str:
+    return str(text).replace("\n", "\\n").replace("\r", "\\r")
+
+
+def _describe(policy) -> str:
+    return "never" if policy.never else "0" if policy.fresh_only else "threshold"
 
 #: Unread events a subscriber may have queued before it is dropped.
 MAX_BACKLOG = 1000
@@ -47,6 +56,9 @@ class JobQueue:
     :param settings: returns the current :class:`~protonfs.webui.settings.GuiSettings`; read
         at the start of every job, so live edits apply to the next job.
     :param workers: number of breakdown worker threads.
+    :param log: called with one line of text for each job queued, started, finished or
+        failed, each walk start and end, each walk error and each notice; ``None`` for no
+        logging. Called from any thread.
 
     A subscriber whose queue holds :data:`MAX_BACKLOG` unread events is dropped: its queue
     receives a final ``None`` after the backlog is discarded.
@@ -55,10 +67,15 @@ class JobQueue:
     """
 
     def __init__(
-        self, engine: UsageEngine, settings: Callable[[], GuiSettings], workers: int = 2
+        self,
+        engine: UsageEngine,
+        settings: Callable[[], GuiSettings],
+        workers: int = 2,
+        log: Callable[[str], None] | None = None,
     ) -> None:
         self.engine = engine
         self._settings = settings
+        self._log_fn = log
         self._lock = threading.Lock()
         self._jobs: queue.Queue = queue.Queue()
         self._active: dict = {}
@@ -74,6 +91,13 @@ class JobQueue:
         ]
         for t in self._threads:
             t.start()
+
+    def _log(self, text: str) -> None:
+        if self._log_fn is not None:
+            try:
+                self._log_fn(text)
+            except Exception:  # noqa: BLE001 - logging must never break a job
+                pass
 
     # ------------------------------------------------------------------ events
 
@@ -95,6 +119,7 @@ class JobQueue:
 
         .. versionadded:: 3.4.0
         """
+        self._log(f"notice: {message}")
         self._publish({"event": "notice", "message": message})
 
     def _publish(self, event: dict) -> None:
@@ -145,8 +170,11 @@ class JobQueue:
                     self._rerun[key] = policy
                 else:
                     self._active[key] = policy
+                how = "after the running job" if key in self._running else "upgrading the queued job"
+                self._log(f"job queued {path} refresh={_describe(policy)} (forced, {how})")
                 return True
             self._active[key] = policy
+        self._log(f"job queued {path} refresh={_describe(policy)}")
         self._jobs.put((kind, path, policy))
         return True
 
@@ -171,10 +199,20 @@ class JobQueue:
                 policy = self._active.get(key, policy)  # a forced submit may have upgraded it
                 self._running.add(key)
             events: list = []
+            start = time.monotonic()
+            self._log(f"job started {path} refresh={_describe(policy)}")
             try:
                 events = self._run_breakdown(path, policy)
+                took = time.monotonic() - start
+                bd = events[0].get("breakdown")
+                if bd is not None and bd.state is NodeState.ERROR:
+                    self._log(f"job failed {path} in {took:.2f}s: {_flat(bd.error)}")
+                else:
+                    self._log(f"job finished {path} in {took:.2f}s")
             except Exception as exc:  # noqa: BLE001 - a job must never kill its worker
-                events = [{"event": "error", "path": path, "message": str(exc) or repr(exc)}]
+                msg = str(exc) or repr(exc)
+                events = [{"event": "error", "path": path, "message": msg}]
+                self._log(f"job failed {path} in {time.monotonic() - start:.2f}s: {_flat(msg)}")
             # leave pending() before anyone hears the result, so a reader reacting to the
             # event never still sees the path as pending (unless a forced re-run follows)
             with self._lock:
@@ -223,6 +261,7 @@ class JobQueue:
         message = None
         last = None
         failed = [0]
+        self._log(f"walk started {', '.join(paths)}")
         try:
             for path in paths:
                 if cancel.is_set():
@@ -239,6 +278,7 @@ class JobQueue:
 
                 def failed_one(fpath: str, text: str) -> None:
                     failed[0] += 1
+                    self._log(f"walk error {fpath}: {_flat(text)}")
                     self._publish({"event": "error", "path": fpath, "message": text})
 
                 finished += self.engine.walk(
@@ -251,6 +291,7 @@ class JobQueue:
         except Exception as exc:  # noqa: BLE001
             state = "error"
             message = str(exc) or repr(exc)
+            self._log(f"walk failed at {last or ''}: {_flat(message)}")
             self._publish({"event": "error", "path": last or "", "message": message})
         finally:
             with self._lock:
@@ -262,6 +303,7 @@ class JobQueue:
             }
             if message is not None:
                 final["message"] = message
+            self._log(f"walk {state}: {known[0]} folders, {failed[0]} failed")
             self._publish(final)
 
     # ------------------------------------------------------------------- close

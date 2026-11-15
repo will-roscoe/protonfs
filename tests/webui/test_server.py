@@ -5,6 +5,7 @@ from __future__ import annotations
 import http.client
 import io
 import json
+import re
 import socket
 import threading
 from datetime import datetime
@@ -554,3 +555,44 @@ def test_unexpected_host_header_is_rejected_on_loopback(srv):
                         .encode())
         status = int(reply.split(b" ", 2)[1])
         assert (status == 200) is ok, (host, status)
+
+
+def _log_text(tmp_path):
+    return (tmp_path / "server.log").read_text()
+
+
+def test_log_records_jobs_drive_calls_and_durations(srv, tmp_path):
+    events = srv.events()
+    next(events)
+    srv.json("GET", f"/api/tree?path={TARGET}&depth=1")
+    assert next(events)[0] == "breakdown"
+    text = _log_text(tmp_path)
+    assert f"job queued {TARGET}" in text
+    assert f"job started {TARGET}" in text
+    assert re.search(rf"job finished {TARGET} in \d+\.\d+s", text)
+    assert re.search(rf"drive size {TARGET} \d+\.\d+s ok", text)
+    assert re.search(rf"drive list {TARGET} \d+\.\d+s ok", text)
+
+
+def test_log_records_errors_and_never_the_token(srv, tmp_path):
+    events = srv.events()
+    next(events)
+    boom = RuntimeError(f"boom t={srv.token}")
+    srv.drive.fail_next("list", f"{TARGET}/A", boom)
+    srv.json("POST", "/api/refresh", {"path": f"{TARGET}/A"})
+    assert next(events)[0] == "breakdown"
+    text = _log_text(tmp_path)
+    assert re.search(rf"drive list {TARGET}/A \d+\.\d+s error: ", text)
+    assert f"job failed {TARGET}/A" in text
+    assert srv.token not in text
+
+
+def test_log_records_walks(srv, tmp_path):
+    events = srv.events()
+    next(events)
+    srv.json("POST", "/api/walk", {"paths": [TARGET]})
+    for name, data in events:
+        if name == "progress" and data["state"] != "running":
+            break
+    text = _log_text(tmp_path)
+    assert f"walk started {TARGET}" in text and "walk done" in text

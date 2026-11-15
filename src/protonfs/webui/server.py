@@ -21,6 +21,7 @@ import secrets
 import socket
 import socketserver
 import threading
+import time
 import webbrowser
 from datetime import datetime
 from http import HTTPStatus
@@ -90,16 +91,82 @@ class _LengthRequired(ValueError):
     pass
 
 
+def _one_line(text: str) -> str:
+    return text.replace("\\", "\\\\").replace("\n", "\\n").replace("\r", "\\r")
+
+
+class _LogSink:
+    """The ``--log`` stream: timestamped lines, with the access token redacted.
+
+    Shared by the request handlers, the job queue and the logging Drive source, so one lock
+    keeps their lines whole. A write error is dropped; the log never breaks a request.
+    """
+
+    def __init__(self, stream: TextIO, token: str) -> None:
+        self._stream = stream
+        self._token = token
+        self._lock = threading.Lock()
+
+    def line(self, who: str, text: str) -> None:
+        text = _TOKEN_QUERY.sub(r"\1<redacted>", text).replace(self._token, "<redacted>")
+        stamp = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+        with self._lock:
+            try:
+                self._stream.write(f"{stamp} {who} {text}\n")
+                self._stream.flush()
+            except (OSError, ValueError):
+                pass
+
+
+class _LoggedSource:
+    """Wraps a :class:`~protonfs.usage.source.DriveSource`, logging every call.
+
+    Each line is ``drive <operation> <path> <seconds>s ok`` or ``... error: <message>``;
+    the call itself is passed through unchanged, and other attributes are forwarded.
+    """
+
+    def __init__(self, source, log: _LogSink) -> None:
+        self._source = source
+        self._log = log
+
+    def __getattr__(self, name: str):
+        return getattr(self._source, name)
+
+    def _timed(self, op: str, path: str, call):
+        start = time.monotonic()
+        try:
+            result = call()
+        except BaseException as exc:
+            self._log.line("drive", f"drive {op} {_one_line(path)} {time.monotonic() - start:.2f}s "
+                                    f"error: {type(exc).__name__}: {_one_line(str(exc))}")
+            raise
+        self._log.line("drive", f"drive {op} {_one_line(path)} {time.monotonic() - start:.2f}s ok")
+        return result
+
+    def list_dir(self, path, *, expected_entries=None):
+        return self._timed("list", path, lambda: self._source.list_dir(
+            path, expected_entries=expected_entries))
+
+    def size(self, path):
+        return self._timed("size", path, lambda: self._source.size(path))
+
+    def volume_scope(self, path):
+        return self._timed("info", path, lambda: self._source.volume_scope(path))
+
+    def list_trash(self, *, timeout):
+        return self._timed("list_trash", "/trash", lambda: self._source.list_trash(
+            timeout=timeout))
+
+
 class _Server(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, addr, handler, *, api: Api, token: str, log: TextIO) -> None:
+    def __init__(self, addr, handler, *, api: Api, token: str, log: _LogSink) -> None:
         if ":" in addr[0]:
             self.address_family = socket.AF_INET6
         self.api = api
         self.token = token
         self.log = log
-        self.log_lock = threading.Lock()
         super().__init__(addr, handler)
 
     def server_bind(self) -> None:
@@ -121,14 +188,7 @@ class _Handler(BaseHTTPRequestHandler):
         self._log(format % args)
 
     def _log(self, text: str) -> None:
-        text = _TOKEN_QUERY.sub(r"\1<redacted>", text)
-        stamp = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
-        with self.server.log_lock:
-            try:
-                self.server.log.write(f"{stamp} {self.address_string()} {text}\n")
-                self.server.log.flush()
-            except (OSError, ValueError):
-                pass
+        self.server.log.line(self.address_string(), text)
 
     @property
     def _cookie_name(self) -> str:
@@ -395,20 +455,26 @@ def serve(
     token = secrets.token_urlsafe(24)
     holder: dict = {}
     httpd = None
+    sink = _LogSink(stream, token)
+    source = getattr(engine, "source", None)
+    if source is not None:
+        engine.source = _LoggedSource(source, sink)  # restored when serve() returns
     try:
         engine.check_account(settings.policy())
     except BaseException:
+        if source is not None:
+            engine.source = source
         stream.close()
         raise
-    jobs = JobQueue(engine, lambda: holder["api"].settings)
-    source = getattr(engine, "source", None)
+    jobs = JobQueue(engine, lambda: holder["api"].settings,
+                    log=lambda text: sink.line("job", text))
     if source is not None and hasattr(source, "on_slow_size"):
         source.on_slow_size = lambda path: jobs.notify(THROTTLE_NOTICE)
     holder["api"] = api = Api(engine, jobs, settings, plan_size=plan_size)
     try:
         try:
             httpd = _Server(
-                (listen, port or 0), _Handler, api=api, token=token, log=stream
+                (listen, port or 0), _Handler, api=api, token=token, log=sink
             )
         except OSError as exc:
             if exc.errno == errno.EADDRINUSE and port:
@@ -432,7 +498,7 @@ def serve(
                     "by this machine's address\n"
                 )
             stderr.flush()
-        stream.write(f"serving on {host}:{bound}\n")
+        sink.line("-", f"serving on {host}:{bound}")
         stdout.write(url + "\n")
         stdout.flush()
         if open_browser and loopback and _can_open_browser(stdout):
@@ -448,6 +514,8 @@ def serve(
         jobs.close()
         if httpd is not None:
             httpd.server_close()
+        if source is not None:
+            engine.source = source
         stream.close()
 
 
