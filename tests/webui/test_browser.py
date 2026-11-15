@@ -202,8 +202,8 @@ def test_wide_table_stays_reachable_at_default_split(pw_page):
         " return {right: h.right - wr.left + w.scrollLeft, scrollWidth: w.scrollWidth,"
         " clientWidth: w.clientWidth, overflowX: getComputedStyle(w).overflowX}; })()")
     assert geom["right"] <= geom["scrollWidth"] + 1
-    # reachable: either the whole table fits, or the pane scrolls horizontally
-    assert geom["scrollWidth"] <= geom["clientWidth"] or geom["overflowX"] in ("auto", "scroll")
+    # reachable at the default split: the State column's right edge is inside the pane
+    assert geom["right"] <= geom["clientWidth"] + 1, geom
     frozen = pw_page.locator('tr[data-path="/my-files/frozen"] td.state')
     assert frozen.inner_text() == "frozen"
     assert frozen.get_attribute("title") == "excluded (freeze)"
